@@ -77,13 +77,13 @@ class Botones(discord.ui.View):
         if interaction.user.id != self.user_id:
             return await interaction.response.send_message("No es tu ticket", ephemeral=True)
 
-        await interaction.response.send_message("🛠️ En breve un moderador responderá a tu ticket 🙏")
+        await interaction.response.send_message("🛠️ En breve un moderador responderá 🙏")
 
 # 🎯 DETECCIÓN
 @bot.event
 async def on_message(message):
 
-    # 🔥 Ticket Tool
+    # 🔥 MENSAJE TICKET TOOL
     if message.author.bot:
 
         if not message.channel.category or "✮" not in message.channel.category.name:
@@ -92,16 +92,13 @@ async def on_message(message):
         if "ticket tool" not in message.author.name.lower():
             return
 
-        if message.channel.id in procesando_tickets:
-            return
-
-        procesando_tickets.add(message.channel.id)
-
-        if message.channel.id in tickets_usados:
-            procesando_tickets.discard(message.channel.id)
+        # 🔒 ANTI DUPLICADO FUERTE
+        if message.channel.id in tickets_usados or message.channel.id in procesando_tickets:
             return
 
         if "bienvenido" in message.content.lower():
+
+            procesando_tickets.add(message.channel.id)
 
             match = re.search(r"<@(\d+)>", message.content)
 
@@ -115,14 +112,14 @@ async def on_message(message):
                     view=Botones(user_id)
                 )
 
-        procesando_tickets.discard(message.channel.id)
+            procesando_tickets.discard(message.channel.id)
 
     # 💬 USUARIO
     if not message.author.bot:
 
         texto = message.content.lower()
 
-        # 🔍 DETECTAR PAGO FLEXIBLE
+        # 🔍 DETECTAR PAGO
         if "pago exitoso" in texto:
 
             embed_pago = discord.Embed(
@@ -134,7 +131,14 @@ async def on_message(message):
             await message.channel.send(embed=embed_pago)
             return
 
-        # 🔍 DETECTAR NÚMEROS FLEXIBLE
+        # 🚫 MAL USO DE PAGO
+        if "pago" in texto and "exitoso" not in texto:
+            await message.channel.send(
+                "⚠️ Por favor no hagas spam.\nEscribe exactamente: **Pago exitoso** cuando hayas pagado."
+            )
+            return
+
+        # 💰 DETECTAR ROBUX
         if message.author.id in usuarios_esperando:
 
             match = re.search(r"\d+", texto)
@@ -186,6 +190,11 @@ async def on_message(message):
                     await message.channel.send(embed=embed2, view=PagoView())
 
                     usuarios_esperando.pop(message.author.id)
+
+                else:
+                    await message.channel.send(
+                        "❌ Ese monto no es válido.\n💡 Ejemplo correcto: 1500"
+                    )
 
     await bot.process_commands(message)
 

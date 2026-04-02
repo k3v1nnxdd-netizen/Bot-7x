@@ -7,7 +7,7 @@ import re
 load_dotenv()
 TOKEN = os.getenv("TOKEN")
 
-OWNER_ID = 996310284803248158  # 👈 ID de Kevvv7x
+OWNER_ID = 996310284803248158  # Kevvv7x
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -44,7 +44,7 @@ class PagoView(discord.ui.View):
 
         embed = discord.Embed(
             title="✅ PAGO EXITOSO",
-            description="Tus robux fueron enviados.\n\nPor favor deja una referencia en <#1452939436525617293>",
+            description="Tus robux fueron enviados.\n\nDeja tu referencia en <#1452939436525617293>",
             color=0x8A2BE2
         )
 
@@ -84,7 +84,7 @@ class Botones(discord.ui.View):
 @bot.event
 async def on_message(message):
 
-    # 🔥 SOLO MENSAJE DE TICKET TOOL
+    # 🔥 MENSAJE DE TICKET TOOL
     if message.author.bot:
 
         if message.channel.id in tickets_usados:
@@ -96,7 +96,6 @@ async def on_message(message):
 
             if match:
                 user_id = int(match.group(1))
-
                 tickets_usados.add(message.channel.id)
 
                 view = Botones(user_id)
@@ -106,8 +105,23 @@ async def on_message(message):
                     view=view
                 )
 
-    # 💰 RESPUESTA DEL USUARIO
+    # 💰 RESPUESTA DE COMPRA
     if not message.author.bot:
+
+        # 🔍 DETECTAR "Pago exitoso"
+        if message.content.strip() == "Pago exitoso":
+
+            embed_pago = discord.Embed(
+                title="⏳ Pago en revisión",
+                description=(
+                    "Tu pago está siendo verificado por un administrador.\n\n"
+                    "En breve tus robux serán enviados 🚀"
+                ),
+                color=0x8A2BE2
+            )
+
+            await message.channel.send(embed=embed_pago)
+            return
 
         if message.author.id in usuarios_esperando:
 
@@ -119,6 +133,7 @@ async def on_message(message):
                 if cantidad in precios:
                     precio = precios[cantidad]
 
+                    # 💰 EMBED 1 (COMPRA)
                     embed = discord.Embed(
                         title="💰 Compra detectada",
                         description=f"**Robux:** {cantidad}\n**Precio:** {precio} MXN",
@@ -150,27 +165,21 @@ async def on_message(message):
                         inline=False
                     )
 
-                    embed.add_field(
-                        name="📩 PASOS",
-                        value=(
-                            "1. Realiza el pago\n"
-                            "2. Envía tu comprobante\n"
-                            "3. Tus Robux serán enviados en menos de 24 Hrs 🚀"
-                        ),
-                        inline=False
-                    )
+                    await message.channel.send(embed=embed)
 
-                    embed.add_field(
-                        name="⚠️ IMPORTANTE",
-                        value=(
+                    # ⚠️ EMBED 2 (PAGO PENDIENTE)
+                    embed2 = discord.Embed(
+                        title="⏳ PAGO PENDIENTE",
+                        description=(
+                            "⚠️ **IMPORTANTE**\n"
                             "Al realizar el pago y enviar el comprobante responde con:\n\n"
                             "**Pago exitoso**\n\n"
                             "(Respeta mayúsculas y minúsculas)"
                         ),
-                        inline=False
+                        color=0x8A2BE2
                     )
 
-                    await message.channel.send(embed=embed, view=PagoView())
+                    await message.channel.send(embed=embed2, view=PagoView())
 
                     usuarios_esperando.pop(message.author.id)
 

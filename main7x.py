@@ -79,11 +79,11 @@ class Botones(discord.ui.View):
 
         await interaction.response.send_message("🛠️ En breve un moderador responderá 🙏")
 
-# 🎯 DETECCIÓN
+# 🎯 DETECCIÓN PRINCIPAL
 @bot.event
 async def on_message(message):
 
-    # 🔥 MENSAJE TICKET TOOL
+    # 🔥 MENSAJE DE TICKET TOOL
     if message.author.bot:
 
         if not message.channel.category or "✮" not in message.channel.category.name:
@@ -92,7 +92,7 @@ async def on_message(message):
         if "ticket tool" not in message.author.name.lower():
             return
 
-        # 🔒 ANTI DUPLICADO FUERTE
+        # 🔒 ANTI DUPLICADO REAL
         if message.channel.id in tickets_usados or message.channel.id in procesando_tickets:
             return
 
@@ -114,13 +114,13 @@ async def on_message(message):
 
             procesando_tickets.discard(message.channel.id)
 
-    # 💬 USUARIO
+    # 💬 MENSAJES DE USUARIO
     if not message.author.bot:
 
         texto = message.content.lower()
 
-        # 🔍 DETECTAR PAGO
-        if "pago exitoso" in texto:
+        # 🔍 DETECTAR PAGO FLEXIBLE
+        if "pago" in texto and "exitoso" in texto:
 
             embed_pago = discord.Embed(
                 title="⏳ Pago en revisión",
@@ -129,16 +129,13 @@ async def on_message(message):
             )
 
             await message.channel.send(embed=embed_pago)
-            return
 
-        # 🚫 MAL USO DE PAGO
-        if "pago" in texto and "exitoso" not in texto:
+        elif "pago" in texto:
             await message.channel.send(
-                "⚠️ Por favor no hagas spam.\nEscribe exactamente: **Pago exitoso** cuando hayas pagado."
+                "⚠️ Escribe correctamente: **Pago exitoso** cuando ya hayas pagado."
             )
-            return
 
-        # 💰 DETECTAR ROBUX
+        # 💰 DETECCIÓN DE ROBUX
         if message.author.id in usuarios_esperando:
 
             match = re.search(r"\d+", texto)
@@ -193,8 +190,13 @@ async def on_message(message):
 
                 else:
                     await message.channel.send(
-                        "❌ Ese monto no es válido.\n💡 Ejemplo correcto: 1500"
+                        "❌ Ese monto no es válido.\n💡 Intenta algo como: 1500"
                     )
+
+            else:
+                await message.channel.send(
+                    "❌ No detecté ningún número.\n💡 Escribe algo como: 1500"
+                )
 
     await bot.process_commands(message)
 

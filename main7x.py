@@ -30,6 +30,7 @@ precios = {
 
 usuarios_esperando = {}
 tickets_usados = set()
+procesando_tickets = set()  # 🔒 FIX REAL DUPLICADO
 
 # 🔘 BOTÓN OWNER
 class PagoView(discord.ui.View):
@@ -84,7 +85,7 @@ class Botones(discord.ui.View):
 @bot.event
 async def on_message(message):
 
-    # 🔥 DETECTAR MENSAJE DE TICKET TOOL
+    # 🔥 MENSAJE DE TICKET TOOL
     if message.author.bot:
 
         # SOLO categoría ✮
@@ -95,8 +96,15 @@ async def on_message(message):
         if "ticket tool" not in message.author.name.lower():
             return
 
-        # EVITAR DUPLICADOS
+        # 🔒 BLOQUEO ANTI DUPLICADO (CLAVE)
+        if message.channel.id in procesando_tickets:
+            return
+
+        procesando_tickets.add(message.channel.id)
+
+        # YA RESPONDIÓ
         if message.channel.id in tickets_usados:
+            procesando_tickets.discard(message.channel.id)
             return
 
         if "bienvenido" in message.content.lower():
@@ -114,6 +122,9 @@ async def on_message(message):
                     f"<@{user_id}> ¿Tu ticket está relacionado a la compra de robux baratos?",
                     view=view
                 )
+
+        # 🔓 DESBLOQUEAR
+        procesando_tickets.discard(message.channel.id)
 
     # 💰 RESPUESTA DEL USUARIO
     if not message.author.bot:

@@ -58,7 +58,6 @@ class PagoView(discord.ui.View):
 
         canal = interaction.channel
 
-        # ✅ MENSAJE ORIGINAL RESTAURADO
         embed = discord.Embed(
             title="✅ PAGO EXITOSO",
             description="Tus robux fueron enviados.\n\nDeja tu referencia en <#1452939436525617293>",
@@ -103,15 +102,16 @@ class Botones(discord.ui.View):
 
         await interaction.response.send_message("🛠️ Un moderador te ayudará pronto 🙏")
 
-# 🎯 EVENTO
+# 🎯 EVENTO PRINCIPAL
 @bot.event
 async def on_message(message):
 
+    # 🔒 SOLO FUNCIONA EN CATEGORÍA ✮
+    if not message.channel.category or "✮" not in message.channel.category.name:
+        return
+
     # 🎟️ TICKET TOOL
     if message.author.bot:
-
-        if not message.channel.category or "✮" not in message.channel.category.name:
-            return
 
         if "ticket tool" not in message.author.name.lower():
             return
@@ -191,7 +191,6 @@ async def on_message(message):
                         color=0x8A2BE2
                     )
 
-                    # 💳 MÉTODOS DE PAGO RESTAURADOS
                     embed.add_field(
                         name="🏦 TRANSFERENCIA",
                         value=(

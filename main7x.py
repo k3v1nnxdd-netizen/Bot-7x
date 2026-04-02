@@ -5,10 +5,10 @@ from dotenv import load_dotenv
 import re
 import asyncio
 
+# --- CONFIGURACIÓN ---
 load_dotenv()
 TOKEN = os.getenv("TOKEN")
-
-OWNER_ID = 996310284803248158
+OWNER_ID = 996310284803248158 # Tu ID para el botón de confirmación final
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -18,7 +18,6 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 
 # 💰 DICCIONARIO DE PRECIOS (500 - 100k)
 precios = {
-    # 100 en 100
     500: "$69", 600: "$81", 700: "$93", 800: "$105", 900: "$117",
     1000: "$129", 1100: "$143", 1200: "$157", 1300: "$171", 1400: "$185",
     1500: "$200", 1600: "$215", 1700: "$230", 1800: "$245", 1900: "$260",
@@ -39,115 +38,172 @@ precios = {
     9000: "$979", 9100: "$1,001", 9200: "$1,023", 9300: "$1,045", 9400: "$1,067",
     9500: "$1,089", 9600: "$1,111", 9700: "$1,133", 9800: "$1,155", 9900: "$1,177",
     10000: "$1,199",
-    # 500 en 500
     10500: "$1,231", 11000: "$1,263", 11500: "$1,295", 12000: "$1,327", 12500: "$1,359",
     13000: "$1,391", 13500: "$1,423", 14000: "$1,455", 14500: "$1,487", 15000: "$1,519",
-    15500: "$1,551", 16000: "$1,583", 16500: "$1,615", 17000: "$1,649", 17500: "$1,700",
-    18000: "$1,751", 18500: "$1,802", 19000: "$1,853", 19500: "$1,904", 20000: "$1,955",
-    20500: "$2,006", 21000: "$2,057", 21500: "$2,108", 22000: "$2,159", 22500: "$2,210",
-    23000: "$2,261", 23500: "$2,312", 24000: "$2,363", 24500: "$2,414", 25000: "$2,465",
-    25500: "$2,516", 26000: "$2,567", 26500: "$2,618", 27000: "$2,669", 27500: "$2,720",
-    28000: "$2,771", 28500: "$2,822", 29000: "$2,873", 29500: "$2,924", 30000: "$2,999",
-    35000: "$3,675", 40000: "$4,425", 45000: "$5,175", 50000: "$5,999", 55000: "$6,709",
-    60000: "$7,250", 65000: "$7,916", 70000: "$8,583", 75000: "$9,250", 80000: "$9,650",
-    85000: "$10,400", 90000: "$11,150", 95000: "$11,900", 100000: "$12,999"
+    20000: "$1,955", 25000: "$2,465", 30000: "$2,999", 50000: "$5,999", 100000: "$12,999"
 }
 
-usuarios_esperando = {} 
-usuarios_en_pago = set()
+usuarios_esperando_monto = {} # ID: True
+usuarios_esperando_pago = set() # IDs en estado de confirmación
 
-class PagoView(discord.ui.View):
+# --- VISTAS (BOTONES) ---
+
+class PagoConfirmadoView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
 
-    @discord.ui.button(label="PAGO REALIZADO (SOLO OWNER)", style=discord.ButtonStyle.green)
-    async def pago(self, interaction: discord.Interaction, button: discord.ui.Button):
+    @discord.ui.button(label="✅ PAGO REALIZADO (SOLO OWNER)", style=discord.ButtonStyle.green)
+    async def confirmar_pago(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user.id != OWNER_ID:
-            return await interaction.response.send_message("❌ Solo el owner puede usar este botón", ephemeral=True)
+            return await interaction.response.send_message("❌ No tienes permiso para usar este botón.", ephemeral=True)
 
-        canal = interaction.channel
         embed = discord.Embed(
             title="✅ PAGO EXITOSO",
-            description="Tus robux fueron enviados.\n\nDeja tu referencia en <#1452939436525617293>",
+            description="Tus robux han sido enviados correctamente.\n\nPor favor, deja tu referencia en <#1452939436525617293>",
             color=0x8A2BE2
         )
         embed.set_image(url="https://media.discordapp.net/attachments/1468842385420320960/1468842408614826077/Robux_Enviados.png")
         await interaction.response.send_message(embed=embed)
         
-        mensaje = await canal.send("⏳ Este ticket se cerrará en 15 minutos...")
-        for i in range(15, 0, -1):
-            await asyncio.sleep(60)
-            try: await mensaje.edit(content=f"⏳ Este ticket se cerrará en {i-1} minutos...")
-            except: break
-        await canal.delete()
+        # Auto-cierre del ticket
+        mensaje_cierre = await interaction.channel.send("⏳ Este ticket se cerrará automáticamente en 15 minutos...")
+        await asyncio.sleep(900) # 15 minutos
+        await interaction.channel.delete()
 
-class Botones(discord.ui.View):
+class InicioTicketView(discord.ui.View):
     def __init__(self, user_id):
         super().__init__(timeout=None)
         self.user_id = user_id
 
-    @discord.ui.button(label="Sí", style=discord.ButtonStyle.green)
-    async def si(self, interaction: discord.Interaction, button: discord.ui.Button):
+    @discord.ui.button(label="Sí, quiero Robux", style=discord.ButtonStyle.green)
+    async def aceptar(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user.id != self.user_id:
-            return await interaction.response.send_message("No es tu ticket", ephemeral=True)
-        usuarios_esperando[self.user_id] = True
-        await interaction.response.send_message("💰 Escribe cuántos robux quieres comprar: (Ejemplo: 1500)")
+            return await interaction.response.send_message("Este botón no es para ti.", ephemeral=True)
+        
+        usuarios_esperando_monto[self.user_id] = True
+        await interaction.response.send_message("💰 **Escribe cuántos robux quieres comprar:** (Ejemplo: 1500)")
 
-    @discord.ui.button(label="No", style=discord.ButtonStyle.red)
-    async def no(self, interaction: discord.Interaction, button: discord.ui.Button):
+    @discord.ui.button(label="No, otra cosa", style=discord.ButtonStyle.gray)
+    async def rechazar(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user.id != self.user_id:
-            return await interaction.response.send_message("No es tu ticket", ephemeral=True)
-        await interaction.response.send_message("🛠️ Un moderador te ayudará pronto 🙏")
+            return await interaction.response.send_message("Este botón no es para ti.", ephemeral=True)
+        await interaction.response.send_message("🛠️ Entendido. Un moderador te atenderá en un momento.")
+
+# --- EVENTOS ---
 
 @bot.event
 async def on_message(message):
     if message.author.bot:
+        # Detectar bienvenida de Ticket Tool
         if "ticket tool" in message.author.name.lower() and "bienvenido" in message.content.lower():
             match = re.search(r"<@(\d+)>", message.content)
             if match:
                 user_id = int(match.group(1))
-                await message.channel.send(f"<@{user_id}> ¿Tu ticket está relacionado a la compra de robux baratos?", view=Botones(user_id))
+                await message.channel.send(
+                    f"Hola <@{user_id}> 👋, ¿vienes a comprar Robux baratos?", 
+                    view=InicioTicketView(user_id)
+                )
         return
 
+    # 🔒 RESTRICCIÓN: Solo canales que empiecen por "ticket-" o categoría con "✮"
     es_ticket = message.channel.name.startswith("ticket-")
-    es_categoria_valida = message.channel.category and "✮" in message.channel.category.name
+    es_cat_valida = message.channel.category and "✮" in message.channel.category.name
     
-    if not (es_ticket or es_categoria_valida):
+    if not (es_ticket or es_cat_valida):
         return
 
-    # --- LÓGICA DE MONTO ---
-    if message.author.id in usuarios_esperando:
-        texto_limpio = message.content.strip()
+    # --- FASE 1: VALIDACIÓN DE MONTO ---
+    if message.author.id in usuarios_esperando_monto:
+        contenido = message.content.strip()
         
-        if not texto_limpio.isdigit():
-            await message.channel.send("❌ Escribe un número válido")
+        if not contenido.isdigit():
+            await message.channel.send("❌ **Escribe un número válido.** (Ejemplo: 1500)")
             return
 
-        cantidad_original = int(texto_limpio)
-        cantidad = cantidad_original
+        monto_ingresado = int(contenido)
+        monto_final = monto_ingresado
 
-        # Sistema de Redondeo: Si no está en precios, buscar el más cercano
-        if cantidad not in precios:
-            # Encontrar el valor de la lista de precios que tenga la menor diferencia absoluta
-            cercano = min(precios.keys(), key=lambda x: abs(x - cantidad_original))
-            diferencia = abs(cercano - cantidad_original)
+        # 🔄 SISTEMA DE REDONDEO
+        if monto_ingresado not in precios:
+            # Buscar el más cercano
+            cercano = min(precios.keys(), key=lambda x: abs(x - monto_ingresado))
+            diferencia = abs(cercano - monto_ingresado)
             
-            # Solo redondear si la diferencia es pequeña (ej: menos del 5% o max 100 de diferencia)
-            if diferencia <= (cercano * 0.05) or diferencia <= 10:
-                await message.channel.send(f"⚠️ El monto **{cantidad_original}** no está en la lista, redondeando a **{cercano}** robux.")
-                cantidad = cercano
+            # Redondear si la diferencia es pequeña (ej: 9999 -> 10000 o 1490 -> 1500)
+            if diferencia <= 15 or diferencia <= (cercano * 0.05):
+                await message.channel.send(f"⚠️ El monto **{monto_ingresado}** no está en lista. Redondeando a la oferta de **{cercano} robux**.")
+                monto_final = cercano
             else:
-                await message.channel.send(f"❌ Monto inválido (Ej: 1500). El monto **{cantidad_original}** no está en nuestra lista de precios.")
+                await message.channel.send(f"❌ **Monto inválido.** (Ej: 1500)\nPor favor elige una cantidad de nuestra lista de precios (500 a 100k).")
                 return
 
-        # Proceder con la compra (ya sea monto exacto o redondeado)
-        precio = precios[cantidad]
-        usuarios_esperando.pop(message.author.id) 
-        usuarios_en_pago.add(message.author.id)
+        # Pasar a estado de pago
+        precio_texto = precios[monto_final]
+        usuarios_esperando_monto.pop(message.author.id)
+        usuarios_esperando_pago.add(message.author.id)
 
+        # EMBED DE PAGO COMPLETO
         embed_pago = discord.Embed(
-            title="💰 Compra detectada",
-            description=f"**Robux:** {cantidad}\n**Precio:** {precio} MXN",
+            title="💳 INFORMACIÓN DE PAGO",
+            description=f"Has seleccionado: **{monto_final} Robux**\nTotal a pagar: **{precio_texto} MXN**",
             color=0x8A2BE2
         )
-        embed_pago.add_field(name="🏦 TRANSFERENCIA", value="**CUENTA 1 (Mercado Pago):**\n
+        embed_pago.add_field(
+            name="🏦 TRANSFERENCIA",
+            value=(
+                "**CUENTA 1:**\n```722969040869278041```\n"
+                "**MERCADO PAGO**\nVICENTA MARIANO VALDOVINOS\n\n"
+                "**CUENTA 2:**\n```721180100042646712```\n"
+                "**ALBO**\nHECTOR ALTAMIRANO GONZALEZ"
+            ),
+            inline=False
+        )
+        embed_pago.add_field(
+            name="🏪 DEPÓSITO OXXO",
+            value="[Click aquí para ver el código de barras](https://cdn.discordapp.com/attachments/1464133748923695199/1464371847201292574/0273176f-3966-4d09-a18e-15abac4a5cbb.jpg)",
+            inline=False
+        )
+        
+        instrucciones = discord.Embed(
+            title="⏳ SIGUIENTES PASOS",
+            description=(
+                "1. Realiza el pago por el monto exacto.\n"
+                "2. Envía la **FOTO DEL COMPROBANTE** aquí mismo.\n"
+                "3. Escribe **PAGO EXITOSO** para confirmar."
+            ),
+            color=0xFFA500
+        )
+        
+        await message.channel.send(embed=embed_pago)
+        await message.channel.send(embed=instrucciones, view=PagoConfirmadoView())
+        return
+
+    # --- FASE 2: CONFIRMACIÓN DE PAGO ---
+    if message.author.id in usuarios_esperando_pago:
+        if message.content.lower().strip() == "pago exitoso":
+            embed_staff = discord.Embed(
+                title="🚀 PAGO EN REVISIÓN",
+                description="Gracias. Tu comprobante ha sido enviado al staff.\nEn unos momentos recibirás tus Robux.",
+                color=0x00FF00
+            )
+            await message.channel.send(embed=embed_staff)
+            
+            # Notificación visual para el Staff
+            try: await message.channel.edit(name=f"✅-pago-{message.author.name}")
+            except: pass
+            
+            usuarios_esperando_pago.remove(message.author.id)
+        else:
+            # Si escribe cualquier otra cosa, recordarle los pasos
+            await message.channel.send(
+                content=f"⚠️ <@{message.author.id}>, por favor realiza el pago, manda el comprobante y escribe **PAGO EXITOSO** (en grande) para confirmar."
+            )
+        return
+
+    await bot.process_commands(message)
+
+@bot.event
+async def on_ready():
+    print(f"✅ Bot conectado como {bot.user}")
+
+bot.run(TOKEN)

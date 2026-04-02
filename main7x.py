@@ -95,7 +95,7 @@ async def on_message(message):
                 value=(
                     "1. Realiza el pago\n"
                     "2. Envía tu comprobante de pago\n"
-                    "3. Tus Robux serán enviados en menos de 24 Hrs 🚀"
+                    "3. Tus Robux serán enviados en menos de 24 Hrs. 🚀"
                 ),
                 inline=False
             )

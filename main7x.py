@@ -2,64 +2,116 @@ import discord
 from discord.ext import commands
 import os
 from dotenv import load_dotenv
-import asyncio
 
-# Cargar token desde Railway / .env
 load_dotenv()
 TOKEN = os.getenv("TOKEN")
 
-# Intents necesarios
 intents = discord.Intents.default()
+intents.message_content = True
 intents.guilds = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
+
+# 📊 PRECIOS
+precios = {
+    500: "$69",
+    1000: "$129",
+    1500: "$200",
+    2000: "$279",
+    2500: "$315",
+    3000: "$349",
+    3500: "$389",
+    4000: "$429",
+    4500: "$505",
+    5000: "$579",
+    10000: "$1,199",
+    15000: "$1,450",
+    17000: "$1,649",
+    20000: "$1,950",
+    25000: "$2,450",
+    30000: "$2,999",
+    35000: "$3,750",
+    40000: "$4,500",
+    45000: "$5,250",
+    50000: "$5,999",
+    50500: "$6,070",
+    55000: "$6,610",
+    60000: "$7,215",
+    65000: "$7,820",
+    70000: "$8,425",
+    75000: "$9,030",
+    80000: "$9,635",
+    85000: "$10,240",
+    90000: "$10,845",
+    95000: "$11,450",
+    100000: "$12,999"
+}
 
 @bot.event
 async def on_ready():
     print(f"Bot activo como {bot.user}")
 
-# Evento cuando se crea un canal (ticket)
 @bot.event
-async def on_guild_channel_create(channel):
-    await asyncio.sleep(2)  # Espera a que el canal esté listo
+async def on_message(message):
+    if message.author.bot and message.embeds:
 
-    if isinstance(channel, discord.TextChannel):
+        embed = message.embeds[0]
 
-        # SOLO si está en la categoría ✮
-        if channel.category and channel.category.name == "✮":
+        if "ticket" in message.channel.name.lower():
 
-            await channel.send(f"""
-👋 **Bienvenido a tu ticket**
+            for field in embed.fields:
+                if "robux" in field.name.lower():
 
-💰 **MÉTODOS DE PAGO**
+                    try:
+                        cantidad = int(field.value.replace(",", "").strip())
 
-🏦 **TRANSFERENCIA**
+                        if cantidad in precios:
+                            precio = precios[cantidad]
 
-**CUENTA 1:**
+                            embed_msg = discord.Embed(
+                                title="💰 Compra detectada",
+                                description=f"**Robux:** {cantidad}\n**Precio:** {precio} MXN",
+                                color=0x8A2BE2  # morado
+                            )
 
-722969040869278041
+                            embed_msg.set_image(url="https://media.discordapp.net/attachments/1468842385420320960/1468844898793947279/metodos_pago.png")
 
-MERCADO PAGO  
-VICENTA MARIANO VALDOVINOS  
+                            embed_msg.add_field(
+                                name="🏦 Transferencia",
+                                value=(
+                                    "**CUENTA 1:**\n"
+                                    "```722969040869278041```\n"
+                                    "MERCADO PAGO\n"
+                                    "VICENTA MARIANO VALDOVINOS\n\n"
+                                    "**CUENTA 2:**\n"
+                                    "```721180100042646712```\n"
+                                    "ALBO\n"
+                                    "Hector Altamirano Gonzalez"
+                                ),
+                                inline=False
+                            )
 
-**CUENTA 2:**
+                            embed_msg.add_field(
+                                name="🏪 Depósito OXXO",
+                                value="https://cdn.discordapp.com/attachments/1464133748923695199/1464371847201292574/0273176f-3966-4d09-a18e-15abac4a5cbb.jpg",
+                                inline=False
+                            )
 
-721180100042646712
+                            embed_msg.add_field(
+                                name="📩 Pasos",
+                                value=(
+                                    "1. Realiza el pago\n"
+                                    "2. Envía tu comprobante de pago\n"
+                                    "3. Tus Robux serán enviados en menos de 24 Hrs 🚀"
+                                ),
+                                inline=False
+                            )
 
-ALBO  
-Hector Altamirano Gonzalez  
+                            await message.channel.send(embed=embed_msg)
 
-🏪 **DEPÓSITO OXXO:**
-https://cdn.discordapp.com/attachments/1464133748923695199/1464371847201292574/0273176f-3966-4d09-a18e-15abac4a5cbb.jpg
+                    except:
+                        pass
 
-📩 **PASOS:**
-1. Indica cuántos Robux quieres  
-2. Envía tu usuario de Roblox  
-3. Realiza el pago  
-4. Envía el comprobante  
+    await bot.process_commands(message)
 
-⚡ **Entrega rápida:** tus Robux serán enviados lo antes posible 🚀
-""")
-
-# Ejecutar bot
 bot.run(TOKEN)

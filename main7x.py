@@ -58,22 +58,20 @@ class PagoView(discord.ui.View):
 
         canal = interaction.channel
 
+        # ✅ MENSAJE ORIGINAL RESTAURADO
         embed = discord.Embed(
-            title="✅ PAGO CONFIRMADO",
-            description=(
-                "Tu pago se realizó con éxito y tus robux fueron enviados 🚀\n\n"
-                "📌 Este ticket se cerrará automáticamente en 5 minutos.\n"
-                "💜 Por favor deja una referencia.\n\n"
-                "🙏 Gracias por tu compra."
-            ),
+            title="✅ PAGO EXITOSO",
+            description="Tus robux fueron enviados.\n\nDeja tu referencia en <#1452939436525617293>",
             color=0x8A2BE2
         )
 
+        embed.set_image(url="https://media.discordapp.net/attachments/1468842385420320960/1468842408614826077/Robux_Enviados.png")
+
         await interaction.response.send_message(embed=embed)
 
-        mensaje = await canal.send("⏳ Este ticket se cerrará en 5 minutos...")
+        mensaje = await canal.send("⏳ Este ticket se cerrará en 15 minutos...")
 
-        for i in range(5, 0, -1):
+        for i in range(15, 0, -1):
             await asyncio.sleep(60)
             await mensaje.edit(content=f"⏳ Este ticket se cerrará en {i-1} minutos...")
 
@@ -105,7 +103,7 @@ class Botones(discord.ui.View):
 
         await interaction.response.send_message("🛠️ Un moderador te ayudará pronto 🙏")
 
-# 🎯 EVENTO PRINCIPAL
+# 🎯 EVENTO
 @bot.event
 async def on_message(message):
 
@@ -144,7 +142,7 @@ async def on_message(message):
 
         texto = message.content.lower()
 
-        # 💳 FASE DE PAGO
+        # 💳 PAGO
         if message.author.id in usuarios_en_pago:
 
             if "pago" in texto and "exitoso" in texto:
@@ -165,7 +163,6 @@ async def on_message(message):
                 usuarios_en_pago.remove(message.author.id)
                 return
 
-            # ⚠️ SOLO AQUÍ APARECE
             await message.channel.send(
                 "**⚠️ IMPORTANTE ⚠️**\n\n"
                 "Para continuar con tu compra:\n\n"
@@ -176,7 +173,7 @@ async def on_message(message):
                 "❌ Evita mensajes innecesarios para agilizar tu pedido."
             )
 
-        # 💰 FASE MONTO
+        # 💰 MONTO
         if message.author.id in usuarios_esperando:
 
             match = re.search(r"\d+", texto)
@@ -186,23 +183,37 @@ async def on_message(message):
 
                 if cantidad in precios:
 
+                    precio = precios[cantidad]
+
                     embed = discord.Embed(
                         title="💰 Compra detectada",
-                        description=f"**Robux:** {cantidad}\n**Precio:** {precios[cantidad]} MXN",
+                        description=f"**Robux:** {cantidad}\n**Precio:** {precio} MXN",
                         color=0x8A2BE2
                     )
 
-                    embed.set_image(url="https://media.discordapp.net/attachments/1468842385420320960/1468844898793947279/metodos_pago.png")
+                    # 💳 MÉTODOS DE PAGO RESTAURADOS
+                    embed.add_field(
+                        name="🏦 TRANSFERENCIA",
+                        value=(
+                            "**CUENTA 1:**\n```722969040869278041```\n"
+                            "MERCADO PAGO\nVICENTA MARIANO VALDOVINOS\n\n"
+                            "**CUENTA 2:**\n```721180100042646712```\n"
+                            "ALBO\nHector Altamirano Gonzalez"
+                        ),
+                        inline=False
+                    )
+
+                    embed.add_field(
+                        name="🏪 DEPÓSITO OXXO",
+                        value="https://cdn.discordapp.com/attachments/1464133748923695199/1464371847201292574/0273176f-3966-4d09-a18e-15abac4a5cbb.jpg",
+                        inline=False
+                    )
 
                     await message.channel.send(embed=embed)
 
                     embed2 = discord.Embed(
                         title="⏳ PAGO PENDIENTE",
-                        description=(
-                            "⚠️ IMPORTANTE\n\n"
-                            "Responde con:\n\n"
-                            "**Pago exitoso**"
-                        ),
+                        description="Responde con:\n\n**Pago exitoso**",
                         color=0x8A2BE2
                     )
 
@@ -212,7 +223,7 @@ async def on_message(message):
                     usuarios_en_pago.add(message.author.id)
 
                 else:
-                    await message.channel.send("❌ Ese monto no es válido.\n💡 Ejemplo: 1500")
+                    await message.channel.send("❌ Monto inválido (Ej: 1500)")
 
             else:
                 await message.channel.send("❌ Escribe un número válido")

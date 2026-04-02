@@ -39,7 +39,7 @@ precios = {
     9500: "$1,089", 9600: "$1,111", 9700: "$1,133", 9800: "$1,155", 9900: "$1,177",
     10000: "$1,199",
     10500: "$1,231", 11000: "$1,263", 11500: "$1,295", 12000: "$1,327", 12500: "$1,359",
-    13000: "$1,391", 13500: "$1,423", 14000: "$1,455", 14500: "$1,487", 15000: "$1,519",
+    13000: "$1,391", 13500: "$1,423", 14000: "$1,455", 1487: "$1,487", 15000: "$1,519",
     15500: "$1,551", 16000: "$1,583", 16500: "$1,615", 17000: "$1,649", 17500: "$1,700",
     18000: "$1,751", 18500: "$1,802", 19000: "$1,853", 19500: "$1,904", 20000: "$1,955",
     20500: "$2,006", 21000: "$2,057", 21500: "$2,108", 22000: "$2,159", 22500: "$2,210",
@@ -73,8 +73,21 @@ class PagoConfirmadoView(discord.ui.View):
         embed.set_image(url="https://media.discordapp.net/attachments/1468842385420320960/1468842408614826077/Robux_Enviados.png")
         await interaction.response.send_message(embed=embed)
         
-        await interaction.channel.send("⏳ Este ticket se cerrará automáticamente en 15 minutos...")
-        await asyncio.sleep(900)
+        # --- SISTEMA DE CIERRE CON CONTEO REGRESIVO ---
+        minutos_restantes = 15
+        mensaje_cierre = await interaction.channel.send(f"⏳ Este ticket se cerrará automáticamente en **{minutos_restantes} minutos**...")
+
+        while minutos_restantes > 0:
+            await asyncio.sleep(60) # Esperar 1 minuto
+            minutos_restantes -= 1
+            if minutos_restantes > 0:
+                try:
+                    await mensaje_cierre.edit(content=f"⏳ Este ticket se cerrará automáticamente en **{minutos_restantes} minutos**...")
+                except:
+                    break # Si el canal se borra manualmente antes, salimos del bucle
+            else:
+                break
+
         try:
             await interaction.channel.delete()
         except:
@@ -117,7 +130,6 @@ async def on_message(message):
                 )
         return
 
-    # Restricción de canal
     es_ticket = message.channel.name.startswith("ticket-")
     es_cat_valida = message.channel.category and "✮" in message.channel.category.name
     if not (es_ticket or es_cat_valida):
@@ -148,7 +160,6 @@ async def on_message(message):
         usuarios_esperando_monto.pop(message.author.id)
         usuarios_esperando_pago.add(message.author.id)
 
-        # EMBED DE PAGO
         embed_pago = discord.Embed(
             title="💳 INFORMACIÓN DE PAGO",
             description=f"Has seleccionado: **{monto_final} Robux**\nTotal a pagar: **{precio_texto} MXN**",
@@ -184,9 +195,8 @@ async def on_message(message):
         await message.channel.send(embed=instrucciones, view=PagoConfirmadoView())
         return
 
-    # --- FASE 2: DETECCIÓN DE PAGO (MEJORADA PARA MAYÚSCULAS/MINÚSCULAS) ---
+    # --- FASE 2: PAGO EXITOSO ---
     if message.author.id in usuarios_esperando_pago:
-        # Convertimos el mensaje a minúsculas y quitamos espacios para la validación
         if message.content.lower().strip() == "pago exitoso":
             embed_staff = discord.Embed(
                 title="🚀 PAGO EN REVISIÓN",
@@ -194,13 +204,10 @@ async def on_message(message):
                 color=0x00FF00
             )
             await message.channel.send(embed=embed_staff)
-            
             try: await message.channel.edit(name=f"✅-pago-{message.author.name}")
             except: pass
-            
             usuarios_esperando_pago.remove(message.author.id)
         else:
-            # Solo avisar si el usuario no ha puesto la frase correcta
             await message.channel.send(
                 content=f"⚠️ <@{message.author.id}>, por favor realiza el pago, manda el comprobante y escribe **PAGO EXITOSO** para confirmar."
             )

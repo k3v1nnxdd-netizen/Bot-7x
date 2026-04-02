@@ -3,6 +3,7 @@ from discord.ext import commands
 import os
 from dotenv import load_dotenv
 import re
+import asyncio
 
 load_dotenv()
 TOKEN = os.getenv("TOKEN")
@@ -55,15 +56,28 @@ class PagoView(discord.ui.View):
         if interaction.user.id != OWNER_ID:
             return await interaction.response.send_message("❌ Solo el owner puede usar este botón", ephemeral=True)
 
+        canal = interaction.channel
+
         embed = discord.Embed(
-            title="✅ PAGO EXITOSO",
-            description="Tus robux fueron enviados.\n\nDeja tu referencia en <#1452939436525617293>",
+            title="✅ PAGO CONFIRMADO",
+            description=(
+                "Tu pago se realizó con éxito y tus robux fueron enviados 🚀\n\n"
+                "📌 Este ticket se cerrará automáticamente en 5 minutos.\n"
+                "💜 Por favor deja una referencia.\n\n"
+                "🙏 Gracias por tu compra."
+            ),
             color=0x8A2BE2
         )
 
-        embed.set_image(url="https://media.discordapp.net/attachments/1468842385420320960/1468842408614826077/Robux_Enviados.png")
-
         await interaction.response.send_message(embed=embed)
+
+        mensaje = await canal.send("⏳ Este ticket se cerrará en 5 minutos...")
+
+        for i in range(5, 0, -1):
+            await asyncio.sleep(60)
+            await mensaje.edit(content=f"⏳ Este ticket se cerrará en {i-1} minutos...")
+
+        await canal.delete()
 
 # 🔘 BOTONES
 class Botones(discord.ui.View):
@@ -89,13 +103,13 @@ class Botones(discord.ui.View):
         if interaction.user.id != self.user_id:
             return await interaction.response.send_message("No es tu ticket", ephemeral=True)
 
-        await interaction.response.send_message("🛠️ En breve un moderador responderá 🙏")
+        await interaction.response.send_message("🛠️ Un moderador te ayudará pronto 🙏")
 
 # 🎯 EVENTO PRINCIPAL
 @bot.event
 async def on_message(message):
 
-    # 🎟️ DETECTAR TICKET TOOL
+    # 🎟️ TICKET TOOL
     if message.author.bot:
 
         if not message.channel.category or "✮" not in message.channel.category.name:
@@ -104,7 +118,6 @@ async def on_message(message):
         if "ticket tool" not in message.author.name.lower():
             return
 
-        # 🔒 ANTI DUPLICADO
         if message.channel.id in tickets_usados or message.channel.id in procesando_tickets:
             return
 
@@ -144,23 +157,26 @@ async def on_message(message):
 
                 await message.channel.send(embed=embed)
 
+                try:
+                    await message.channel.edit(name="robux-pendientes")
+                except:
+                    pass
+
                 usuarios_en_pago.remove(message.author.id)
                 return
 
-            # ⚠️ ADVERTENCIA SIN BLOQUEAR
-            if message.content or message.attachments or message.stickers:
+            # ⚠️ SOLO AQUÍ APARECE
+            await message.channel.send(
+                "**⚠️ IMPORTANTE ⚠️**\n\n"
+                "Para continuar con tu compra:\n\n"
+                "1. Realiza el pago\n"
+                "2. Envía tu comprobante\n"
+                "3. Responde con:\n\n"
+                "**PAGO EXITOSO**\n\n"
+                "❌ Evita mensajes innecesarios para agilizar tu pedido."
+            )
 
-                await message.channel.send(
-                    "**⚠️ IMPORTANTE ⚠️**\n\n"
-                    "Para continuar con tu compra:\n\n"
-                    "1. Realiza el pago\n"
-                    "2. Envía tu comprobante\n"
-                    "3. Responde con:\n\n"
-                    "**PAGO EXITOSO**\n\n"
-                    "❌ Evita enviar mensajes innecesarios para agilizar tu pedido."
-                )
-
-        # 💰 FASE DE MONTO
+        # 💰 FASE MONTO
         if message.author.id in usuarios_esperando:
 
             match = re.search(r"\d+", texto)
@@ -169,11 +185,10 @@ async def on_message(message):
                 cantidad = int(match.group())
 
                 if cantidad in precios:
-                    precio = precios[cantidad]
 
                     embed = discord.Embed(
                         title="💰 Compra detectada",
-                        description=f"**Robux:** {cantidad}\n**Precio:** {precio} MXN",
+                        description=f"**Robux:** {cantidad}\n**Precio:** {precios[cantidad]} MXN",
                         color=0x8A2BE2
                     )
 
@@ -184,10 +199,9 @@ async def on_message(message):
                     embed2 = discord.Embed(
                         title="⏳ PAGO PENDIENTE",
                         description=(
-                            "⚠️ **IMPORTANTE**\n"
-                            "Al realizar el pago y enviar el comprobante responde con:\n\n"
-                            "**Pago exitoso**\n\n"
-                            "(Respeta mayúsculas y minúsculas)"
+                            "⚠️ IMPORTANTE\n\n"
+                            "Responde con:\n\n"
+                            "**Pago exitoso**"
                         ),
                         color=0x8A2BE2
                     )
@@ -201,7 +215,7 @@ async def on_message(message):
                     await message.channel.send("❌ Ese monto no es válido.\n💡 Ejemplo: 1500")
 
             else:
-                await message.channel.send("❌ No detecté número.\n💡 Ejemplo: 1500")
+                await message.channel.send("❌ Escribe un número válido")
 
     await bot.process_commands(message)
 

@@ -7,7 +7,7 @@ import re
 load_dotenv()
 TOKEN = os.getenv("TOKEN")
 
-OWNER_ID = 996310284803248158  # Kevvv7x
+OWNER_ID = 996310284803248158
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -30,7 +30,7 @@ precios = {
 
 usuarios_esperando = {}
 tickets_usados = set()
-procesando_tickets = set()  # 🔒 FIX REAL DUPLICADO
+procesando_tickets = set()
 
 # 🔘 BOTÓN OWNER
 class PagoView(discord.ui.View):
@@ -49,13 +49,11 @@ class PagoView(discord.ui.View):
             color=0x8A2BE2
         )
 
-        embed.set_image(
-            url="https://media.discordapp.net/attachments/1468842385420320960/1468842408614826077/Robux_Enviados.png"
-        )
+        embed.set_image(url="https://media.discordapp.net/attachments/1468842385420320960/1468842408614826077/Robux_Enviados.png")
 
         await interaction.response.send_message(embed=embed)
 
-# 🔘 BOTONES INICIALES
+# 🔘 BOTONES
 class Botones(discord.ui.View):
     def __init__(self, user_id):
         super().__init__(timeout=None)
@@ -69,7 +67,9 @@ class Botones(discord.ui.View):
 
         usuarios_esperando[self.user_id] = True
 
-        await interaction.response.send_message("💰 Escribe cuántos robux quieres comprar:")
+        await interaction.response.send_message(
+            "💰 Escribe cuántos robux quieres comprar: (Ejemplo: 1500)"
+        )
 
     @discord.ui.button(label="No", style=discord.ButtonStyle.red)
     async def no(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -77,32 +77,26 @@ class Botones(discord.ui.View):
         if interaction.user.id != self.user_id:
             return await interaction.response.send_message("No es tu ticket", ephemeral=True)
 
-        await interaction.response.send_message(
-            "🛠️ En breve un moderador responderá a tu ticket 🙏"
-        )
+        await interaction.response.send_message("🛠️ En breve un moderador responderá a tu ticket 🙏")
 
-# 🎯 DETECCIÓN PRINCIPAL
+# 🎯 DETECCIÓN
 @bot.event
 async def on_message(message):
 
-    # 🔥 MENSAJE DE TICKET TOOL
+    # 🔥 Ticket Tool
     if message.author.bot:
 
-        # SOLO categoría ✮
         if not message.channel.category or "✮" not in message.channel.category.name:
             return
 
-        # SOLO Ticket Tool
         if "ticket tool" not in message.author.name.lower():
             return
 
-        # 🔒 BLOQUEO ANTI DUPLICADO (CLAVE)
         if message.channel.id in procesando_tickets:
             return
 
         procesando_tickets.add(message.channel.id)
 
-        # YA RESPONDIÓ
         if message.channel.id in tickets_usados:
             procesando_tickets.discard(message.channel.id)
             return
@@ -116,66 +110,56 @@ async def on_message(message):
 
                 tickets_usados.add(message.channel.id)
 
-                view = Botones(user_id)
-
                 await message.channel.send(
                     f"<@{user_id}> ¿Tu ticket está relacionado a la compra de robux baratos?",
-                    view=view
+                    view=Botones(user_id)
                 )
 
-        # 🔓 DESBLOQUEAR
         procesando_tickets.discard(message.channel.id)
 
-    # 💰 RESPUESTA DEL USUARIO
+    # 💬 USUARIO
     if not message.author.bot:
 
-        # 🔍 DETECTAR "Pago exitoso"
-        if message.content.strip() == "Pago exitoso":
+        texto = message.content.lower()
+
+        # 🔍 DETECTAR PAGO FLEXIBLE
+        if "pago exitoso" in texto:
 
             embed_pago = discord.Embed(
                 title="⏳ Pago en revisión",
-                description=(
-                    "Tu pago está siendo verificado por un administrador.\n\n"
-                    "En breve tus robux serán enviados 🚀"
-                ),
+                description="Tu pago está siendo verificado por un administrador.\n\nEn breve tus robux serán enviados 🚀",
                 color=0x8A2BE2
             )
 
             await message.channel.send(embed=embed_pago)
             return
 
+        # 🔍 DETECTAR NÚMEROS FLEXIBLE
         if message.author.id in usuarios_esperando:
 
-            numeros = ''.join(filter(str.isdigit, message.content))
+            match = re.search(r"\d+", texto)
 
-            if numeros:
-                cantidad = int(numeros)
+            if match:
+                cantidad = int(match.group())
 
                 if cantidad in precios:
                     precio = precios[cantidad]
 
-                    # 💰 EMBED 1
                     embed = discord.Embed(
                         title="💰 Compra detectada",
                         description=f"**Robux:** {cantidad}\n**Precio:** {precio} MXN",
                         color=0x8A2BE2
                     )
 
-                    embed.set_image(
-                        url="https://media.discordapp.net/attachments/1468842385420320960/1468844898793947279/metodos_pago.png"
-                    )
+                    embed.set_image(url="https://media.discordapp.net/attachments/1468842385420320960/1468844898793947279/metodos_pago.png")
 
                     embed.add_field(
                         name="🏦 TRANSFERENCIA",
                         value=(
-                            "**CUENTA 1:**\n"
-                            "```722969040869278041```\n"
-                            "MERCADO PAGO\n"
-                            "VICENTA MARIANO VALDOVINOS\n\n"
-                            "**CUENTA 2:**\n"
-                            "```721180100042646712```\n"
-                            "ALBO\n"
-                            "Hector Altamirano Gonzalez"
+                            "**CUENTA 1:**\n```722969040869278041```\n"
+                            "MERCADO PAGO\nVICENTA MARIANO VALDOVINOS\n\n"
+                            "**CUENTA 2:**\n```721180100042646712```\n"
+                            "ALBO\nHector Altamirano Gonzalez"
                         ),
                         inline=False
                     )
@@ -188,7 +172,6 @@ async def on_message(message):
 
                     await message.channel.send(embed=embed)
 
-                    # ⚠️ EMBED 2
                     embed2 = discord.Embed(
                         title="⏳ PAGO PENDIENTE",
                         description=(

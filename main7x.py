@@ -1,104 +1,65 @@
 import discord
 from discord.ext import commands
-from dotenv import load_dotenv
 import os
+from dotenv import load_dotenv
+import asyncio
 
-# 🔐 Cargar token
+# Cargar token desde Railway / .env
 load_dotenv()
 TOKEN = os.getenv("TOKEN")
 
-# ⚠️ PEGA TU SERVER ID AQUÍ (sin comillas)
-GUILD_ID = 1162602588328435802
-
+# Intents necesarios
 intents = discord.Intents.default()
+intents.guilds = True
+
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-
-# 🚀 Evento cuando el bot prende
 @bot.event
 async def on_ready():
-    print(f'🔥 Bot conectado como {bot.user}')
+    print(f"Bot activo como {bot.user}")
 
-    try:
-        guild = discord.Object(id=GUILD_ID)
+# Evento cuando se crea un canal (ticket)
+@bot.event
+async def on_guild_channel_create(channel):
+    await asyncio.sleep(2)  # Espera a que el canal esté listo
 
-        # 🔥 sincroniza SOLO en tu server (instantáneo)
-        synced = await bot.tree.sync(guild=guild)
+    if isinstance(channel, discord.TextChannel):
 
-        print(f'✅ {len(synced)} comandos sincronizados al instante')
+        # SOLO si está en la categoría ✮
+        if channel.category and channel.category.name == "✮":
 
-    except Exception as e:
-        print(e)
+            await channel.send(f"""
+👋 **Bienvenido a tu ticket**
 
+💰 **MÉTODOS DE PAGO**
 
-# 💳 COMANDO /mp
-@bot.tree.command(
-    name="mp",
-    description="Muestra los métodos de pago",
-    guild=discord.Object(id=GUILD_ID)  # ⚡ instantáneo
-)
-async def mp(interaction: discord.Interaction):
+🏦 **TRANSFERENCIA**
 
-    await interaction.response.defer()
+**CUENTA 1:**
 
-    embed = discord.Embed(
-        title="💳 Métodos de Pago",
-        description="""
-**Transferencia - 721180100042646712**  
-Hector Altamirano Gonzales  
-Banco: ALBO  
+722969040869278041
 
-**PayPal**  
-https://www.paypal.com/paypalme/kewuinsitove  
+MERCADO PAGO  
+VICENTA MARIANO VALDOVINOS  
 
-<a:arrow_arrow:1190501694350557185> **Es necesario enviar una captura del comprobante de pago con el Usuario Correcto de Roblox al que recibirá los Robux!**
-        """,
-        color=discord.Color(0x9B59B6)
-    )
+**CUENTA 2:**
 
-    embed.set_image(
-        url="https://cdn.discordapp.com/attachments/1468842385420320960/1468844898793947279/metodos_pago.png"
-    )
+721180100042646712
 
-    embed.set_footer(text="Sistema automático de pagos")
+ALBO  
+Hector Altamirano Gonzalez  
 
-    await interaction.followup.send(embed=embed)
+🏪 **DEPÓSITO OXXO:**
+https://cdn.discordapp.com/attachments/1464133748923695199/1464371847201292574/0273176f-3966-4d09-a18e-15abac4a5cbb.jpg
 
+📩 **PASOS:**
+1. Indica cuántos Robux quieres  
+2. Envía tu usuario de Roblox  
+3. Realiza el pago  
+4. Envía el comprobante  
 
+⚡ **Entrega rápida:** tus Robux serán enviados lo antes posible 🚀
+""")
 
-# ✅ COMANDO /pagoex
-@bot.tree.command(
-    name="pagoex",
-    description="Confirma un pago exitoso",
-    guild=discord.Object(id=GUILD_ID)
-)
-async def pagoex(interaction: discord.Interaction):
-
-    await interaction.response.defer()
-
-    embed = discord.Embed(
-        title="✅ Pago Exitoso",
-        description="""
-**Tu Pago fue Exitoso y ya han sido enviados tus Robux!** <a:shop:1190502129748676650>  
-
-Acabas de recibir el rol <@&1468776275580817408>  
-
-Ayúdanos dejando una referencia con una captura de tus robux en el canal <#1452939436525617293>  
-
-🔥 **Disfruta tus Robux!**
-        """,
-        color=discord.Color(0x9B59B6)
-    )
-
-    embed.set_image(
-        url="https://cdn.discordapp.com/attachments/1468842385420320960/1468842408614826077/Robux_Enviados.png"
-    )
-
-    embed.set_footer(text="Gracias por tu compra 🚀")
-
-    await interaction.followup.send(embed=embed)
-
-
-
-# 🔥 Encender bot
+# Ejecutar bot
 bot.run(TOKEN)

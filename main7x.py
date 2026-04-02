@@ -84,9 +84,18 @@ class Botones(discord.ui.View):
 @bot.event
 async def on_message(message):
 
-    # 🔥 MENSAJE DE TICKET TOOL
+    # 🔥 DETECTAR MENSAJE DE TICKET TOOL
     if message.author.bot:
 
+        # SOLO categoría ✮
+        if not message.channel.category or "✮" not in message.channel.category.name:
+            return
+
+        # SOLO Ticket Tool
+        if "ticket tool" not in message.author.name.lower():
+            return
+
+        # EVITAR DUPLICADOS
         if message.channel.id in tickets_usados:
             return
 
@@ -96,6 +105,7 @@ async def on_message(message):
 
             if match:
                 user_id = int(match.group(1))
+
                 tickets_usados.add(message.channel.id)
 
                 view = Botones(user_id)
@@ -105,7 +115,7 @@ async def on_message(message):
                     view=view
                 )
 
-    # 💰 RESPUESTA DE COMPRA
+    # 💰 RESPUESTA DEL USUARIO
     if not message.author.bot:
 
         # 🔍 DETECTAR "Pago exitoso"
@@ -133,7 +143,7 @@ async def on_message(message):
                 if cantidad in precios:
                     precio = precios[cantidad]
 
-                    # 💰 EMBED 1 (COMPRA)
+                    # 💰 EMBED 1
                     embed = discord.Embed(
                         title="💰 Compra detectada",
                         description=f"**Robux:** {cantidad}\n**Precio:** {precio} MXN",
@@ -167,7 +177,7 @@ async def on_message(message):
 
                     await message.channel.send(embed=embed)
 
-                    # ⚠️ EMBED 2 (PAGO PENDIENTE)
+                    # ⚠️ EMBED 2
                     embed2 = discord.Embed(
                         title="⏳ PAGO PENDIENTE",
                         description=(

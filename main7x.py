@@ -266,7 +266,7 @@ async def pagos(ctx):
     """Muestra todos los métodos de pago disponibles"""
     embed_pagos = discord.Embed(
         title="💳 INFORMACIÓN DE PAGO",
-        description="Aquí tienes toda la información necesaria para realizar tu pago de manera segura y rápida.",
+        description="Elige tu método de pago y completa tu compra de forma segura.",
         color=0x8A2BE2
     )
     embed_pagos.add_field(
@@ -284,12 +284,13 @@ async def pagos(ctx):
         value="",
         inline=False
     )
-    
-    canal_metodos = bot.get_channel(1494475415597744360)
-    mencion_canal = canal_metodos.mention if canal_metodos else "<#1494475415597744360>"
     embed_pagos.add_field(
-        name="📞 OTROS MÉTODOS DE PAGO",
-        value=f"Consulta {mencion_canal}",
+        name="🎁 GIFT CARD",
+        value=(
+            "Paga fácilmente con Gift Cards disponibles para todos los países.\n"
+            "Selecciona el valor según el monto de Robux que deseas comprar.\n\n"
+            "[🔗 Comprar Gift Card](https://www.eneba.com/eneba-eneba-gift-card-5-eur-global)"
+        ),
         inline=False
     )
     embed_pagos.set_image(url="attachment://oxxo.jpg")

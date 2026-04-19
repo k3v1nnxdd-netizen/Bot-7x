@@ -4,6 +4,7 @@ import os
 from dotenv import load_dotenv
 import re
 import asyncio
+import unicodedata
 
 # --- CONFIGURACIÓN ---
 load_dotenv()
@@ -31,7 +32,7 @@ precios = {
     5500: "$650", 5600: "$652", 5700: "$654", 5800: "$656", 5900: "$658",
     6000: "$659", 6100: "$671", 6200: "$683", 6300: "$695", 6400: "$707",
     6500: "$710", 6600: "$712", 6700: "$714", 6800: "$716", 6900: "$718",
-    7000: "$558", 7100: "$747", 7200: "$775", 7300: "$803", 7400: "$831",
+    7000: "$719", 7100: "$747", 7200: "$775", 7300: "$803", 7400: "$831",
     7500: "$789", 7600: "$803", 7700: "$817", 7800: "$831", 7900: "$845",
     8000: "$859", 8100: "$871", 8200: "$883", 8300: "$895", 8400: "$907",
     8500: "$919", 8600: "$931", 8700: "$943", 8800: "$955", 8900: "$967",
@@ -51,14 +52,34 @@ precios = {
     85000: "$10,400", 90000: "$11,150", 95000: "$11,900", 100000: "$12,999"
 }
 
-usuarios_esperando_monto = {} 
-usuarios_esperando_pago = set()
+usuarios_esperando_monto = {}  # channel_id: user_id
+usuarios_esperando_pago = set()  # channel_id
+ticket_owner = {}  # channel_id: user_id
+
+# Función para normalizar texto
+def normalizar_texto(texto):
+    # Convertir a minúsculas
+    texto = texto.lower()
+    # Quitar acentos
+    texto = unicodedata.normalize('NFD', texto).encode('ascii', 'ignore').decode('utf-8')
+    # Eliminar signos de puntuación
+    texto = re.sub(r'[^\w\s]', '', texto)
+    return texto.strip()
+
+# Función para detectar intención de "pago exitoso"
+def es_pago_exitoso(texto):
+    normalizado = normalizar_texto(texto)
+    # Verificar si contiene "pago" y alguna forma de "exitoso" o similar
+    contiene_pago = 'pago' in normalizado
+    contiene_exitoso = any(word in normalizado for word in ['exitoso', 'exitozo', 'exitosa', 'exitoza', 'fue exitoso', 'fue exitosa'])
+    return contiene_pago and contiene_exitoso
 
 # --- VISTAS (BOTONES) ---
 
 class PagoConfirmadoView(discord.ui.View):
-    def __init__(self):
+    def __init__(self, user_id):
         super().__init__(timeout=None)
+        self.user_id = user_id
 
     @discord.ui.button(label="✅ PAGO REALIZADO (SOLO OWNER)", style=discord.ButtonStyle.green)
     async def confirmar_pago(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -67,7 +88,7 @@ class PagoConfirmadoView(discord.ui.View):
 
         embed = discord.Embed(
             title="✅ PAGO EXITOSO",
-            description="Tus robux han sido enviados correctamente.\n\nPor favor, deja tu referencia en <#1452939436525617293>",
+            description=f"<@{self.user_id}>, tus robux han sido enviados correctamente.\n\nPor favor, deja tu referencia en <#1452939436525617293>",
             color=0x8A2BE2
         )
         embed.set_image(url="https://media.discordapp.net/attachments/1468842385420320960/1468842408614826077/Robux_Enviados.png")
@@ -75,14 +96,14 @@ class PagoConfirmadoView(discord.ui.View):
         
         # --- SISTEMA DE CIERRE CON CONTEO REGRESIVO ---
         minutos_restantes = 15
-        mensaje_cierre = await interaction.channel.send(f"⏳ Este ticket se cerrará automáticamente en **{minutos_restantes} minutos**...")
+        mensaje_cierre = await interaction.channel.send(f"<@{self.user_id}>, ⏳ Este ticket se cerrará automáticamente en **{minutos_restantes} minutos**...")
 
         while minutos_restantes > 0:
             await asyncio.sleep(60) # Esperar 1 minuto
             minutos_restantes -= 1
             if minutos_restantes > 0:
                 try:
-                    await mensaje_cierre.edit(content=f"⏳ Este ticket se cerrará automáticamente en **{minutos_restantes} minutos**...")
+                    await mensaje_cierre.edit(content=f"<@{self.user_id}>, ⏳ Este ticket se cerrará automáticamente en **{minutos_restantes} minutos**...")
                 except:
                     break # Si el canal se borra manualmente antes, salimos del bucle
             else:
@@ -104,7 +125,7 @@ class InicioTicketView(discord.ui.View):
             return await interaction.response.send_message("Este botón no es para ti.", ephemeral=True)
         
         await interaction.message.delete()
-        usuarios_esperando_monto[self.user_id] = True
+        usuarios_esperando_monto[interaction.channel.id] = interaction.user.id
         await interaction.response.send_message("💰 **Escribe cuántos robux quieres comprar:** (Ejemplo: 1500)")
 
     @discord.ui.button(label="No, otro motivo", style=discord.ButtonStyle.red)
@@ -124,6 +145,7 @@ async def on_message(message):
             match = re.search(r"<@(\d+)>", message.content)
             if match:
                 user_id = int(match.group(1))
+                ticket_owner[message.channel.id] = user_id
                 await message.channel.send(
                     f"Hola <@{user_id}> 👋, ¿vienes a comprar Robux baratos?", 
                     view=InicioTicketView(user_id)
@@ -136,7 +158,10 @@ async def on_message(message):
         return
 
     # --- FASE 1: MONTO ---
-    if message.author.id in usuarios_esperando_monto:
+    if message.channel.id in usuarios_esperando_monto:
+        if message.author.id != usuarios_esperando_monto[message.channel.id]:
+            return  # Solo el usuario del ticket puede responder
+        
         contenido = message.content.strip()
         
         if not contenido.isdigit():
@@ -157,8 +182,8 @@ async def on_message(message):
                 return
 
         precio_texto = precios[monto_final]
-        usuarios_esperando_monto.pop(message.author.id)
-        usuarios_esperando_pago.add(message.author.id)
+        usuarios_esperando_monto.pop(message.channel.id)
+        usuarios_esperando_pago.add(message.channel.id)
 
         embed_pago = discord.Embed(
             title="💳 INFORMACIÓN DE PAGO",
@@ -192,12 +217,15 @@ async def on_message(message):
         )
         
         await message.channel.send(embed=embed_pago)
-        await message.channel.send(embed=instrucciones, view=PagoConfirmadoView())
+        await message.channel.send(embed=instrucciones, view=PagoConfirmadoView(ticket_owner[message.channel.id]))
         return
 
     # --- FASE 2: PAGO EXITOSO ---
-    if message.author.id in usuarios_esperando_pago:
-        if message.content.lower().strip() == "pago exitoso":
+    if message.channel.id in usuarios_esperando_pago:
+        if message.author.id != ticket_owner[message.channel.id]:
+            return  # Solo el usuario del ticket puede responder
+        
+        if es_pago_exitoso(message.content):
             embed_staff = discord.Embed(
                 title="🚀 PAGO EN REVISIÓN",
                 description="Gracias. Tu comprobante ha sido enviado al staff.\nEn unos momentos recibirás tus Robux.",
@@ -206,7 +234,7 @@ async def on_message(message):
             await message.channel.send(embed=embed_staff)
             try: await message.channel.edit(name=f"✅-pago-{message.author.name}")
             except: pass
-            usuarios_esperando_pago.remove(message.author.id)
+            usuarios_esperando_pago.remove(message.channel.id)
         else:
             await message.channel.send(
                 content=f"⚠️ <@{message.author.id}>, por favor realiza el pago, manda el comprobante y escribe **PAGO EXITOSO** para confirmar."

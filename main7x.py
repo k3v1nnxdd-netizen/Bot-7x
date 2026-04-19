@@ -166,11 +166,14 @@ async def on_message(message):
         
         contenido = message.content.strip()
         
-        if not contenido.isdigit():
+        # Limpiar comas y espacios para aceptar formatos como 1,500 o 1 500
+        contenido_limpio = contenido.replace(',', '').replace(' ', '')
+        
+        if not contenido_limpio.isdigit():
             await message.channel.send("❌ **Escribe un número válido.** (Ejemplo: 1500)")
             return
 
-        monto_ingresado = int(contenido)
+        monto_ingresado = int(contenido_limpio)
         monto_final = monto_ingresado
 
         if monto_ingresado not in precios:

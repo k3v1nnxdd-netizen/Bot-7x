@@ -140,6 +140,8 @@ class InicioTicketView(discord.ui.View):
 
 @bot.event
 async def on_message(message):
+    await bot.process_commands(message)
+    
     if message.author.bot:
         if "ticket tool" in message.author.name.lower() and "bienvenido" in message.content.lower():
             match = re.search(r"<@(\d+)>", message.content)
@@ -202,7 +204,7 @@ async def on_message(message):
         )
         embed_pago.add_field(
             name="🏪 DEPÓSITO OXXO",
-            value="Escanea el código de barras que aparece abajo.",
+            value="",
             inline=False
         )
         
@@ -245,8 +247,6 @@ async def on_message(message):
             )
         return
 
-    await bot.process_commands(message)
-
 @bot.event
 async def on_ready():
     print(f"✅ Bot conectado como {bot.user}")
@@ -270,7 +270,7 @@ async def mp(ctx):
     )
     embed_mp.add_field(
         name="🏪 DEPÓSITO OXXO",
-        value="Escanea el código de barras que aparece abajo.",
+        value="",
         inline=False
     )
     embed_mp.set_footer(text=f"Otros métodos de pago: <#1494475415597744360>")

@@ -250,15 +250,20 @@ async def on_message(message):
 @bot.event
 async def on_ready():
     print(f"✅ Bot conectado como {bot.user}")
+    # Limpiar slash commands antiguos
+    bot.tree.clear_commands()
+    await bot.tree.sync()
+    print(f"✅ Comandos sincronizados")
 
-@bot.command()
-async def mp(ctx):
-    embed_mp = discord.Embed(
+@bot.command(name='pagos')
+async def pagos(ctx):
+    """Muestra todos los métodos de pago disponibles"""
+    embed_pagos = discord.Embed(
         title="💳 INFORMACIÓN DE PAGO",
         description="Aquí tienes toda la información necesaria para realizar tu pago de manera segura y rápida.",
         color=0x8A2BE2
     )
-    embed_mp.add_field(
+    embed_pagos.add_field(
         name="🏦 TRANSFERENCIA",
         value=(
             "**CUENTA 1:**\n```722969040869278041```\n"
@@ -268,14 +273,14 @@ async def mp(ctx):
         ),
         inline=False
     )
-    embed_mp.add_field(
+    embed_pagos.add_field(
         name="🏪 DEPÓSITO OXXO",
         value="",
         inline=False
     )
-    embed_mp.set_footer(text=f"Otros métodos de pago: <#1494475415597744360>")
-    embed_mp.set_image(url="attachment://oxxo.jpg")
+    embed_pagos.set_footer(text=f"Otros métodos de pago: <#1494475415597744360>")
+    embed_pagos.set_image(url="attachment://oxxo.jpg")
     
-    await ctx.send(embed=embed_mp, file=discord.File('oxxo.jpg'))
+    await ctx.send(embed=embed_pagos, file=discord.File('oxxo.jpg'))
 
 bot.run(TOKEN)

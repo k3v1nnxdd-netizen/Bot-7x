@@ -202,9 +202,11 @@ async def on_message(message):
         )
         embed_pago.add_field(
             name="🏪 DEPÓSITO OXXO",
-            value="[Click aquí para el código de barras](https://cdn.discordapp.com/attachments/1464133748923695199/1464371847201292574/0273176f-3966-4d09-a18e-15abac4a5cbb.jpg?ex=69d0318f&is=69cee00f&hm=3e500b640f3e8d74a49e452683067eebc2bd767e31997fa8b89782f51f48048f)",
+            value="Escanea el código de barras que aparece abajo.",
             inline=False
         )
+        
+        embed_pago.set_footer(text=f"Otros métodos de pago: <#1494475415597744360>")
         
         instrucciones = discord.Embed(
             title="⏳ SIGUIENTES PASOS",
@@ -216,7 +218,9 @@ async def on_message(message):
             color=0xFFA500
         )
         
-        await message.channel.send(embed=embed_pago)
+        embed_pago.set_image(url="attachment://oxxo.jpg")
+        
+        await message.channel.send(embed=embed_pago, file=discord.File('oxxo.jpg'))
         await message.channel.send(embed=instrucciones, view=PagoConfirmadoView(ticket_owner[message.channel.id]))
         return
 
@@ -246,5 +250,32 @@ async def on_message(message):
 @bot.event
 async def on_ready():
     print(f"✅ Bot conectado como {bot.user}")
+
+@bot.command()
+async def mp(ctx):
+    embed_mp = discord.Embed(
+        title="💳 INFORMACIÓN DE PAGO",
+        description="Aquí tienes toda la información necesaria para realizar tu pago de manera segura y rápida.",
+        color=0x8A2BE2
+    )
+    embed_mp.add_field(
+        name="🏦 TRANSFERENCIA",
+        value=(
+            "**CUENTA 1:**\n```722969040869278041```\n"
+            "**MERCADO PAGO**\nVICENTA MARIANO VALDOVINOS\n\n"
+            "**CUENTA 2:**\n```721180100042646712```\n"
+            "**ALBO**\nHECTOR ALTAMIRANO GONZALEZ"
+        ),
+        inline=False
+    )
+    embed_mp.add_field(
+        name="🏪 DEPÓSITO OXXO",
+        value="Escanea el código de barras que aparece abajo.",
+        inline=False
+    )
+    embed_mp.set_footer(text=f"Otros métodos de pago: <#1494475415597744360>")
+    embed_mp.set_image(url="attachment://oxxo.jpg")
+    
+    await ctx.send(embed=embed_mp, file=discord.File('oxxo.jpg'))
 
 bot.run(TOKEN)

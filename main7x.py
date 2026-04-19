@@ -208,7 +208,13 @@ async def on_message(message):
             inline=False
         )
         
-        embed_pago.set_footer(text=f"Otros métodos de pago: <#1494475415597744360>")
+        canal_metodos = bot.get_channel(1494475415597744360)
+        mencion_canal = canal_metodos.mention if canal_metodos else "<#1494475415597744360>"
+        embed_pago.add_field(
+            name="📞 OTROS MÉTODOS DE PAGO",
+            value=f"Consulta {mencion_canal}",
+            inline=False
+        )
         
         instrucciones = discord.Embed(
             title="⏳ SIGUIENTES PASOS",
@@ -278,7 +284,14 @@ async def pagos(ctx):
         value="",
         inline=False
     )
-    embed_pagos.set_footer(text=f"Otros métodos de pago: <#1494475415597744360>")
+    
+    canal_metodos = bot.get_channel(1494475415597744360)
+    mencion_canal = canal_metodos.mention if canal_metodos else "<#1494475415597744360>"
+    embed_pagos.add_field(
+        name="📞 OTROS MÉTODOS DE PAGO",
+        value=f"Consulta {mencion_canal}",
+        inline=False
+    )
     embed_pagos.set_image(url="attachment://oxxo.jpg")
     
     await ctx.send(embed=embed_pagos, file=discord.File('oxxo.jpg'))

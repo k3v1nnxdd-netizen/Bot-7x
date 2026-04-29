@@ -76,6 +76,37 @@ def es_pago_exitoso(texto):
 
 # --- VISTAS (BOTONES) ---
 
+class MostrarPreciosView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="📊 Mostrar Precios", style=discord.ButtonStyle.blurple)
+    async def mostrar_precios(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # Crear embed con lista de precios ordenada
+        embed = discord.Embed(
+            title="💰 LISTA DE PRECIOS - ROBUX",
+            description="Elige la cantidad que deseas comprar",
+            color=0x8A2BE2
+        )
+        
+        # Agrupar precios en secciones para mejor legibilidad
+        rangos = [
+            (500, 2500, "⭐ Paquetes Básicos"),
+            (2600, 5000, "✨ Paquetes Estándar"),
+            (5100, 10000, "💎 Paquetes Premium"),
+            (10500, 30000, "🔥 Paquetes Mega"),
+            (35000, 100000, "👑 Paquetes Legendarios")
+        ]
+        
+        for min_robux, max_robux, titulo in rangos:
+            precios_rango = {k: v for k, v in precios.items() if min_robux <= k <= max_robux}
+            if precios_rango:
+                items = "\n".join([f"**{robux:,}** → {precio}" for robux, precio in sorted(precios_rango.items())])
+                embed.add_field(name=titulo, value=items, inline=False)
+        
+        embed.set_footer(text="Escribe el número de robux que deseas comprar")
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
 class PagoConfirmadoView(discord.ui.View):
     def __init__(self, user_id):
         super().__init__(timeout=None)
@@ -126,7 +157,10 @@ class InicioTicketView(discord.ui.View):
         
         await interaction.message.delete()
         usuarios_esperando_monto[interaction.channel.id] = interaction.user.id
-        await interaction.response.send_message("💰 **Escribe cuántos robux quieres comprar:** (Ejemplo: 1500)")
+        await interaction.response.send_message(
+            "💰 **Escribe cuántos robux quieres comprar:** (Ejemplo: 1500)",
+            view=MostrarPreciosView()
+        )
 
     @discord.ui.button(label="No, otro motivo", style=discord.ButtonStyle.red)
     async def rechazar(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -166,14 +200,24 @@ async def on_message(message):
         
         contenido = message.content.strip()
         
-        # Limpiar comas y espacios para aceptar formatos como 1,500 o 1 500
-        contenido_limpio = contenido.replace(',', '').replace(' ', '')
+        # Usar regex para extraer números incluso si hay texto alrededor
+        # Detecta: "quiero 1500 robux", "dame 1,500", "1500", "1 500", etc.
+        numero_match = re.search(r'\d+(?:[\s,]\d+)*', contenido)
         
-        if not contenido_limpio.isdigit():
+        if not numero_match:
             await message.channel.send("❌ **Escribe un número válido.** (Ejemplo: 1500)")
             return
-
-        monto_ingresado = int(contenido_limpio)
+        
+        # Extraer el número y limpiar comas y espacios
+        numero_extraido = numero_match.group(0)
+        contenido_limpio = numero_extraido.replace(',', '').replace(' ', '')
+        
+        try:
+            monto_ingresado = int(contenido_limpio)
+        except ValueError:
+            await message.channel.send("❌ **Escribe un número válido.** (Ejemplo: 1500)")
+            return
+        
         monto_final = monto_ingresado
 
         if monto_ingresado not in precios:

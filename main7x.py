@@ -94,30 +94,50 @@ class MostrarPreciosView(discord.ui.View):
         # Diferir la respuesta para evitar timeout de Discord
         await interaction.response.defer(ephemeral=True)
         
-        # Crear embed con lista de precios ordenada
-        embed = discord.Embed(
-            title="💰 LISTA DE PRECIOS - ROBUX",
+        # MENSAJE 1: Paquetes Básicos, Estándar y Premium
+        embed1 = discord.Embed(
+            title="💰 LISTA DE PRECIOS - ROBUX (Parte 1)",
             description="Elige la cantidad que deseas comprar",
             color=0x8A2BE2
         )
         
-        # Agrupar precios en secciones para mejor legibilidad
-        rangos = [
+        rangos1 = [
             (500, 2500, "⭐ Paquetes Básicos"),
             (2600, 5000, "✨ Paquetes Estándar"),
             (5100, 10000, "💎 Paquetes Premium"),
+        ]
+        
+        for min_robux, max_robux, titulo in rangos1:
+            precios_rango = {k: v for k, v in precios.items() if min_robux <= k <= max_robux}
+            if precios_rango:
+                items = "\n".join([f"**{robux:,}** → {precio}" for robux, precio in sorted(precios_rango.items())])
+                embed1.add_field(name=titulo, value=items, inline=False)
+        
+        embed1.set_footer(text="Escribe el número de robux que deseas comprar")
+        
+        # MENSAJE 2: Paquetes Mega y Legendarios
+        embed2 = discord.Embed(
+            title="💰 LISTA DE PRECIOS - ROBUX (Parte 2)",
+            description="Elige la cantidad que deseas comprar",
+            color=0x8A2BE2
+        )
+        
+        rangos2 = [
             (10500, 30000, "🔥 Paquetes Mega"),
             (35000, 100000, "👑 Paquetes Legendarios")
         ]
         
-        for min_robux, max_robux, titulo in rangos:
+        for min_robux, max_robux, titulo in rangos2:
             precios_rango = {k: v for k, v in precios.items() if min_robux <= k <= max_robux}
             if precios_rango:
                 items = "\n".join([f"**{robux:,}** → {precio}" for robux, precio in sorted(precios_rango.items())])
-                embed.add_field(name=titulo, value=items, inline=False)
+                embed2.add_field(name=titulo, value=items, inline=False)
         
-        embed.set_footer(text="Escribe el número de robux que deseas comprar")
-        await interaction.followup.send(embed=embed, ephemeral=True)
+        embed2.set_footer(text="Escribe el número de robux que deseas comprar")
+        
+        # Enviar ambos mensajes
+        await interaction.followup.send(embed=embed1, ephemeral=True)
+        await interaction.followup.send(embed=embed2, ephemeral=True)
 
 class PagoConfirmadoView(discord.ui.View):
     def __init__(self, user_id):

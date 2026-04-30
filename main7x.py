@@ -17,7 +17,7 @@ intents.guilds = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# 💰 DICCIONARIO DE PRECIOS COMPLETO (500 - 100k) CON INTERPOLACIÓN AUTOMÁTICA CADA 500
+# 💰 DICCIONARIO DE PRECIOS COMPLETO
 precios = {
     500: "$69", 1000: "$129", 1500: "$200", 2000: "$279", 2500: "$315", 3000: "$351",
     3500: "$389", 4000: "$429", 4500: "$468", 5000: "$508", 5500: "$548", 6000: "$588",
@@ -61,29 +61,46 @@ precios = {
     100000: "$8,054"
 }
 
-usuarios_esperando_monto = {}  # channel_id: user_id
-usuarios_esperando_pago = set()  # channel_id
-ticket_owner = {}  # channel_id: user_id
+usuarios_esperando_monto = {}
+usuarios_esperando_pago = set()
+ticket_owner = {}
 
-# Función para normalizar texto
+# --- FUNCIONES DE UTILIDAD ---
+
 def normalizar_texto(texto):
-    # Convertir a minúsculas
+    """Limpia el texto de acentos, mayúsculas y signos."""
     texto = texto.lower()
-    # Quitar acentos
     texto = unicodedata.normalize('NFD', texto).encode('ascii', 'ignore').decode('utf-8')
-    # Eliminar signos de puntuación
     texto = re.sub(r'[^\w\s]', '', texto)
     return texto.strip()
 
-# Función para detectar intención de "pago exitoso"
 def es_pago_exitoso(texto):
     normalizado = normalizar_texto(texto)
-    # Verificar si contiene "pago" y alguna forma de "exitoso" o similar
     contiene_pago = 'pago' in normalizado
-    contiene_exitoso = any(word in normalizado for word in ['exitoso', 'exitozo', 'exitosa', 'exitoza', 'fue exitoso', 'fue exitosa'])
+    palabras_exito = ['exitoso', 'exitozo', 'exitosa', 'exitoza', 'hecho', 'enviado', 'listo']
+    contiene_exitoso = any(word in normalizado for word in palabras_exito)
     return contiene_pago and contiene_exitoso
 
-# --- VISTAS (BOTONES) ---
+def dividir_precios_en_bloques(precios_dict, max_chars=900):
+    if not precios_dict: return []
+    bloques, bloque_actual = [], ""
+    for robux, precio in sorted(precios_dict.items()):
+        linea = f"**{robux:,}** → {precio}\n"
+        if len(bloque_actual) + len(linea) > max_chars:
+            bloques.append(bloque_actual.strip())
+            bloque_actual = linea
+        else:
+            bloque_actual += linea
+    if bloque_actual: bloques.append(bloque_actual.strip())
+    return bloques
+
+def agregar_campos_con_limite(embed, titulo_base, bloques_list):
+    if not bloques_list: return
+    for i, bloque in enumerate(bloques_list, 1):
+        titulo = f"{titulo_base} ({i})" if len(bloques_list) > 1 else titulo_base
+        embed.add_field(name=titulo, value=bloque, inline=False)
+
+# --- VISTAS ---
 
 class MostrarPreciosView(discord.ui.View):
     def __init__(self):
@@ -91,53 +108,27 @@ class MostrarPreciosView(discord.ui.View):
 
     @discord.ui.button(label="📊 Mostrar Precios", style=discord.ButtonStyle.blurple)
     async def mostrar_precios(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # Diferir la respuesta para evitar timeout de Discord
         await interaction.response.defer(ephemeral=True)
-        
-        # MENSAJE 1: Paquetes Básicos, Estándar y Premium
-        embed1 = discord.Embed(
-            title="💰 LISTA DE PRECIOS - ROBUX (Parte 1)",
-            description="Elige la cantidad que deseas comprar",
-            color=0x8A2BE2
-        )
-        
-        rangos1 = [
-            (500, 2500, "⭐ Paquetes Básicos"),
-            (2600, 5000, "✨ Paquetes Estándar"),
-            (5100, 10000, "💎 Paquetes Premium"),
-        ]
-        
-        for min_robux, max_robux, titulo in rangos1:
-            precios_rango = {k: v for k, v in precios.items() if min_robux <= k <= max_robux}
-            if precios_rango:
-                items = "\n".join([f"**{robux:,}** → {precio}" for robux, precio in sorted(precios_rango.items())])
-                embed1.add_field(name=titulo, value=items, inline=False)
-        
-        embed1.set_footer(text="Escribe el número de robux que deseas comprar")
-        
-        # MENSAJE 2: Paquetes Mega y Legendarios
-        embed2 = discord.Embed(
-            title="💰 LISTA DE PRECIOS - ROBUX (Parte 2)",
-            description="Elige la cantidad que deseas comprar",
-            color=0x8A2BE2
-        )
-        
-        rangos2 = [
-            (10500, 30000, "🔥 Paquetes Mega"),
-            (35000, 100000, "👑 Paquetes Legendarios")
-        ]
-        
-        for min_robux, max_robux, titulo in rangos2:
-            precios_rango = {k: v for k, v in precios.items() if min_robux <= k <= max_robux}
-            if precios_rango:
-                items = "\n".join([f"**{robux:,}** → {precio}" for robux, precio in sorted(precios_rango.items())])
-                embed2.add_field(name=titulo, value=items, inline=False)
-        
-        embed2.set_footer(text="Escribe el número de robux que deseas comprar")
-        
-        # Enviar ambos mensajes
-        await interaction.followup.send(embed=embed1, ephemeral=True)
-        await interaction.followup.send(embed=embed2, ephemeral=True)
+        try:
+            # PARTE 1
+            embed1 = discord.Embed(title="💰 LISTA DE PRECIOS - PARTE 1", color=0x8A2BE2)
+            rangos1 = [(500, 2500, "⭐ Paquetes Básicos"), (2600, 5000, "✨ Paquetes Estándar"), (5100, 10000, "💎 Paquetes Premium")]
+            for mi, ma, t in rangos1:
+                p_r = {k: v for k, v in precios.items() if mi <= k <= ma}
+                agregar_campos_con_limite(embed1, t, dividir_precios_en_bloques(p_r))
+            
+            # PARTE 2
+            embed2 = discord.Embed(title="💰 LISTA DE PRECIOS - PARTE 2", color=0x8A2BE2)
+            rangos2 = [(10500, 30000, "🔥 Paquetes Mega"), (35000, 100000, "👑 Paquetes Legendarios")]
+            for mi, ma, t in rangos2:
+                p_r = {k: v for k, v in precios.items() if mi <= k <= ma}
+                agregar_campos_con_limite(embed2, t, dividir_precios_en_bloques(p_r))
+
+            await interaction.followup.send(embed=embed1, ephemeral=True)
+            await interaction.followup.send(embed=embed2, ephemeral=True)
+        except Exception as e:
+            print(f"Error: {e}")
+            await interaction.followup.send("❌ Error al mostrar precios.", ephemeral=True)
 
 class PagoConfirmadoView(discord.ui.View):
     def __init__(self, user_id):
@@ -147,35 +138,17 @@ class PagoConfirmadoView(discord.ui.View):
     @discord.ui.button(label="✅ PAGO REALIZADO (SOLO OWNER)", style=discord.ButtonStyle.green)
     async def confirmar_pago(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user.id != OWNER_ID:
-            return await interaction.response.send_message("❌ No tienes permiso para usar este botón.", ephemeral=True)
+            return await interaction.response.send_message("❌ Solo el dueño puede usar esto.", ephemeral=True)
 
-        embed = discord.Embed(
-            title="✅ PAGO EXITOSO",
-            description=f"<@{self.user_id}>, tus robux han sido enviados correctamente.\n\nPor favor, deja tu referencia en <#1452939436525617293>",
-            color=0x8A2BE2
-        )
-        embed.set_image(url="https://media.discordapp.net/attachments/1468842385420320960/1468842408614826077/Robux_Enviados.png")
+        embed = discord.Embed(title="✅ PAGO EXITOSO", description=f"<@{self.user_id}>, Robux enviados. Deja tu referencia en <#1452939436525617293>", color=0x00FF00)
         await interaction.response.send_message(embed=embed)
         
-        # --- SISTEMA DE CIERRE CON CONTEO REGRESIVO ---
-        minutos_restantes = 15
-        mensaje_cierre = await interaction.channel.send(f"<@{self.user_id}>, ⏳ Este ticket se cerrará automáticamente en **{minutos_restantes} minutos**...")
+        for i in range(15, 0, -1):
+            await asyncio.sleep(60)
+            # Aquí podrías editar un mensaje de aviso si quisieras
 
-        while minutos_restantes > 0:
-            await asyncio.sleep(60) # Esperar 1 minuto
-            minutos_restantes -= 1
-            if minutos_restantes > 0:
-                try:
-                    await mensaje_cierre.edit(content=f"<@{self.user_id}>, ⏳ Este ticket se cerrará automáticamente en **{minutos_restantes} minutos**...")
-                except:
-                    break # Si el canal se borra manualmente antes, salimos del bucle
-            else:
-                break
-
-        try:
-            await interaction.channel.delete()
-        except:
-            pass
+        try: await interaction.channel.delete()
+        except: pass
 
 class InicioTicketView(discord.ui.View):
     def __init__(self, user_id):
@@ -184,196 +157,61 @@ class InicioTicketView(discord.ui.View):
 
     @discord.ui.button(label="Sí, quiero Robux", style=discord.ButtonStyle.green)
     async def aceptar(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if interaction.user.id != self.user_id:
-            return await interaction.response.send_message("Este botón no es para ti.", ephemeral=True)
-        
+        if interaction.user.id != self.user_id: return
         await interaction.message.delete()
         usuarios_esperando_monto[interaction.channel.id] = interaction.user.id
-        await interaction.response.send_message(
-            "💰 **Escribe cuántos robux quieres comprar:** (Ejemplo: 1500)",
-            view=MostrarPreciosView()
-        )
+        await interaction.response.send_message("💰 **Escribe cuántos robux quieres:**", view=MostrarPreciosView())
 
     @discord.ui.button(label="No, otro motivo", style=discord.ButtonStyle.red)
     async def rechazar(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if interaction.user.id != self.user_id:
-            return await interaction.response.send_message("Este botón no es para ti.", ephemeral=True)
-        
+        if interaction.user.id != self.user_id: return
         await interaction.message.delete()
-        await interaction.response.send_message("🛠️ Entendido. Un moderador te atenderá en un momento para resolver tus dudas.")
+        await interaction.response.send_message("🛠️ Un moderador te atenderá pronto.")
 
 # --- EVENTOS ---
 
 @bot.event
 async def on_message(message):
-    await bot.process_commands(message)
-    
     if message.author.bot:
         if "ticket tool" in message.author.name.lower() and "bienvenido" in message.content.lower():
             match = re.search(r"<@(\d+)>", message.content)
             if match:
-                user_id = int(match.group(1))
-                ticket_owner[message.channel.id] = user_id
-                await message.channel.send(
-                    f"Hola <@{user_id}> 👋, ¿vienes a comprar Robux baratos?", 
-                    view=InicioTicketView(user_id)
-                )
+                uid = int(match.group(1))
+                ticket_owner[message.channel.id] = uid
+                await message.channel.send(f"Hola <@{uid}> 👋, ¿vienes a comprar Robux?", view=InicioTicketView(uid))
         return
 
-    es_ticket = message.channel.name.startswith("ticket-")
-    es_cat_valida = message.channel.category and "✮" in message.channel.category.name
-    if not (es_ticket or es_cat_valida):
-        return
+    await bot.process_commands(message)
 
-    # --- FASE 1: MONTO ---
-    if message.channel.id in usuarios_esperando_monto:
-        if message.author.id != usuarios_esperando_monto[message.channel.id]:
-            return  # Solo el usuario del ticket puede responder
+    if message.channel.id in usuarios_esperando_monto and message.author.id == usuarios_esperando_monto[message.channel.id]:
+        match = re.search(r'\d+', message.content.replace(',', '').replace(' ', ''))
+        if not match: return
         
-        contenido = message.content.strip()
-        
-        # Usar regex para extraer números incluso si hay texto alrededor
-        # Detecta: "quiero 1500 robux", "dame 1,500", "1500", "1 500", etc.
-        numero_match = re.search(r'\d+(?:[\s,]\d+)*', contenido)
-        
-        if not numero_match:
-            await message.channel.send("❌ **Escribe un número válido.** (Ejemplo: 1500)")
-            return
-        
-        # Extraer el número y limpiar comas y espacios
-        numero_extraido = numero_match.group(0)
-        contenido_limpio = numero_extraido.replace(',', '').replace(' ', '')
-        
-        try:
-            monto_ingresado = int(contenido_limpio)
-        except ValueError:
-            await message.channel.send("❌ **Escribe un número válido.** (Ejemplo: 1500)")
-            return
-        
-        monto_final = monto_ingresado
+        monto = int(match.group(0))
+        if monto not in precios:
+            cercano = min(precios.keys(), key=lambda x: abs(x - monto))
+            await message.channel.send(f"⚠️ Redondeando a la oferta de **{cercano} robux**.")
+            monto = cercano
 
-        if monto_ingresado not in precios:
-            cercano = min(precios.keys(), key=lambda x: abs(x - monto_ingresado))
-            diferencia = abs(cercano - monto_ingresado)
-            if diferencia <= 15 or diferencia <= (cercano * 0.05):
-                await message.channel.send(f"⚠️ El monto **{monto_ingresado}** no está en lista. Redondeando a la oferta de **{cercano} robux**.")
-                monto_final = cercano
-            else:
-                await message.channel.send(f"❌ **Monto inválido.** Por favor elige una cantidad de nuestra lista de precios.")
-                return
-
-        precio_texto = precios[monto_final]
         usuarios_esperando_monto.pop(message.channel.id)
         usuarios_esperando_pago.add(message.channel.id)
 
-        embed_pago = discord.Embed(
-            title="💳 INFORMACIÓN DE PAGO",
-            description=f"Has seleccionado: **{monto_final} Robux**\nTotal a pagar: **{precio_texto} MXN**",
-            color=0x8A2BE2
-        )
-        embed_pago.add_field(
-            name="🏦 TRANSFERENCIA",
-            value=(
-                "**CUENTA 1:**\n```722969040869278041```\n"
-                "**MERCADO PAGO**\nVICENTA MARIANO VALDOVINOS\n\n"
-                "**CUENTA 2:**\n```721180100042646712```\n"
-                "**ALBO**\nHECTOR ALTAMIRANO GONZALEZ"
-            ),
-            inline=False
-        )
-        embed_pago.add_field(
-            name="🏪 DEPÓSITO OXXO",
-            value="",
-            inline=False
-        )
+        emb = discord.Embed(title="💳 PAGO", description=f"Monto: **{monto}**\nPrecio: **{precios[monto]} MXN**", color=0x8A2BE2)
+        emb.add_field(name="Cuentas", value="`722969040869278041` (MP)\n`721180100042646712` (Albo)")
         
-        canal_metodos = bot.get_channel(1494475415597744360)
-        mencion_canal = canal_metodos.mention if canal_metodos else "<#1494475415597744360>"
-        embed_pago.add_field(
-            name="📞 OTROS MÉTODOS DE PAGO",
-            value=f"Consulta {mencion_canal}",
-            inline=False
-        )
-        
-        instrucciones = discord.Embed(
-            title="⏳ SIGUIENTES PASOS",
-            description=(
-                "1. Realiza el pago por el monto exacto.\n"
-                "2. Envía la **FOTO DEL COMPROBANTE** aquí mismo.\n"
-                "3. Escribe **PAGO EXITOSO** para confirmar."
-            ),
-            color=0xFFA500
-        )
-        
-        embed_pago.set_image(url="attachment://oxxo.jpg")
-        
-        await message.channel.send(embed=embed_pago, file=discord.File('oxxo.jpg'))
-        await message.channel.send(embed=instrucciones, view=PagoConfirmadoView(ticket_owner[message.channel.id]))
-        return
+        # Nota: Asegúrate de que 'oxxo.jpg' existe en la carpeta del bot
+        try:
+            await message.channel.send(embed=emb, file=discord.File('oxxo.jpg'), view=PagoConfirmadoView(message.author.id))
+        except:
+            await message.channel.send(embed=emb, view=PagoConfirmadoView(message.author.id))
 
-    # --- FASE 2: PAGO EXITOSO ---
-    if message.channel.id in usuarios_esperando_pago:
-        if message.author.id != ticket_owner[message.channel.id]:
-            return  # Solo el usuario del ticket puede responder
-        
+    elif message.channel.id in usuarios_esperando_pago and message.author.id == ticket_owner.get(message.channel.id):
         if es_pago_exitoso(message.content):
-            embed_staff = discord.Embed(
-                title="🚀 PAGO EN REVISIÓN",
-                description="Gracias. Tu comprobante ha sido enviado al staff.\nEn unos momentos recibirás tus Robux.",
-                color=0x00FF00
-            )
-            await message.channel.send(embed=embed_staff)
-            try: await message.channel.edit(name=f"✅-pago-{message.author.name}")
-            except: pass
+            await message.channel.send("🚀 **Pago en revisión por el Staff...**")
             usuarios_esperando_pago.remove(message.channel.id)
-        else:
-            await message.channel.send(
-                content=f"⚠️ <@{message.author.id}>, por favor realiza el pago, manda el comprobante y escribe **PAGO EXITOSO** para confirmar."
-            )
-        return
 
 @bot.event
 async def on_ready():
-    print(f"✅ Bot conectado como {bot.user}")
-    # Limpiar slash commands antiguos
-    bot.tree.clear_commands()
-    await bot.tree.sync()
-    print(f"✅ Comandos sincronizados")
-
-@bot.command(name='pagos')
-async def pagos(ctx):
-    """Muestra todos los métodos de pago disponibles"""
-    embed_pagos = discord.Embed(
-        title="💳 INFORMACIÓN DE PAGO",
-        description="Elige tu método de pago y completa tu compra de forma segura.",
-        color=0x8A2BE2
-    )
-    embed_pagos.add_field(
-        name="🏦 TRANSFERENCIA",
-        value=(
-            "**CUENTA 1:**\n```722969040869278041```\n"
-            "**MERCADO PAGO**\nVICENTA MARIANO VALDOVINOS\n\n"
-            "**CUENTA 2:**\n```721180100042646712```\n"
-            "**ALBO**\nHECTOR ALTAMIRANO GONZALEZ"
-        ),
-        inline=False
-    )
-    embed_pagos.add_field(
-        name="🏪 DEPÓSITO OXXO",
-        value="",
-        inline=False
-    )
-    embed_pagos.add_field(
-        name="🎁 GIFT CARD",
-        value=(
-            "Paga fácilmente con Gift Cards disponibles para todos los países.\n"
-            "Selecciona el valor según el monto de Robux que deseas comprar.\n\n"
-            "[🔗 Comprar Gift Card](https://www.eneba.com/eneba-eneba-gift-card-5-eur-global)"
-        ),
-        inline=False
-    )
-    embed_pagos.set_image(url="attachment://oxxo.jpg")
-    
-    await ctx.send(embed=embed_pagos, file=discord.File('oxxo.jpg'))
+    print(f"✅ {bot.user} online")
 
 bot.run(TOKEN)

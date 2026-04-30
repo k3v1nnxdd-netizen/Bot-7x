@@ -91,6 +91,9 @@ class MostrarPreciosView(discord.ui.View):
 
     @discord.ui.button(label="📊 Mostrar Precios", style=discord.ButtonStyle.blurple)
     async def mostrar_precios(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # Diferir la respuesta para evitar timeout de Discord
+        await interaction.response.defer(ephemeral=True)
+        
         # Crear embed con lista de precios ordenada
         embed = discord.Embed(
             title="💰 LISTA DE PRECIOS - ROBUX",
@@ -114,7 +117,7 @@ class MostrarPreciosView(discord.ui.View):
                 embed.add_field(name=titulo, value=items, inline=False)
         
         embed.set_footer(text="Escribe el número de robux que deseas comprar")
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        await interaction.followup.send(embed=embed, ephemeral=True)
 
 class PagoConfirmadoView(discord.ui.View):
     def __init__(self, user_id):

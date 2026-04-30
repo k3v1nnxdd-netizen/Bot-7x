@@ -65,8 +65,50 @@ usuarios_esperando_monto = {}  # channel_id: user_id
 usuarios_esperando_pago = set()  # channel_id
 ticket_owner = {}  # channel_id: user_id
 
-# Función para normalizar texto
-def normalizar_texto(texto):
+# Función para dividir precios en bloques sin exceder límite de caracteres
+def dividir_precios_en_bloques(precios_dict, max_chars=900):
+    """
+    Divide un diccionario de precios en bloques de máximo max_chars caracteres.
+    Retorna una lista de strings con los precios formateados.
+    """
+    if not precios_dict:
+        return []
+    
+    bloques = []
+    bloque_actual = ""
+    
+    for robux, precio in sorted(precios_dict.items()):
+        linea = f"**{robux:,}** → {precio}\n"
+        
+        # Si agregar esta línea excede el límite, guardar bloque actual e iniciar uno nuevo
+        if len(bloque_actual) + len(linea) > max_chars and bloque_actual:
+            bloques.append(bloque_actual.strip())
+            bloque_actual = linea
+        else:
+            bloque_actual += linea
+    
+    # Agregar el último bloque
+    if bloque_actual:
+        bloques.append(bloque_actual.strip())
+    
+    return bloques
+
+# Función para agregar múltiples fields a un embed sin exceder límite
+def agregar_campos_con_limite(embed, titulo_base, bloques_list):
+    """
+    Agrega múltiples fields a un embed, uno por cada bloque de precios.
+    Si hay múltiples bloques, numera los campos.
+    """
+    if not bloques_list:
+        return
+    
+    for i, bloque in enumerate(bloques_list, 1):
+        if len(bloques_list) > 1:
+            titulo = f"{titulo_base} ({i})"
+        else:
+            titulo = titulo_base
+        
+        embed.add_field(name=titulo, value=bloque, inline=False)
     # Convertir a minúsculas
     texto = texto.lower()
     # Quitar acentos
@@ -111,8 +153,8 @@ class MostrarPreciosView(discord.ui.View):
             for min_robux, max_robux, titulo in rangos1:
                 precios_rango = {k: v for k, v in precios.items() if min_robux <= k <= max_robux}
                 if precios_rango:
-                    items = "\n".join([f"**{robux:,}** → {precio}" for robux, precio in sorted(precios_rango.items())])
-                    embed1.add_field(name=titulo, value=items, inline=False)
+                    bloques = dividir_precios_en_bloques(precios_rango, max_chars=900)
+                    agregar_campos_con_limite(embed1, titulo, bloques)
             
             embed1.set_footer(text="Escribe el número de robux que deseas comprar")
             
@@ -135,8 +177,8 @@ class MostrarPreciosView(discord.ui.View):
             for min_robux, max_robux, titulo in rangos2:
                 precios_rango = {k: v for k, v in precios.items() if min_robux <= k <= max_robux}
                 if precios_rango:
-                    items = "\n".join([f"**{robux:,}** → {precio}" for robux, precio in sorted(precios_rango.items())])
-                    embed2.add_field(name=titulo, value=items, inline=False)
+                    bloques = dividir_precios_en_bloques(precios_rango, max_chars=900)
+                    agregar_campos_con_limite(embed2, titulo, bloques)
             
             embed2.set_footer(text="Escribe el número de robux que deseas comprar")
             

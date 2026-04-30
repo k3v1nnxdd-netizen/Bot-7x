@@ -17,98 +17,60 @@ intents.guilds = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# 💰 DICCIONARIO DE PRECIOS COMPLETO (500 - 100k) CON INTERPOLACIÓN AUTOMÁTICA CADA 500
+# 💰 DICCIONARIO DE PRECIOS COMPLETO (500 - 100k) CON INTERPOLACIÓN AUTOMÁTICA
 precios = {
-    500: "$69", 1000: "$129", 1500: "$200", 2000: "$279", 2500: "$315", 3000: "$351",
-    3500: "$389", 4000: "$429", 4500: "$468", 5000: "$508", 5500: "$548", 6000: "$588",
-    6500: "$627", 7000: "$667", 7500: "$707", 8000: "$746", 8500: "$786", 9000: "$826",
-    9500: "$866", 10000: "$905", 10500: "$945", 11000: "$985", 11500: "$1,024", 12000: "$1,064",
-    12500: "$1,104", 13000: "$1,144", 13500: "$1,183", 14000: "$1,223", 14500: "$1,263",
-    15000: "$1,302", 15500: "$1,342", 16000: "$1,382", 16500: "$1,422", 17000: "$1,461",
-    17500: "$1,501", 18000: "$1,541", 18500: "$1,580", 19000: "$1,620", 19500: "$1,660",
-    20000: "$1,700", 20500: "$1,739", 21000: "$1,779", 21500: "$1,819", 22000: "$1,859",
-    22500: "$1,898", 23000: "$1,938", 23500: "$1,978", 24000: "$2,017", 24500: "$2,057",
-    25000: "$2,097", 25500: "$2,137", 26000: "$2,176", 26500: "$2,216", 27000: "$2,256",
-    27500: "$2,295", 28000: "$2,335", 28500: "$2,375", 29000: "$2,415", 29500: "$2,454",
-    30000: "$2,494", 30500: "$2,534", 31000: "$2,573", 31500: "$2,613", 32000: "$2,653",
-    32500: "$2,693", 33000: "$2,732", 33500: "$2,772", 34000: "$2,812", 34500: "$2,851",
-    35000: "$2,891", 35500: "$2,931", 36000: "$2,970", 36500: "$3,010", 37000: "$3,050",
-    37500: "$3,090", 38000: "$3,129", 38500: "$3,169", 39000: "$3,209", 39500: "$3,248",
-    40000: "$3,288", 40500: "$3,328", 41000: "$3,368", 41500: "$3,407", 42000: "$3,447",
-    42500: "$3,487", 43000: "$3,526", 43500: "$3,566", 44000: "$3,606", 44500: "$3,646",
-    45000: "$3,685", 45500: "$3,725", 46000: "$3,765", 46500: "$3,804", 47000: "$3,844",
-    47500: "$3,884", 48000: "$3,924", 48500: "$3,963", 49000: "$4,003", 49500: "$4,043",
-    50000: "$4,082", 50500: "$4,122", 51000: "$4,162", 51500: "$4,202", 52000: "$4,241",
-    52500: "$4,281", 53000: "$4,321", 53500: "$4,360", 54000: "$4,400", 54500: "$4,440",
-    55000: "$4,480", 55500: "$4,519", 56000: "$4,559", 56500: "$4,599", 57000: "$4,638",
-    57500: "$4,678", 58000: "$4,718", 58500: "$4,758", 59000: "$4,797", 59500: "$4,837",
-    60000: "$4,877", 60500: "$4,916", 61000: "$4,956", 61500: "$4,996", 62000: "$5,036",
-    62500: "$5,075", 63000: "$5,115", 63500: "$5,155", 64000: "$5,194", 64500: "$5,234",
-    65000: "$5,274", 65500: "$5,314", 66000: "$5,353", 66500: "$5,393", 67000: "$5,433",
-    67500: "$5,472", 68000: "$5,512", 68500: "$5,552", 69000: "$5,592", 69500: "$5,631",
-    70000: "$5,671", 70500: "$5,711", 71000: "$5,750", 71500: "$5,790", 72000: "$5,830",
-    72500: "$5,870", 73000: "$5,909", 73500: "$5,949", 74000: "$5,989", 74500: "$6,028",
-    75000: "$6,068", 75500: "$6,108", 76000: "$6,148", 76500: "$6,187", 77000: "$6,227",
-    77500: "$6,267", 78000: "$6,306", 78500: "$6,346", 79000: "$6,386", 79500: "$6,426",
-    80000: "$6,465", 80500: "$6,505", 81000: "$6,545", 81500: "$6,584", 82000: "$6,624",
-    82500: "$6,664", 83000: "$6,704", 83500: "$6,743", 84000: "$6,783", 84500: "$6,823",
-    85000: "$6,862", 85500: "$6,902", 86000: "$6,942", 86500: "$6,982", 87000: "$7,021",
-    87500: "$7,061", 88000: "$7,101", 88500: "$7,140", 89000: "$7,180", 89500: "$7,220",
-    90000: "$7,260", 90500: "$7,299", 91000: "$7,339", 91500: "$7,379", 92000: "$7,418",
-    92500: "$7,458", 93000: "$7,498", 93500: "$7,538", 94000: "$7,577", 94500: "$7,617",
-    95000: "$7,657", 95500: "$7,696", 96000: "$7,736", 96500: "$7,776", 97000: "$7,816",
-    97500: "$7,855", 98000: "$7,895", 98500: "$7,935", 99000: "$7,974", 99500: "$8,014",
-    100000: "$8,054"
+    500: "$69", 600: "$81", 700: "$93", 800: "$105", 900: "$117",
+    1000: "$129", 1100: "$143", 1200: "$157", 1300: "$171", 1400: "$185",
+    1500: "$200", 1600: "$215", 1700: "$230", 1800: "$245", 1900: "$260",
+    2000: "$279", 2100: "$286", 2200: "$293", 2300: "$300", 2400: "$307",
+    2500: "$315", 2600: "$320", 2700: "$325", 2800: "$330", 2900: "$340",
+    3000: "$351", 3500: "$389", 4000: "$429", 4500: "$468", 5000: "$508",
+    5500: "$548", 6000: "$588", 6500: "$627", 7000: "$667", 7500: "$707",
+    8000: "$746", 8500: "$786", 9000: "$826", 9500: "$866", 10000: "$905",
+    10500: "$945", 11000: "$985", 11500: "$1,024", 12000: "$1,064", 12500: "$1,104",
+    13000: "$1,144", 13500: "$1,183", 14000: "$1,223", 14500: "$1,263", 15000: "$1,302",
+    15500: "$1,342", 16000: "$1,382", 16500: "$1,422", 17000: "$1,461", 17500: "$1,501",
+    18000: "$1,541", 18500: "$1,580", 19000: "$1,620", 19500: "$1,660", 20000: "$1,700",
+    20500: "$1,739", 21000: "$1,779", 21500: "$1,819", 22000: "$1,859", 22500: "$1,898",
+    23000: "$1,938", 23500: "$1,978", 24000: "$2,017", 24500: "$2,057", 25000: "$2,097",
+    25500: "$2,137", 26000: "$2,176", 26500: "$2,216", 27000: "$2,256", 27500: "$2,295",
+    28000: "$2,335", 28500: "$2,375", 29000: "$2,415", 29500: "$2,454", 30000: "$2,494",
+    30500: "$2,534", 31000: "$2,573", 31500: "$2,613", 32000: "$2,653", 32500: "$2,693",
+    33000: "$2,732", 33500: "$2,772", 34000: "$2,812", 34500: "$2,851", 35000: "$2,891",
+    35500: "$2,931", 36000: "$2,970", 36500: "$3,010", 37000: "$3,050", 37500: "$3,090",
+    38000: "$3,129", 38500: "$3,169", 39000: "$3,209", 39500: "$3,248", 40000: "$3,288",
+    40500: "$3,328", 41000: "$3,368", 41500: "$3,407", 42000: "$3,447", 42500: "$3,487",
+    43000: "$3,526", 43500: "$3,566", 44000: "$3,606", 44500: "$3,646", 45000: "$3,685",
+    45500: "$3,725", 46000: "$3,765", 46500: "$3,804", 47000: "$3,844", 47500: "$3,884",
+    48000: "$3,924", 48500: "$3,963", 49000: "$4,003", 49500: "$4,043", 50000: "$4,082",
+    50500: "$4,122", 51000: "$4,162", 51500: "$4,202", 52000: "$4,241", 52500: "$4,281",
+    53000: "$4,321", 53500: "$4,360", 54000: "$4,400", 54500: "$4,440", 55000: "$4,480",
+    55500: "$4,519", 56000: "$4,559", 56500: "$4,599", 57000: "$4,638", 57500: "$4,678",
+    58000: "$4,718", 58500: "$4,758", 59000: "$4,797", 59500: "$4,837", 60000: "$4,877",
+    60500: "$4,916", 61000: "$4,956", 61500: "$4,996", 62000: "$5,036", 62500: "$5,075",
+    63000: "$5,115", 63500: "$5,155", 64000: "$5,194", 64500: "$5,234", 65000: "$5,274",
+    65500: "$5,314", 66000: "$5,353", 66500: "$5,393", 67000: "$5,433", 67500: "$5,472",
+    68000: "$5,512", 68500: "$5,552", 69000: "$5,592", 69500: "$5,631", 70000: "$5,671",
+    70500: "$5,711", 71000: "$5,750", 71500: "$5,790", 72000: "$5,830", 72500: "$5,870",
+    73000: "$5,909", 73500: "$5,949", 74000: "$5,989", 74500: "$6,028", 75000: "$6,068",
+    75500: "$6,108", 76000: "$6,148", 76500: "$6,187", 77000: "$6,227", 77500: "$6,267",
+    78000: "$6,306", 78500: "$6,346", 79000: "$6,386", 79500: "$6,426", 80000: "$6,465",
+    80500: "$6,505", 81000: "$6,545", 81500: "$6,584", 82000: "$6,624", 82500: "$6,664",
+    83000: "$6,704", 83500: "$6,743", 84000: "$6,783", 84500: "$6,823", 85000: "$6,862",
+    85500: "$6,902", 86000: "$6,942", 86500: "$6,982", 87000: "$7,021", 87500: "$7,061",
+    88000: "$7,101", 88500: "$7,140", 89000: "$7,180", 89500: "$7,220", 90000: "$7,260",
+    90500: "$7,299", 91000: "$7,339", 91500: "$7,379", 92000: "$7,418", 92500: "$7,458",
+    93000: "$7,498", 93500: "$7,538", 94000: "$7,577", 94500: "$7,617", 95000: "$7,657",
+    95500: "$7,696", 96000: "$7,736", 96500: "$7,776", 97000: "$7,816", 97500: "$7,855",
+    98000: "$7,895", 98500: "$7,935", 99000: "$7,974", 99500: "$8,014", 100000: "$8,054"
 }
 
 usuarios_esperando_monto = {}  # channel_id: user_id
 usuarios_esperando_pago = set()  # channel_id
 ticket_owner = {}  # channel_id: user_id
 
-# Función para dividir precios en bloques sin exceder límite de caracteres
-def dividir_precios_en_bloques(precios_dict, max_chars=900):
-    """
-    Divide un diccionario de precios en bloques de máximo max_chars caracteres.
-    Retorna una lista de strings con los precios formateados.
-    """
-    if not precios_dict:
-        return []
-    
-    bloques = []
-    bloque_actual = ""
-    
-    for robux, precio in sorted(precios_dict.items()):
-        linea = f"**{robux:,}** → {precio}\n"
-        
-        # Si agregar esta línea excede el límite, guardar bloque actual e iniciar uno nuevo
-        if len(bloque_actual) + len(linea) > max_chars and bloque_actual:
-            bloques.append(bloque_actual.strip())
-            bloque_actual = linea
-        else:
-            bloque_actual += linea
-    
-    # Agregar el último bloque
-    if bloque_actual:
-        bloques.append(bloque_actual.strip())
-    
-    return bloques
-
-# Función para agregar múltiples fields a un embed sin exceder límite
-def agregar_campos_con_limite(embed, titulo_base, bloques_list):
-    """
-    Agrega múltiples fields a un embed, uno por cada bloque de precios.
-    Si hay múltiples bloques, numera los campos.
-    """
-    if not bloques_list:
-        return
-    
-    for i, bloque in enumerate(bloques_list, 1):
-        if len(bloques_list) > 1:
-            titulo = f"{titulo_base} ({i})"
-        else:
-            titulo = titulo_base
-        
-        embed.add_field(name=titulo, value=bloque, inline=False)
+# Función para normalizar texto
+def normalizar_texto(texto):
     # Convertir a minúsculas
     texto = texto.lower()
     # Quitar acentos
@@ -133,60 +95,30 @@ class MostrarPreciosView(discord.ui.View):
 
     @discord.ui.button(label="📊 Mostrar Precios", style=discord.ButtonStyle.blurple)
     async def mostrar_precios(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # Diferir la respuesta para evitar timeout de Discord
-        await interaction.response.defer(ephemeral=True)
+        # Crear embed con lista de precios ordenada
+        embed = discord.Embed(
+            title="💰 LISTA DE PRECIOS - ROBUX",
+            description="Elige la cantidad que deseas comprar",
+            color=0x8A2BE2
+        )
         
-        try:
-            # MENSAJE 1: Paquetes Básicos, Estándar y Premium
-            embed1 = discord.Embed(
-                title="💰 LISTA DE PRECIOS - ROBUX (Parte 1)",
-                description="Elige la cantidad que deseas comprar",
-                color=0x8A2BE2
-            )
-            
-            rangos1 = [
-                (500, 2500, "⭐ Paquetes Básicos"),
-                (2600, 5000, "✨ Paquetes Estándar"),
-                (5100, 10000, "💎 Paquetes Premium"),
-            ]
-            
-            for min_robux, max_robux, titulo in rangos1:
-                precios_rango = {k: v for k, v in precios.items() if min_robux <= k <= max_robux}
-                if precios_rango:
-                    bloques = dividir_precios_en_bloques(precios_rango, max_chars=900)
-                    agregar_campos_con_limite(embed1, titulo, bloques)
-            
-            embed1.set_footer(text="Escribe el número de robux que deseas comprar")
-            
-            # Enviar primera parte
-            await interaction.followup.send(embed=embed1, ephemeral=True)
-            await asyncio.sleep(0.5)  # Pequeño delay para evitar problemas
-            
-            # MENSAJE 2: Paquetes Mega y Legendarios
-            embed2 = discord.Embed(
-                title="💰 LISTA DE PRECIOS - ROBUX (Parte 2)",
-                description="Elige la cantidad que deseas comprar",
-                color=0x8A2BE2
-            )
-            
-            rangos2 = [
-                (10500, 30000, "🔥 Paquetes Mega"),
-                (35000, 100000, "👑 Paquetes Legendarios")
-            ]
-            
-            for min_robux, max_robux, titulo in rangos2:
-                precios_rango = {k: v for k, v in precios.items() if min_robux <= k <= max_robux}
-                if precios_rango:
-                    bloques = dividir_precios_en_bloques(precios_rango, max_chars=900)
-                    agregar_campos_con_limite(embed2, titulo, bloques)
-            
-            embed2.set_footer(text="Escribe el número de robux que deseas comprar")
-            
-            # Enviar segunda parte
-            await interaction.followup.send(embed=embed2, ephemeral=True)
-        except Exception as e:
-            print(f"Error en mostrar_precios: {e}")
-            await interaction.followup.send(content="❌ Error al mostrar los precios. Intenta de nuevo.", ephemeral=True)
+        # Agrupar precios en secciones para mejor legibilidad
+        rangos = [
+            (500, 2500, "⭐ Paquetes Básicos"),
+            (2600, 5000, "✨ Paquetes Estándar"),
+            (5100, 10000, "💎 Paquetes Premium"),
+            (10500, 30000, "🔥 Paquetes Mega"),
+            (35000, 100000, "👑 Paquetes Legendarios")
+        ]
+        
+        for min_robux, max_robux, titulo in rangos:
+            precios_rango = {k: v for k, v in precios.items() if min_robux <= k <= max_robux}
+            if precios_rango:
+                items = "\n".join([f"**{robux:,}** → {precio}" for robux, precio in sorted(precios_rango.items())])
+                embed.add_field(name=titulo, value=items, inline=False)
+        
+        embed.set_footer(text="Escribe el número de robux que deseas comprar")
+        await interaction.response.send_message(embed=embed, ephemeral=True)
 
 class PagoConfirmadoView(discord.ui.View):
     def __init__(self, user_id):

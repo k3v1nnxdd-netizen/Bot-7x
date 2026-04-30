@@ -280,9 +280,7 @@ async def on_message(message):
             name="🏦 TRANSFERENCIA",
             value=(
                 "**CUENTA 1:**\n```722969040869278041```\n"
-                "**MERCADO PAGO**\nVICENTA MARIANO VALDOVINOS\n\n"
-                "**CUENTA 2:**\n```721180100042646712```\n"
-                "**ALBO**\nHECTOR ALTAMIRANO GONZALEZ"
+                "**MERCADO PAGO**\nVICENTA MARIANO VALDOVINOS"
             ),
             inline=False
         )
@@ -357,9 +355,7 @@ async def pagos(ctx):
         name="🏦 TRANSFERENCIA",
         value=(
             "**CUENTA 1:**\n```722969040869278041```\n"
-            "**MERCADO PAGO**\nVICENTA MARIANO VALDOVINOS\n\n"
-            "**CUENTA 2:**\n```721180100042646712```\n"
-            "**ALBO**\nHECTOR ALTAMIRANO GONZALEZ"
+            "**MERCADO PAGO**\nVICENTA MARIANO VALDOVINOS"
         ),
         inline=False
     )
@@ -380,5 +376,57 @@ async def pagos(ctx):
     embed_pagos.set_image(url="attachment://oxxo.jpg")
     
     await ctx.send(embed=embed_pagos, file=discord.File('oxxo.jpg'))
+
+@bot.command(name='precios')
+async def precios_comando(ctx):
+    """Muestra todos los precios de Robux por categoría"""
+    # Definir rangos de categorías
+    rangos = [
+        (500, 2500, "⭐ Paquetes Básicos"),
+        (2600, 5000, "✨ Paquetes Estándar"),
+        (5100, 10000, "💎 Paquetes Premium"),
+        (10500, 30000, "🔥 Paquetes Mega"),
+        (35000, 100000, "👑 Paquetes Legendarios")
+    ]
+    
+    # Procesar cada categoría
+    for min_robux, max_robux, titulo in rangos:
+        precios_rango = {k: v for k, v in precios.items() if min_robux <= k <= max_robux}
+        if not precios_rango:
+            continue
+        
+        # Crear lista de items formateados y ordenados
+        items_list = [f"**{robux:,}** → {precio}" for robux, precio in sorted(precios_rango.items())]
+        
+        # Dividir en chunks si es necesario para no exceder límites de Discord (2048 caracteres por descripción)
+        chunks = []
+        current_chunk = []
+        current_length = 0
+        
+        for item in items_list:
+            item_length = len(item) + 1  # +1 para el salto de línea
+            if current_length + item_length > 2048:
+                chunks.append("\n".join(current_chunk))
+                current_chunk = [item]
+                current_length = item_length
+            else:
+                current_chunk.append(item)
+                current_length += item_length
+        
+        if current_chunk:
+            chunks.append("\n".join(current_chunk))
+        
+        # Enviar un embed para cada chunk
+        for i, chunk in enumerate(chunks):
+            embed_title = titulo
+            if len(chunks) > 1:
+                embed_title += f" (Parte {i+1}/{len(chunks)})"
+            
+            embed = discord.Embed(
+                title=embed_title,
+                description=chunk,
+                color=0x8A2BE2
+            )
+            await ctx.send(embed=embed)
 
 bot.run(TOKEN)

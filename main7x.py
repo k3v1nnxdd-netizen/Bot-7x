@@ -128,53 +128,40 @@ class MostrarPreciosView(discord.ui.View):
     @discord.ui.button(label="📊 Mostrar Precios", style=discord.ButtonStyle.blurple)
     async def mostrar_precios(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer(ephemeral=True)
- 
+        
         try:
-            embed1 = discord.Embed(
-                title="💰 LISTA DE PRECIOS - ROBUX (Parte 1)",
-                description="Elige la cantidad que deseas comprar",
-                color=0x8A2BE2
-            )
- 
-            rangos1 = [
+            # Responder al usuario que se están enviando los precios
+            await interaction.followup.send(content="📋 Enviando lista de precios en el chat...", ephemeral=True)
+            
+            # 5 categorías de precios en orden
+            categorias = [
                 (500, 2500, "⭐ Paquetes Básicos"),
                 (2600, 5000, "✨ Paquetes Estándar"),
                 (5100, 10000, "💎 Paquetes Premium"),
-            ]
- 
-            for min_robux, max_robux, titulo in rangos1:
-                precios_rango = {k: v for k, v in precios.items() if min_robux <= k <= max_robux}
-                if precios_rango:
-                    bloques = dividir_precios_en_bloques(precios_rango, max_chars=900)
-                    agregar_campos_con_limite(embed1, titulo, bloques)
- 
-            embed1.set_footer(text="Escribe el número de robux que deseas comprar")
-            await interaction.followup.send(embed=embed1, ephemeral=True)
-            await asyncio.sleep(0.5)
- 
-            embed2 = discord.Embed(
-                title="💰 LISTA DE PRECIOS - ROBUX (Parte 2)",
-                description="Elige la cantidad que deseas comprar",
-                color=0x8A2BE2
-            )
- 
-            rangos2 = [
                 (10500, 30000, "🔥 Paquetes Mega"),
                 (35000, 100000, "👑 Paquetes Legendarios")
             ]
- 
-            for min_robux, max_robux, titulo in rangos2:
+            
+            for min_robux, max_robux, titulo in categorias:
+                embed = discord.Embed(
+                    title="💰 LISTA DE PRECIOS - ROBUX",
+                    description=titulo,
+                    color=0x8A2BE2
+                )
+                
                 precios_rango = {k: v for k, v in precios.items() if min_robux <= k <= max_robux}
                 if precios_rango:
                     bloques = dividir_precios_en_bloques(precios_rango, max_chars=900)
-                    agregar_campos_con_limite(embed2, titulo, bloques)
- 
-            embed2.set_footer(text="Escribe el número de robux que deseas comprar")
-            await interaction.followup.send(embed=embed2, ephemeral=True)
- 
+                    agregar_campos_con_limite(embed, titulo, bloques)
+                
+                embed.set_footer(text="Escribe el número de robux que deseas comprar")
+                
+                # Enviar al canal (público, no efímero)
+                await interaction.channel.send(embed=embed)
+                await asyncio.sleep(0.5)
+        
         except Exception as e:
             print(f"Error en mostrar_precios: {e}")
-            await interaction.followup.send(content="❌ Error al mostrar los precios. Intenta de nuevo.", ephemeral=True)
  
  
 class PagoConfirmadoView(discord.ui.View):

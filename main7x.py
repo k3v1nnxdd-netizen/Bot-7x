@@ -92,14 +92,7 @@ class MostrarPreciosView(discord.ui.View):
 
     @discord.ui.button(label="📊 Mostrar Precios", style=discord.ButtonStyle.blurple)
     async def mostrar_precios(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # Crear embed con lista de precios ordenada
-        embed = discord.Embed(
-            title="💰 LISTA DE PRECIOS - ROBUX",
-            description="Elige la cantidad que deseas comprar",
-            color=0x8A2BE2
-        )
-        
-        # Agrupar precios en secciones para mejor legibilidad
+        # Definir rangos de categorías
         rangos = [
             (500, 2500, "⭐ Paquetes Básicos"),
             (2600, 5000, "✨ Paquetes Estándar"),
@@ -108,14 +101,48 @@ class MostrarPreciosView(discord.ui.View):
             (35000, 100000, "👑 Paquetes Legendarios")
         ]
         
+        # Responder la interacción inmediatamente
+        await interaction.response.defer()
+        
+        # Procesar cada categoría
         for min_robux, max_robux, titulo in rangos:
             precios_rango = {k: v for k, v in precios.items() if min_robux <= k <= max_robux}
-            if precios_rango:
-                items = "\n".join([f"**{robux:,}** → {precio}" for robux, precio in sorted(precios_rango.items())])
-                embed.add_field(name=titulo, value=items, inline=False)
-        
-        embed.set_footer(text="Escribe el número de robux que deseas comprar")
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+            if not precios_rango:
+                continue
+            
+            # Crear lista de items formateados y ordenados
+            items_list = [f"**{robux:,}** → {precio}" for robux, precio in sorted(precios_rango.items())]
+            
+            # Dividir en chunks si es necesario para no exceder límites de Discord (2048 caracteres por descripción)
+            chunks = []
+            current_chunk = []
+            current_length = 0
+            
+            for item in items_list:
+                item_length = len(item) + 1  # +1 para el salto de línea
+                if current_length + item_length > 2048:
+                    chunks.append("\n".join(current_chunk))
+                    current_chunk = [item]
+                    current_length = item_length
+                else:
+                    current_chunk.append(item)
+                    current_length += item_length
+            
+            if current_chunk:
+                chunks.append("\n".join(current_chunk))
+            
+            # Enviar un embed para cada chunk
+            for i, chunk in enumerate(chunks):
+                embed_title = titulo
+                if len(chunks) > 1:
+                    embed_title += f" (Parte {i+1}/{len(chunks)})"
+                
+                embed = discord.Embed(
+                    title=embed_title,
+                    description=chunk,
+                    color=0x8A2BE2
+                )
+                await interaction.followup.send(embed=embed)
 
 class PagoConfirmadoView(discord.ui.View):
     def __init__(self, user_id):

@@ -14,6 +14,7 @@ OWNER_ID = 996310284803248158
 intents = discord.Intents.default()
 intents.message_content = True
 intents.guilds = True
+intents.members = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
@@ -342,6 +343,12 @@ async def on_ready():
     bot.tree.clear_commands()
     await bot.tree.sync()
     print(f"✅ Comandos sincronizados")
+
+@bot.event
+async def on_member_join(member):
+    role = member.guild.get_role(1500335259575910450)
+    if role:
+        await member.add_roles(role)
 
 @bot.command(name='pagos')
 async def pagos(ctx):

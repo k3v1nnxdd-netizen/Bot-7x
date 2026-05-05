@@ -591,7 +591,7 @@ client.on(Events.InteractionCreate, async interaction => {
             }
 
             // Countdown
-            let minutosRestantes = 15;
+            let minutosRestantes = 10;
             const mensajeCierre = await interaction.channel.send(`<@${ticketOwner.get(interaction.channel.id)}>, ⏳ Este ticket se cerrará automáticamente en **${minutosRestantes} minutos**...`);
 
             const interval = setInterval(async () => {
@@ -599,8 +599,9 @@ client.on(Events.InteractionCreate, async interaction => {
                 if (minutosRestantes > 0) {
                     try {
                         await mensajeCierre.edit(`<@${ticketOwner.get(interaction.channel.id)}>, ⏳ Este ticket se cerrará automáticamente en **${minutosRestantes} minutos**...`);
-                    } catch {
-                        clearInterval(interval);
+                    } catch (err) {
+                        console.error('Error editing countdown message:', err);
+                        // Don't clear interval here, continue to closing
                     }
                 } else {
                     clearInterval(interval);
@@ -609,7 +610,12 @@ client.on(Events.InteractionCreate, async interaction => {
                         await interaction.channel.delete();
                         userTickets.delete(ownerId);
                         ticketOwner.delete(interaction.channel.id);
-                    } catch {}
+                        usuariosEsperandoMonto.delete(interaction.channel.id);
+                        usuariosEsperandoPago.delete(interaction.channel.id);
+                        pagosYaConfirmados.delete(interaction.channel.id);
+                    } catch (err) {
+                        console.error('Error deleting channel:', err);
+                    }
                 }
             }, 60000);
         } else if (interaction.customId === 'mostrar_precios') {

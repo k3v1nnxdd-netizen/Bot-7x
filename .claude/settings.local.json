@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(node -e ' *)",
+      "Bash(node --check main.js)",
+      "Bash(mkdir -p \"c:\\\\Users\\\\Tadeo\\\\Desktop\\\\Bot 7x\\\\data\" \"c:\\\\Users\\\\Tadeo\\\\Desktop\\\\Bot 7x\\\\utils\" \"c:\\\\Users\\\\Tadeo\\\\Desktop\\\\Bot 7x\\\\handlers\")",
+      "Bash(node --check config.js)",
+      "Bash(node --check roblox.js)",
+      "Bash(node --check panel.js)",
+      "Bash(node --check data/prices.js)",
+      "Bash(node --check utils/safe.js)"
+    ],
+    "additionalDirectories": [
+      "c:\\Users\\Tadeo\\Desktop\\Bot 7x"
+    ]
+  }
+}

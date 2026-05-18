@@ -3,51 +3,52 @@
 const { EmbedBuilder } = require('discord.js');
 const tickets = require('../utils/tickets');
 const { isPaymentConfirmation } = require('../utils/payment');
-const config = require('../config');
+
+async function renameChannel(channel, names) {
+    for (const name of names) {
+        try {
+            await channel.setName(name);
+            return true;
+        } catch (err) {
+            console.error(`[messages] rename to "${name}" failed:`, err.message);
+        }
+    }
+    return false;
+}
 
 async function handleMessage(message) {
     if (message.author.bot) return;
-    if (!message.guild)     return;
+    if (!message.guild) return;
 
     const channelId = message.channelId;
-    const ownerId   = tickets.getOwner(channelId);
-    if (!ownerId)                          return;
-    if (message.author.id !== ownerId)     return;
-
-    // Only process payment confirmations inside comprar tickets
+    const ownerId = tickets.getOwner(message.channel);
+    if (!ownerId) return;
+    if (message.author.id !== ownerId) return;
     if (tickets.getType(message.channel) !== 'comprar') return;
-
-    // Already handled — don't fire again
     if (tickets.isConfirmed(channelId)) return;
-
+    if (tickets.isPaymentReview(channelId)) return;
     if (!isPaymentConfirmation(message.content)) return;
 
-    tickets.markConfirmed(channelId);
+    tickets.markPaymentReview(channelId);
 
     const embed = new EmbedBuilder()
-        .setColor(0x00C853)
-        .setTitle('🚀 Pago en Revisión')
+        .setColor(0xF59E0B)
+        .setTitle('Pago pendiente de revision')
         .setDescription(
-            `<@${message.author.id}>, hemos recibido tu confirmación de pago.\n\n` +
-            'Tu comprobante está siendo **revisado por el staff**. ' +
-            'En cuanto sea verificado, recibirás tus **Robux** automáticamente.'
+            `<@${ownerId}>, recibimos tu aviso de **pago exitoso**.\n\n` +
+            'El comprobante queda pendiente de revision por parte del staff. ' +
+            'Cuando el pago sea validado, se confirmara desde el boton de owner y se enviara la confirmacion final.'
         )
         .addFields(
-            { name: '📌 Estado',         value: '`En revisión`',       inline: true },
-            { name: '⏱️ Tiempo estimado', value: '`5 - 15 minutos`',   inline: true },
-            { name: '📝 Recomendación',   value: 'Mantente atento a este canal. **No cierres el ticket** hasta recibir tus Robux.', inline: false }
+            { name: 'Estado', value: '`Pendiente de revision`', inline: true },
+            { name: 'Siguiente paso', value: '`Espera la validacion del staff`', inline: true }
         )
-        .setFooter({ text: '7x Community • Gracias por tu compra' })
+        .setFooter({ text: '7x Community - Revision de pago' })
         .setTimestamp();
 
     await message.channel.send({ embeds: [embed] });
 
-    try {
-        const clean = message.author.username.toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 20) || 'usuario';
-        await message.channel.setName(`✅-pago-${clean}`);
-    } catch (err) {
-        console.error('[messages] rename failed:', err.message);
-    }
+    await renameChannel(message.channel, ['⚠-pago-revision', 'pago-revision']);
 }
 
 module.exports = { handleMessage };

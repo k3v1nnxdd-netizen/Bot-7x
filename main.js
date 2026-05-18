@@ -1,15 +1,16 @@
-﻿'use strict';
+'use strict';
 
 require('dotenv').config();
 
 const { Client, GatewayIntentBits, Events } = require('discord.js');
-const config          = require('./config');
-const { ensurePanel } = require('./panel');
-const tickets         = require('./utils/tickets');
+const config              = require('./config');
+const { ensurePanel }     = require('./panel');
+const tickets             = require('./utils/tickets');
 const { handleButton, clearTimers } = require('./handlers/buttons');
-const { handleModal }   = require('./handlers/modals');
-const { handleOutfit }  = require('./handlers/commands');
-const { handleMessage } = require('./handlers/messages');
+const { handleModal }     = require('./handlers/modals');
+const { handleOutfit }    = require('./handlers/commands');
+const { handleMessage }   = require('./handlers/messages');
+const { markInteraction } = require('./utils/spam');
 
 // ── Client ────────────────────────────────────────────────────────────────────
 
@@ -22,30 +23,29 @@ const client = new Client({
     ],
 });
 
-// ── Global error guards — nothing should crash the process ────────────────────
+// ── Process-level safety net ──────────────────────────────────────────────────
+// Prevents the process from dying on unhandled async errors.
 
 client.on('error', err => console.error('[client] error:', err));
-
 process.on('unhandledRejection', reason => console.error('[process] unhandledRejection:', reason));
 process.on('uncaughtException',  err    => console.error('[process] uncaughtException:',  err));
 
 // ── Ready ─────────────────────────────────────────────────────────────────────
+// client.once guarantees this runs exactly once per process lifetime.
 
 client.once(Events.ClientReady, async () => {
     console.log(`[bot] Logged in as ${client.user.tag}`);
 
     const guild = client.guilds.cache.get(config.GUILD_ID);
     if (!guild) {
-        console.warn('[bot] Guild not found. Panel and ticket rebuild skipped.');
+        console.warn('[bot] Guild not found — panel and ticket rebuild skipped.');
         return;
     }
 
-    // Rebuild ticket state from existing channel topics (survives restarts)
     await tickets.rebuildFromGuild(guild).catch(err =>
         console.error('[bot] rebuildFromGuild failed:', err)
     );
 
-    // Register /outfit slash command
     await guild.commands.set([{
         name: 'outfit',
         description: 'Muestra información y avatar de un usuario de Roblox',
@@ -57,15 +57,33 @@ client.once(Events.ClientReady, async () => {
         }],
     }]).catch(err => console.error('[bot] commands.set failed:', err));
 
-    // Send panel — skipped automatically if one already exists
+    // ensurePanel is the ONLY place that ever sends the panel message.
+    // It checks pins → history → waits → re-checks before sending.
     await ensurePanel(client).catch(err =>
         console.error('[bot] ensurePanel failed:', err)
     );
 });
 
 // ── Interactions ──────────────────────────────────────────────────────────────
+// Single listener. All routing happens here.
+//
+// Layer 1 — markInteraction: rejects any interaction ID we've already seen.
+//            Discord gateway can replay events on reconnect; this blocks replays.
+//
+// Layer 2 — replied/deferred guard inside each handler (buttons.js / modals.js).
+//
+// Layer 3 — per-key spam locks inside each handler.
+//
+// Nothing outside this listener handles interactions.
 
 client.on(Events.InteractionCreate, async interaction => {
+    // Layer 1: global deduplication by interaction ID (atomic, synchronous Set check)
+    if (!markInteraction(interaction.id)) return;
+
+    // Belt-and-suspenders: if Discord delivered an already-acknowledged interaction,
+    // do nothing — every safe* wrapper would bail anyway, but this saves the round-trip.
+    if (interaction.replied || interaction.deferred) return;
+
     try {
         if      (interaction.isChatInputCommand() && interaction.commandName === 'outfit') await handleOutfit(interaction);
         else if (interaction.isButton())      await handleButton(interaction);

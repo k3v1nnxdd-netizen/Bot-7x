@@ -31,5 +31,7 @@ module.exports = {
         COUNTDOWN_TICK_MS: 60 * 1000,        // edit message every 1 min
         MANUAL_CLOSE_MS: 5000,               // delay before delete on user close
         LOCK_MS: 3000,                        // anti-spam per-user lock
+        BUTTON_LOCK_MS: 1500,                 // anti auto-clicker for buttons
+        TICKET_CREATE_LOCK_MS: 30 * 1000,     // atomic ticket creation reservation
     },
 };

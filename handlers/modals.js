@@ -5,27 +5,41 @@ const {
     ModalBuilder, TextInputBuilder, TextInputStyle,
     ActionRowBuilder, EmbedBuilder, ButtonBuilder, ButtonStyle,
 } = require('discord.js');
-const { safeDeferReply, safeEditReply } = require('../utils/safe');
-const { isLocked, lock }                = require('../utils/spam');
-const tickets                           = require('../utils/tickets');
-const { lookup, extractNumber, MIN, MAX } = require('../data/prices');
-const config                            = require('../config');
+const { isGone, safeDeferReply, safeEditReply, safeReply } = require('../utils/safe');
+const { isLocked, lock }                                   = require('../utils/spam');
+const tickets                                              = require('../utils/tickets');
+const { lookup, extractNumber, MIN, MAX }                  = require('../data/prices');
+const config                                               = require('../config');
 
 const OXXO_EXISTS = fs.existsSync('./oxxo.jpg');
 
-// ── Modal builders (exported so buttons.js can show them) ─────────────────────
+// ── Modal builders ────────────────────────────────────────────────────────────
+// These are exported so buttons.js can pass them to safeShowModal().
+// They never send messages — they only build the modal object.
 
 function buildComprarModal() {
     const modal = new ModalBuilder().setCustomId('comprar_modal').setTitle('Compra de Robux');
     modal.addComponents(
         new ActionRowBuilder().addComponents(
-            new TextInputBuilder().setCustomId('usuario_roblox').setLabel('Usuario de Roblox').setStyle(TextInputStyle.Short).setRequired(true)
+            new TextInputBuilder()
+                .setCustomId('usuario_roblox')
+                .setLabel('Usuario de Roblox')
+                .setStyle(TextInputStyle.Short)
+                .setRequired(true)
         ),
         new ActionRowBuilder().addComponents(
-            new TextInputBuilder().setCustomId('cantidad_robux').setLabel('Cantidad de Robux').setStyle(TextInputStyle.Short).setRequired(true)
+            new TextInputBuilder()
+                .setCustomId('cantidad_robux')
+                .setLabel('Cantidad de Robux')
+                .setStyle(TextInputStyle.Short)
+                .setRequired(true)
         ),
         new ActionRowBuilder().addComponents(
-            new TextInputBuilder().setCustomId('es_miembro').setLabel('¿Eres miembro de 7x Studio? (Sí/No)').setStyle(TextInputStyle.Short).setRequired(true)
+            new TextInputBuilder()
+                .setCustomId('es_miembro')
+                .setLabel('¿Eres miembro de 7x Studio? (Sí/No)')
+                .setStyle(TextInputStyle.Short)
+                .setRequired(true)
         )
     );
     return modal;
@@ -50,30 +64,46 @@ function buildOtraCosaModal() {
 
 function closeBtnRow() {
     return new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId('cerrar_ticket').setLabel('Cerrar Ticket').setStyle(ButtonStyle.Danger).setEmoji('🔒')
+        new ButtonBuilder()
+            .setCustomId('cerrar_ticket')
+            .setLabel('Cerrar Ticket')
+            .setStyle(ButtonStyle.Danger)
+            .setEmoji('🔒')
     );
 }
 
 function confirmBtnRow() {
     return new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId('confirmar_pago').setLabel('✅ PAGO REALIZADO (SOLO OWNER)').setStyle(ButtonStyle.Success)
+        new ButtonBuilder()
+            .setCustomId('confirmar_pago')
+            .setLabel('✅ PAGO REALIZADO (SOLO OWNER)')
+            .setStyle(ButtonStyle.Success)
     );
 }
 
-// ── Counter (resets on restart — Discord allows duplicate channel names) ──────
+// Counter resets on restart — Discord allows duplicate channel names
 let comprarN = 1;
 let soporteN = 1;
 function pad(n) { return String(n).padStart(4, '0'); }
 
+function ticketErrorMsg(err) {
+    return err?.code === 'TICKET_EXISTS'
+        ? '❌ Ya tienes un ticket abierto o se esta creando uno. Cierra el anterior antes de crear otro.'
+        : `❌ Error al crear el ticket: ${err.message}`;
+}
+
 // ── Comprar modal handler ─────────────────────────────────────────────────────
 
 async function handleComprarModal(interaction) {
-    // Immediately defer — avoids "interaction expired" if ticket creation takes time
+    // Hard stop — modal submits arrive fresh, but guard anyway
+    if (interaction.replied || interaction.deferred) return;
+
+    // Defer immediately to claim the 3-second token before ticket creation
     if (!await safeDeferReply(interaction, { ephemeral: true })) return;
 
     const userId = interaction.user.id;
 
-    // Anti-spam: block concurrent modal submits from the same user
+    // Anti-concurrent-submit: block a second modal from the same user
     if (isLocked(`modal:${userId}`)) {
         return safeEditReply(interaction, { content: '⏳ Espera un momento antes de intentar de nuevo.' });
     }
@@ -81,7 +111,7 @@ async function handleComprarModal(interaction) {
 
     try {
         if (await tickets.hasActiveTicket(interaction.guild, userId)) {
-            return safeEditReply(interaction, { content: '❌ Ya tienes un ticket abierto. Cierra el anterior antes de crear uno nuevo.' });
+            return safeEditReply(interaction, { content: '❌ Ya tienes un ticket abierto. Cierra el anterior antes de crear otro.' });
         }
 
         const robloxUser  = interaction.fields.getTextInputValue('usuario_roblox').trim();
@@ -101,10 +131,9 @@ async function handleComprarModal(interaction) {
         }
 
         const { amount: finalAmount, price: priceText, rounded } = priceData;
-
         const channel = await tickets.createTicket(interaction.guild, userId, 'comprar', `comprar-${pad(comprarN++)}`);
 
-        // ── Welcome embed
+        // Welcome embed — sent to the TICKET channel, NOT the panel channel
         const welcomeDesc =
             `<@${userId}>\n\n` +
             'Este ticket es **automático** y será procesado por el bot.\n' +
@@ -116,19 +145,21 @@ async function handleComprarModal(interaction) {
             `**Cantidad**\n\`\`\`${finalAmount.toLocaleString()} Robux\`\`\`` +
             (rounded ? `\n\n⚠️ Tu monto fue redondeado a **${finalAmount.toLocaleString()} robux**.` : '');
 
-        const embedWelcome = new EmbedBuilder().setColor(0x000000).setTitle('🎫 ¡Bienvenido a tu ticket de compra!').setDescription(welcomeDesc)
+        const embedWelcome = new EmbedBuilder()
+            .setColor(0x000000)
+            .setTitle('🎫 ¡Bienvenido a tu ticket de compra!')
+            .setDescription(welcomeDesc)
             .setFooter({ text: '7x Community • Proceso automático' });
 
-        // ── Payment embed
         const embedPago = new EmbedBuilder()
             .setColor(0x000000)
             .setTitle('💳 MÉTODOS DE PAGO')
             .setDescription('Elige tu método de pago y completa tu compra de forma segura.')
             .addFields(
-                { name: '📋 Resumen', value: `**${finalAmount.toLocaleString()} Robux** → **${priceText} MXN**`, inline: false },
-                { name: '🏦 TRANSFERENCIA', value: '**CUENTA 1:**\n```722969040869278041```\n**MERCADO PAGO**\nVICENTA MARIANO VALDOVINOS', inline: false },
-                { name: '🏪 DEPÓSITO OXXO', value: 'Consulta los datos de OXXO en la imagen adjunta.', inline: false },
-                { name: '📞 OTROS MÉTODOS', value: `Consulta <#${config.CHANNELS.METODOS}>`, inline: false }
+                { name: '📋 Resumen',      value: `**${finalAmount.toLocaleString()} Robux** → **${priceText} MXN**`,                      inline: false },
+                { name: '🏦 TRANSFERENCIA',value: '**CUENTA 1:**\n```722969040869278041```\n**MERCADO PAGO**\nVICENTA MARIANO VALDOVINOS', inline: false },
+                { name: '🏪 DEPÓSITO OXXO',value: 'Consulta los datos de OXXO en la imagen adjunta.',                                      inline: false },
+                { name: '📞 OTROS MÉTODOS',value: `Consulta <#${config.CHANNELS.METODOS}>`,                                                 inline: false }
             );
         if (OXXO_EXISTS) embedPago.setImage('attachment://oxxo.jpg');
 
@@ -138,7 +169,7 @@ async function handleComprarModal(interaction) {
             .setDescription(
                 '1. Realiza el pago por el monto exacto.\n' +
                 '2. Envía la **FOTO DEL COMPROBANTE** aquí mismo.\n' +
-                '3. Escribe **PAGO EXITOSO** para confirmar.'
+                '3. Escribe **PAGO EXITOSO** para enviar tu pago a revision.'
             );
 
         await channel.send({ embeds: [embedWelcome], components: [closeBtnRow()] });
@@ -155,13 +186,14 @@ async function handleComprarModal(interaction) {
         await safeEditReply(interaction, { content: `✅ Ticket creado: ${channel}` });
     } catch (err) {
         console.error('[modal:comprar] Error:', err);
-        await safeEditReply(interaction, { content: `❌ Error al crear el ticket: ${err.message}` });
+        await safeEditReply(interaction, { content: ticketErrorMsg(err) });
     }
 }
 
 // ── Soporte modal handler ─────────────────────────────────────────────────────
 
 async function handleOtraCosaModal(interaction) {
+    if (interaction.replied || interaction.deferred) return;
     if (!await safeDeferReply(interaction, { ephemeral: true })) return;
 
     const userId = interaction.user.id;
@@ -173,7 +205,7 @@ async function handleOtraCosaModal(interaction) {
 
     try {
         if (await tickets.hasActiveTicket(interaction.guild, userId)) {
-            return safeEditReply(interaction, { content: '❌ Ya tienes un ticket abierto. Cierra el anterior antes de crear uno nuevo.' });
+            return safeEditReply(interaction, { content: '❌ Ya tienes un ticket abierto. Cierra el anterior antes de crear otro.' });
         }
 
         const motivo  = interaction.fields.getTextInputValue('motivo_ticket');
@@ -194,7 +226,7 @@ async function handleOtraCosaModal(interaction) {
         await safeEditReply(interaction, { content: `✅ Ticket creado: ${channel}` });
     } catch (err) {
         console.error('[modal:soporte] Error:', err);
-        await safeEditReply(interaction, { content: `❌ Error al crear el ticket: ${err.message}` });
+        await safeEditReply(interaction, { content: ticketErrorMsg(err) });
     }
 }
 
@@ -206,15 +238,18 @@ const HANDLERS = {
 };
 
 async function handleModal(interaction) {
+    // Hard stop — same pattern as handleButton
+    if (interaction.replied || interaction.deferred) return;
+
     const fn = HANDLERS[interaction.customId];
     if (!fn) return;
+
     try {
         await fn(interaction);
     } catch (err) {
+        if (isGone(err)) return;
         console.error(`[modal:${interaction.customId}] Unhandled error:`, err);
-        if (!interaction.replied && !interaction.deferred) {
-            await interaction.reply({ content: '❌ Ocurrió un error. Intenta de nuevo.', ephemeral: true }).catch(() => {});
-        }
+        await safeReply(interaction, { content: '❌ Ocurrió un error. Intenta de nuevo.', ephemeral: true });
     }
 }
 

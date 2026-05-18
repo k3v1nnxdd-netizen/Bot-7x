@@ -1,85 +1,111 @@
 'use strict';
 
-// Discord API error codes that mean the interaction token is gone
+const { MessageFlags } = require('discord.js');
+
+// ── Discord "interaction is gone" error codes ─────────────────────────────────
+// These are expected in production and must be handled silently.
 const GONE_CODES = new Set([
-    10062, // Unknown Interaction (expired / already used)
+    10062, // Unknown interaction  (token expired after 3 s without a response)
     40060, // Interaction has already been acknowledged
-    10015, // Unknown Webhook (token expired)
+    10015, // Unknown webhook
 ]);
 
 function isGone(err) {
     if (!err) return false;
     if (GONE_CODES.has(err.code)) return true;
     const msg = err.message ?? '';
-    return msg.includes('Unknown interaction') ||
-           msg.includes('already been acknowledged') ||
-           msg.includes('Interaction has already been acknowledged');
+    return (
+        msg.includes('Unknown interaction') ||
+        msg.includes('already been acknowledged') ||
+        msg.includes('Interaction has already been acknowledged')
+    );
 }
 
 function log(method, err) {
-    if (!isGone(err)) console.error(`[safe.${method}]`, err.message ?? err);
+    // Never log expected Discord lifecycle errors — they would spam the console.
+    if (!isGone(err)) console.error(`[safe.${method}]`, err);
 }
 
-// Defer the reply. Returns true if succeeded, false otherwise.
+// Convert deprecated { ephemeral: true } to MessageFlags.Ephemeral
+function fixFlags(options) {
+    if (!options || typeof options !== 'object' || !('ephemeral' in options)) return options;
+    const { ephemeral, flags = 0, ...rest } = options;
+    return ephemeral ? { ...rest, flags: flags | MessageFlags.Ephemeral } : { ...rest, flags };
+}
+
+// ── safe wrappers ─────────────────────────────────────────────────────────────
+// Every wrapper returns false (never throws) so callers can use early-return
+// patterns without try/catch boilerplate.
+
 async function safeDeferReply(interaction, options = {}) {
-    if (interaction.replied || interaction.deferred) return false;
     try {
-        await interaction.deferReply(options);
+        if (!interaction || interaction.replied || interaction.deferred) return false;
+        await interaction.deferReply(fixFlags(options));
         return true;
     } catch (err) {
+        if (isGone(err)) return false;
         log('deferReply', err);
         return false;
     }
 }
 
-// Reply or fall back to editReply when already deferred.
 async function safeReply(interaction, options) {
-    if (interaction.replied || interaction.deferred) {
-        return safeEditReply(interaction, options);
-    }
     try {
-        await interaction.reply(options);
+        if (!interaction) return false;
+        // If already responded, fall back to editing the existing response
+        if (interaction.replied || interaction.deferred) return await safeEditReply(interaction, options);
+        await interaction.reply(fixFlags(options));
         return true;
     } catch (err) {
+        if (isGone(err)) return false;
         log('reply', err);
         return false;
     }
 }
 
-// Edit the deferred/replied response.
 async function safeEditReply(interaction, options) {
-    if (!interaction.deferred && !interaction.replied) return false;
     try {
-        await interaction.editReply(options);
+        if (!interaction || (!interaction.replied && !interaction.deferred)) return false;
+        await interaction.editReply(fixFlags(options));
         return true;
     } catch (err) {
+        if (isGone(err)) return false;
         log('editReply', err);
         return false;
     }
 }
 
-// Follow-up message (requires a prior reply or defer).
 async function safeFollowUp(interaction, options) {
-    if (!interaction.replied && !interaction.deferred) return false;
     try {
-        await interaction.followUp(options);
+        if (!interaction || (!interaction.replied && !interaction.deferred)) return false;
+        await interaction.followUp(fixFlags(options));
         return true;
     } catch (err) {
+        if (isGone(err)) return false;
         log('followUp', err);
         return false;
     }
 }
 
-// Show a modal. Fails silently if the interaction was already acknowledged.
+// safeShowModal is the ONLY place showModal() is ever called.
+// It ALWAYS checks replied/deferred first — if either is true, it does nothing.
 async function safeShowModal(interaction, modal) {
-    if (interaction.replied || interaction.deferred) return false;
     try {
+        if (!interaction || interaction.replied || interaction.deferred) return false;
         await interaction.showModal(modal);
         return true;
     } catch (err) {
+        if (isGone(err)) return false;
         log('showModal', err);
         return false;
     }
 }
 
-module.exports = { safeDeferReply, safeReply, safeEditReply, safeFollowUp, safeShowModal };
+module.exports = {
+    isGone,          // exported so handlers can filter their own error catches
+    safeDeferReply,
+    safeReply,
+    safeEditReply,
+    safeFollowUp,
+    safeShowModal,
+};

@@ -3,6 +3,7 @@
 const { EmbedBuilder } = require('discord.js');
 const tickets = require('../utils/tickets');
 const { isPaymentConfirmation } = require('../utils/payment');
+const { isLocked, lock } = require('../utils/spam');
 
 async function renameChannel(channel, names) {
     for (const name of names) {
@@ -27,7 +28,15 @@ async function handleMessage(message) {
     if (tickets.getType(message.channel) !== 'comprar') return;
     if (tickets.isConfirmed(channelId)) return;
     if (tickets.isPaymentReview(channelId)) return;
+
+    // Persistent guard: channel name survives bot restarts; once renamed it blocks forever
+    if ((message.channel.name ?? '').includes('revision')) return;
+
     if (!isPaymentConfirmation(message.content)) return;
+
+    // Anti-race lock: prevents a second message arriving before the first finishes
+    if (isLocked(`review:${channelId}`)) return;
+    lock(`review:${channelId}`, 30_000);
 
     tickets.markPaymentReview(channelId);
 

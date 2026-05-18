@@ -27,17 +27,23 @@ async function handleMessage(message) {
     if (message.author.id !== ownerId) return;
     if (tickets.getType(message.channel) !== 'comprar') return;
     if (tickets.isConfirmed(channelId)) return;
-    if (tickets.isPaymentReview(channelId)) return;
 
-    // Persistent guard: channel name survives bot restarts; once renamed it blocks forever
+    // Lock check first — short-circuits before any expensive operations
+    if (isLocked(`review:${channelId}`)) return;
+
+    // Persistent state: channel name survives bot restarts
     if ((message.channel.name ?? '').includes('revision')) return;
 
+    // In-memory state (fast, cleared on restart — covered by lock + name check)
+    if (tickets.isPaymentReview(channelId)) return;
+
+    // Only trigger on the "pago exitoso" keyword
     if (!isPaymentConfirmation(message.content)) return;
 
-    // Anti-race lock: prevents a second message arriving before the first finishes
-    if (isLocked(`review:${channelId}`)) return;
+    // Claim the lock and mark state BEFORE any async work.
+    // If send/rename fail, the lock still prevents a duplicate for 30 seconds,
+    // and the name check prevents duplicates after restart once renamed.
     lock(`review:${channelId}`, 30_000);
-
     tickets.markPaymentReview(channelId);
 
     const embed = new EmbedBuilder()
@@ -49,7 +55,7 @@ async function handleMessage(message) {
             'Cuando el pago sea validado, se confirmara desde el boton de owner y se enviara la confirmacion final.'
         )
         .addFields(
-            { name: 'Estado', value: '`Pendiente de revision`', inline: true },
+            { name: 'Estado',         value: '`Pendiente de revision`',       inline: true },
             { name: 'Siguiente paso', value: '`Espera la validacion del staff`', inline: true }
         )
         .setFooter({ text: '7x Community - Revision de pago' })

@@ -41,7 +41,6 @@ function buildRow() {
     );
 }
 
-// Returns true if a message is the panel (bot author + embed with the panel title + buttons)
 function isPanelMsg(msg, botId) {
     return (
         msg.author.id === botId &&
@@ -53,15 +52,9 @@ function isPanelMsg(msg, botId) {
 
 // ── ensurePanel ───────────────────────────────────────────────────────────────
 // The ONLY place the panel message is ever sent.
-// No button, modal, or handler calls this function.
-//
-// Detection order:
-//   1. Pinned messages  — survives unlimited channel activity
-//   2. Last 100 messages — fallback for unpinned panels
-//   3. Send + pin       — only when truly absent
-//
-// A short wait + re-check before step 3 reduces (but cannot eliminate)
-// the race condition when two bot instances start simultaneously.
+// Uses channel.messages.fetch() exclusively — avoids fetchPinned/fetchPins
+// which have inconsistent return types across discord.js v14 patch versions.
+// Pinned messages are detected via the m.pinned property on each message object.
 
 async function ensurePanel(client) {
     const channel = client.channels.cache.get(config.CHANNELS.PANEL);
@@ -70,20 +63,17 @@ async function ensurePanel(client) {
         return;
     }
 
-    // ── 1. Check pinned messages ──────────────────────────────────────────────
-    const pins = await channel.messages.fetchPins().catch(() => null);
-    if (pins) {
-        const pinned = pins.find(m => isPanelMsg(m, client.user.id));
+    // ── 1. Scan last 100 messages ─────────────────────────────────────────────
+    const messages = await channel.messages.fetch({ limit: 100 }).catch(() => null);
+    if (messages) {
+        // Prefer a pinned panel — it means it was explicitly preserved
+        const pinned = messages.find(m => m.pinned && isPanelMsg(m, client.user.id));
         if (pinned) {
-            console.log('[panel] Found in pins — nothing to do.');
+            console.log('[panel] Panel already pinned — nothing to do.');
             return;
         }
-    }
-
-    // ── 2. Scan last 100 messages ─────────────────────────────────────────────
-    const recent = await channel.messages.fetch({ limit: 100 }).catch(() => null);
-    if (recent) {
-        const existing = recent.find(m => isPanelMsg(m, client.user.id));
+        // Any panel in history — pin it for future restarts
+        const existing = messages.find(m => isPanelMsg(m, client.user.id));
         if (existing) {
             console.log('[panel] Found in history — pinning.');
             await existing.pin().catch(err => console.warn('[panel] Could not pin:', err.message));
@@ -91,23 +81,17 @@ async function ensurePanel(client) {
         }
     }
 
-    // ── 3. Wait then re-check before sending ──────────────────────────────────
-    // If two instances start at almost the same time, one will send the panel
-    // and pin it while the other is waiting here. The re-check below catches that.
+    // ── 2. Wait then re-check ─────────────────────────────────────────────────
+    // Guards against two bot instances starting simultaneously.
     await new Promise(r => setTimeout(r, 3000));
 
-    const recheckPins = await channel.messages.fetchPins().catch(() => null);
-    if (recheckPins?.find(m => isPanelMsg(m, client.user.id))) {
-        console.log('[panel] Panel appeared while waiting (concurrent instance) — skipping send.');
-        return;
-    }
-    const recheckRecent = await channel.messages.fetch({ limit: 20 }).catch(() => null);
-    if (recheckRecent?.find(m => isPanelMsg(m, client.user.id))) {
+    const recheck = await channel.messages.fetch({ limit: 20 }).catch(() => null);
+    if (recheck?.find(m => isPanelMsg(m, client.user.id))) {
         console.log('[panel] Panel appeared while waiting — skipping send.');
         return;
     }
 
-    // ── 4. Send and pin ───────────────────────────────────────────────────────
+    // ── 3. Send and pin ───────────────────────────────────────────────────────
     const msg = await channel.send({ embeds: [buildEmbed()], components: [buildRow()] });
     await msg.pin().catch(err => console.warn('[panel] Could not pin:', err.message));
     console.log('[panel] Panel sent and pinned.');

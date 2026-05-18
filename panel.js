@@ -71,7 +71,7 @@ async function ensurePanel(client) {
     }
 
     // ── 1. Check pinned messages ──────────────────────────────────────────────
-    const pins = await channel.messages.fetchPinned().catch(() => null);
+    const pins = await channel.messages.fetchPins().catch(() => null);
     if (pins) {
         const pinned = pins.find(m => isPanelMsg(m, client.user.id));
         if (pinned) {
@@ -96,7 +96,7 @@ async function ensurePanel(client) {
     // and pin it while the other is waiting here. The re-check below catches that.
     await new Promise(r => setTimeout(r, 3000));
 
-    const recheckPins = await channel.messages.fetchPinned().catch(() => null);
+    const recheckPins = await channel.messages.fetchPins().catch(() => null);
     if (recheckPins?.find(m => isPanelMsg(m, client.user.id))) {
         console.log('[panel] Panel appeared while waiting (concurrent instance) — skipping send.');
         return;

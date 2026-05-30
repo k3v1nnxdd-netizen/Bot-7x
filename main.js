@@ -6,7 +6,8 @@ const { Client, GatewayIntentBits, Events } = require('discord.js');
 const config              = require('./config');
 const { ensurePanel }     = require('./panel');
 const { ensureCalcPanel }   = require('./calc');
-const { ensureReglasPanel } = require('./reglas');
+const { ensureReglasPanel }  = require('./reglas');
+const { ensureMetodosPanel } = require('./metodos');
 const tickets             = require('./utils/tickets');
 const { handleButton, clearTimers } = require('./handlers/buttons');
 const { handleModal }     = require('./handlers/modals');
@@ -75,6 +76,10 @@ client.once(Events.ClientReady, async () => {
 
     await ensureReglasPanel(client).catch(err =>
         console.error('[bot] ensureReglasPanel failed:', err)
+    );
+
+    await ensureMetodosPanel(client).catch(err =>
+        console.error('[bot] ensureMetodosPanel failed:', err)
     );
 });
 

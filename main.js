@@ -5,6 +5,8 @@ require('dotenv').config();
 const { Client, GatewayIntentBits, Events } = require('discord.js');
 const config              = require('./config');
 const { ensurePanel }     = require('./panel');
+const { ensureCalcPanel }   = require('./calc');
+const { ensureReglasPanel } = require('./reglas');
 const tickets             = require('./utils/tickets');
 const { handleButton, clearTimers } = require('./handlers/buttons');
 const { handleModal }     = require('./handlers/modals');
@@ -46,6 +48,10 @@ client.once(Events.ClientReady, async () => {
         console.error('[bot] rebuildFromGuild failed:', err)
     );
 
+    // Clear any stale global commands (pagos, precios, etc.)
+    await client.application.commands.set([])
+        .catch(err => console.error('[bot] global commands.set failed:', err));
+
     await guild.commands.set([{
         name: 'outfit',
         description: 'Muestra información y avatar de un usuario de Roblox',
@@ -61,6 +67,14 @@ client.once(Events.ClientReady, async () => {
     // It checks pins → history → waits → re-checks before sending.
     await ensurePanel(client).catch(err =>
         console.error('[bot] ensurePanel failed:', err)
+    );
+
+    await ensureCalcPanel(client).catch(err =>
+        console.error('[bot] ensureCalcPanel failed:', err)
+    );
+
+    await ensureReglasPanel(client).catch(err =>
+        console.error('[bot] ensureReglasPanel failed:', err)
     );
 });
 

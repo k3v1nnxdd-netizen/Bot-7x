@@ -4,6 +4,7 @@ const { EmbedBuilder } = require('discord.js');
 const tickets = require('../utils/tickets');
 const { isPaymentConfirmation } = require('../utils/payment');
 const { isLocked, lock } = require('../utils/spam');
+const config = require('../config');
 
 async function renameChannel(channel, names) {
     for (const name of names) {
@@ -20,6 +21,12 @@ async function renameChannel(channel, names) {
 async function handleMessage(message) {
     if (message.author.bot) return;
     if (!message.guild) return;
+
+    // Auto-react in referencias channel
+    if (message.channelId === config.CHANNELS.REFERENCIAS) {
+        await message.react('<:perfect:1501214987190927432>').catch(() => {});
+        await message.react('<a:leggit:1510180431738179654>').catch(() => {});
+    }
 
     const channelId = message.channelId;
     const ownerId = tickets.getOwner(message.channel);

@@ -11,7 +11,6 @@ function buildEmbed() {
             '¿Quieres comprar **Robux** o tienes alguna **duda**?\n' +
             'Selecciona una opción abajo para **continuar**.\n\n' +
             '<:point:1501212595464700104>  **Comprar** - Crear ticket para comprar Robux\n' +
-            '<:point:1501212595464700104>  **Precios** - Ver lista de precios disponibles\n' +
             '<:point:1501212595464700104> ** Soporte** - Resolver dudas, problemas o consultas\n\n' +
             '━━━━━━━━━━━━━━━━━━━━\n\n' +
             'Los tickets de compra de **Robux** son automáticos y atendidos por un **bot**.\n' +
@@ -28,11 +27,6 @@ function buildRow() {
             .setLabel('Comprar')
             .setStyle(ButtonStyle.Primary)
             .setEmoji('<:buy:1501212698556371004>'),
-        new ButtonBuilder()
-            .setCustomId('precios')
-            .setLabel('Precios')
-            .setStyle(ButtonStyle.Secondary)
-            .setEmoji('<:money:1501213606077792266>'),
         new ButtonBuilder()
             .setCustomId('otra_cosa')
             .setLabel('Otra cosa')
@@ -66,17 +60,21 @@ async function ensurePanel(client) {
     // ── 1. Scan last 100 messages ─────────────────────────────────────────────
     const messages = await channel.messages.fetch({ limit: 100 }).catch(() => null);
     if (messages) {
-        // Prefer a pinned panel — it means it was explicitly preserved
+        // Prefer a pinned panel — edit it in place to reflect current layout
         const pinned = messages.find(m => m.pinned && isPanelMsg(m, client.user.id));
         if (pinned) {
-            console.log('[panel] Panel already pinned — nothing to do.');
+            await pinned.edit({ embeds: [buildEmbed()], components: [buildRow()] })
+                .catch(err => console.warn('[panel] Could not edit pinned panel:', err.message));
+            console.log('[panel] Pinned panel updated in place.');
             return;
         }
-        // Any panel in history — pin it for future restarts
+        // Any panel in history — edit and pin it
         const existing = messages.find(m => isPanelMsg(m, client.user.id));
         if (existing) {
-            console.log('[panel] Found in history — pinning.');
+            await existing.edit({ embeds: [buildEmbed()], components: [buildRow()] })
+                .catch(err => console.warn('[panel] Could not edit panel:', err.message));
             await existing.pin().catch(err => console.warn('[panel] Could not pin:', err.message));
+            console.log('[panel] Found in history — updated and pinned.');
             return;
         }
     }

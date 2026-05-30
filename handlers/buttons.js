@@ -4,8 +4,7 @@ const { EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('
 const { isGone, safeReply, safeEditReply, safeDeferReply, safeShowModal } = require('../utils/safe');
 const { isLocked, lock } = require('../utils/spam');
 const tickets            = require('../utils/tickets');
-const { sendPricesTo }   = require('../utils/pricesSender');
-const { buildComprarModal, buildOtraCosaModal } = require('./modals');
+const { buildComprarModal, buildOtraCosaModal, buildCalcDineroModal, buildCalcRobuxModal } = require('./modals');
 const config             = require('../config');
 
 // ── Countdown timers per ticket channel ───────────────────────────────────────
@@ -31,8 +30,9 @@ function buildAutoCloseEmbed(minutes) {
 
 // ── Channel classification ────────────────────────────────────────────────────
 
-const PANEL_BUTTONS  = new Set(['comprar', 'precios', 'otra_cosa']);
-const TICKET_BUTTONS = new Set(['confirmar_pago', 'mostrar_precios', 'cerrar_ticket', 'confirmar_cerrar', 'cancelar_cerrar']);
+const PANEL_BUTTONS  = new Set(['comprar', 'otra_cosa']);
+const CALC_BUTTONS   = new Set(['calc_dinero', 'calc_robux']);
+const TICKET_BUTTONS = new Set(['confirmar_pago', 'cerrar_ticket', 'confirmar_cerrar', 'cancelar_cerrar']);
 
 function isTicketChannel(interaction) {
     return (
@@ -60,6 +60,12 @@ async function guardButton(interaction) {
     // Panel-only buttons must come from the panel channel
     if (PANEL_BUTTONS.has(interaction.customId) && interaction.channelId !== config.CHANNELS.PANEL) {
         await safeReply(interaction, { content: 'Usa los botones del panel oficial para crear tickets.', ephemeral: true });
+        return false;
+    }
+
+    // Calc buttons must come from the calc channel
+    if (CALC_BUTTONS.has(interaction.customId) && interaction.channelId !== config.CHANNELS.CALC) {
+        await safeReply(interaction, { content: 'Usa los botones del canal de calculadora.', ephemeral: true });
         return false;
     }
 
@@ -103,17 +109,6 @@ async function onComprar(interaction) {
 
     // safeShowModal internally checks replied/deferred before calling showModal()
     await safeShowModal(interaction, buildComprarModal());
-}
-
-async function onPrecios(interaction) {
-    if (interaction.replied || interaction.deferred) return;
-    if (!await safeDeferReply(interaction, { ephemeral: true })) return;
-    try {
-        await sendPricesTo(interaction.user);
-        await safeEditReply(interaction, { content: '✅ Te envié los precios por DM. Revisa tus mensajes privados.' });
-    } catch {
-        await safeEditReply(interaction, { content: '❌ No pude enviarte los precios. Por favor abre tus DMs e inténtalo de nuevo.' });
-    }
 }
 
 async function onOtraCosa(interaction) {
@@ -204,18 +199,6 @@ async function onConfirmarPago(interaction) {
     timers.set(channelId, { interval, timeout });
 }
 
-async function onMostrarPrecios(interaction) {
-    if (interaction.replied || interaction.deferred) return;
-    if (!await safeDeferReply(interaction, { ephemeral: true })) return;
-    try {
-        await sendPricesTo(interaction.user);
-        await safeEditReply(interaction, { content: '✅ Te envie los precios por DM.' });
-    } catch (err) {
-        console.error('[buttons] mostrar_precios error:', err.message);
-        await safeEditReply(interaction, { content: 'No pude enviarte los precios por DM. Revisa que tengas los mensajes privados abiertos.' });
-    }
-}
-
 async function onCerrarTicket(interaction) {
     if (interaction.replied || interaction.deferred) return;
 
@@ -272,14 +255,28 @@ async function onCancelarCerrar(interaction) {
     await safeReply(interaction, { content: '✅ Cierre del ticket cancelado.', ephemeral: true });
 }
 
+// ── Calc handlers ─────────────────────────────────────────────────────────────
+
+async function onCalcDinero(interaction) {
+    if (interaction.replied || interaction.deferred) return;
+    const ok = await safeShowModal(interaction, buildCalcDineroModal());
+    if (!ok) await safeReply(interaction, { content: '❌ No se pudo abrir el formulario. Intenta de nuevo.', ephemeral: true });
+}
+
+async function onCalcRobux(interaction) {
+    if (interaction.replied || interaction.deferred) return;
+    const ok = await safeShowModal(interaction, buildCalcRobuxModal());
+    if (!ok) await safeReply(interaction, { content: '❌ No se pudo abrir el formulario. Intenta de nuevo.', ephemeral: true });
+}
+
 // ── Router ────────────────────────────────────────────────────────────────────
 
 const HANDLERS = {
     comprar:          onComprar,
-    precios:          onPrecios,
     otra_cosa:        onOtraCosa,
+    calc_dinero:      onCalcDinero,
+    calc_robux:       onCalcRobux,
     confirmar_pago:   onConfirmarPago,
-    mostrar_precios:  onMostrarPrecios,
     cerrar_ticket:    onCerrarTicket,
     confirmar_cerrar: onConfirmarCerrar,
     cancelar_cerrar:  onCancelarCerrar,

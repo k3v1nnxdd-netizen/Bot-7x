@@ -227,4 +227,39 @@ function extractNumber(text) {
     return isNaN(n) || n <= 0 ? null : n;
 }
 
-module.exports = { table, lookup, extractNumber, MIN, MAX };
+// Extracts a decimal number from freeform input.
+// Handles: "500", "150.50", "150,50", "$200", etc.
+function extractDecimal(text) {
+    if (!text || typeof text !== 'string') return null;
+    const cleaned = text.trim().replace(/[$\s]/g, '');
+    // Treat comma as decimal separator if it looks like "150,50" (no dot present)
+    const normalized = /,\d{1,2}$/.test(cleaned) && !cleaned.includes('.')
+        ? cleaned.replace(',', '.')
+        : cleaned.replace(/,/g, '');
+    const n = parseFloat(normalized);
+    return isNaN(n) || n <= 0 ? null : n;
+}
+
+function parsePrice(str) {
+    return parseFloat(str.replace(/[$,]/g, ''));
+}
+
+// Given a MXN budget, returns the highest robux package the user can afford.
+function lookupByBudget(budget) {
+    if (isNaN(budget) || budget <= 0) return null;
+    let bestRobux = 0;
+    let bestPrice = null;
+    for (const [robuxStr, priceStr] of Object.entries(table)) {
+        const price = parsePrice(priceStr);
+        const robux = Number(robuxStr);
+        if (price <= budget && robux > bestRobux) {
+            bestRobux = robux;
+            bestPrice = priceStr;
+        }
+    }
+    return bestRobux > 0 ? { robux: bestRobux, price: bestPrice } : null;
+}
+
+const MIN_PRICE = parsePrice(table[MIN]);
+
+module.exports = { table, lookup, extractNumber, extractDecimal, lookupByBudget, MIN, MAX, MIN_PRICE };

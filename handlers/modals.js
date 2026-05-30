@@ -8,7 +8,7 @@ const {
 const { isGone, safeDeferReply, safeEditReply, safeReply } = require('../utils/safe');
 const { isLocked, lock }                                   = require('../utils/spam');
 const tickets                                              = require('../utils/tickets');
-const { lookup, extractNumber, MIN, MAX }                  = require('../data/prices');
+const { lookup, extractNumber, lookupByBudget, extractDecimal, MIN, MAX, MIN_PRICE } = require('../data/prices');
 const config                                               = require('../config');
 
 const OXXO_EXISTS = fs.existsSync('./oxxo.jpg');
@@ -39,6 +39,36 @@ function buildComprarModal() {
                 .setCustomId('es_miembro')
                 .setLabel('¿Eres miembro de 7x Studio? (Sí/No)')
                 .setStyle(TextInputStyle.Short)
+                .setRequired(true)
+        )
+    );
+    return modal;
+}
+
+function buildCalcDineroModal() {
+    const modal = new ModalBuilder().setCustomId('calc_dinero_modal').setTitle('¿Cuánto dinero tienes?');
+    modal.addComponents(
+        new ActionRowBuilder().addComponents(
+            new TextInputBuilder()
+                .setCustomId('presupuesto')
+                .setLabel('Cantidad de dinero disponible (MXN)')
+                .setStyle(TextInputStyle.Short)
+                .setPlaceholder('Ej: 500 o 150.50')
+                .setRequired(true)
+        )
+    );
+    return modal;
+}
+
+function buildCalcRobuxModal() {
+    const modal = new ModalBuilder().setCustomId('calc_robux_modal').setTitle('¿Cuántos Robux quieres?');
+    modal.addComponents(
+        new ActionRowBuilder().addComponents(
+            new TextInputBuilder()
+                .setCustomId('cantidad_robux')
+                .setLabel('Cantidad de Robux')
+                .setStyle(TextInputStyle.Short)
+                .setPlaceholder('Ej: 1500')
                 .setRequired(true)
         )
     );
@@ -230,11 +260,79 @@ async function handleOtraCosaModal(interaction) {
     }
 }
 
+// ── Calc dinero modal handler ─────────────────────────────────────────────────
+
+async function handleCalcDineroModal(interaction) {
+    if (interaction.replied || interaction.deferred) return;
+    if (!await safeDeferReply(interaction, { ephemeral: true })) return;
+
+    const raw    = interaction.fields.getTextInputValue('presupuesto');
+    const budget = extractDecimal(raw);
+
+    if (!budget) {
+        return safeEditReply(interaction, { content: '❌ Ingresa una cantidad válida. Ejemplo: 500 o 150.50' });
+    }
+
+    const result = lookupByBudget(budget);
+    if (!result) {
+        return safeEditReply(interaction, {
+            content: `❌ Con ese presupuesto no puedes comprar Robux. El paquete mínimo cuesta **$${MIN_PRICE} MXN** (${MIN.toLocaleString()} Robux).`,
+        });
+    }
+
+    const embed = new EmbedBuilder()
+        .setColor(0x000000)
+        .setTitle('🧮 Resultado del cálculo')
+        .addFields(
+            { name: '💰 Presupuesto ingresado', value: `$${budget.toLocaleString('es-MX', { minimumFractionDigits: 0, maximumFractionDigits: 2 })} MXN`, inline: true },
+            { name: '<a:robuxxx:1510070809366892604> Robux que puedes obtener', value: `${result.robux.toLocaleString()} Robux`, inline: true },
+            { name: '💵 Precio exacto del paquete', value: `${result.price} MXN`, inline: true },
+        )
+        .setFooter({ text: '7x Community • Calculadora de precios' });
+
+    await safeEditReply(interaction, { embeds: [embed] });
+}
+
+// ── Calc robux modal handler ──────────────────────────────────────────────────
+
+async function handleCalcRobuxModal(interaction) {
+    if (interaction.replied || interaction.deferred) return;
+    if (!await safeDeferReply(interaction, { ephemeral: true })) return;
+
+    const raw    = interaction.fields.getTextInputValue('cantidad_robux');
+    const amount = extractNumber(raw);
+
+    if (!amount) {
+        return safeEditReply(interaction, { content: '❌ Ingresa una cantidad válida de Robux. Ejemplo: 1500' });
+    }
+
+    const result = lookup(amount);
+    if (!result) {
+        return safeEditReply(interaction, {
+            content: `❌ Cantidad no disponible. Elige entre **${MIN.toLocaleString()}** y **${MAX.toLocaleString()}** Robux.`,
+        });
+    }
+
+    const embed = new EmbedBuilder()
+        .setColor(0x000000)
+        .setTitle('🧮 Resultado del cálculo')
+        .setDescription(result.rounded ? `⚠️ Tu monto fue redondeado al paquete más cercano: **${result.amount.toLocaleString()} Robux**.` : null)
+        .addFields(
+            { name: '<a:robuxxx:1510070809366892604> Robux solicitados', value: `${result.amount.toLocaleString()} Robux`, inline: true },
+            { name: '💰 Precio total', value: `${result.price} MXN`, inline: true },
+        )
+        .setFooter({ text: '7x Community • Calculadora de precios' });
+
+    await safeEditReply(interaction, { embeds: [embed] });
+}
+
 // ── Router ────────────────────────────────────────────────────────────────────
 
 const HANDLERS = {
-    comprar_modal:   handleComprarModal,
-    otra_cosa_modal: handleOtraCosaModal,
+    comprar_modal:    handleComprarModal,
+    otra_cosa_modal:  handleOtraCosaModal,
+    calc_dinero_modal: handleCalcDineroModal,
+    calc_robux_modal:  handleCalcRobuxModal,
 };
 
 async function handleModal(interaction) {
@@ -253,4 +351,4 @@ async function handleModal(interaction) {
     }
 }
 
-module.exports = { handleModal, buildComprarModal, buildOtraCosaModal };
+module.exports = { handleModal, buildComprarModal, buildOtraCosaModal, buildCalcDineroModal, buildCalcRobuxModal };

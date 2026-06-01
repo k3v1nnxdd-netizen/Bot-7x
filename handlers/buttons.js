@@ -158,15 +158,18 @@ async function onConfirmarPago(interaction) {
     const mention = ownerId ? `<@${ownerId}>` : 'Usuario';
 
     const embed = new EmbedBuilder()
-        .setColor(0x7C3AED)
-        .setTitle('<:true:1501213776878501899> PAGO EXITOSO')
+        .setColor(0x000000)
+        .setTitle('<:truepurple:1501214679400190086> PAGO EXITOSO')
         .setDescription(
             `<:member:1501261625523699892> ${mention}, ¡tu pago ha sido confirmado y procesado correctamente!\n\n` +
-            'Tus Robux han sido enviados a tu cuenta.\n' +
-            'En casos poco frecuentes la entrega puede tardar hasta 72 horas,\n' +
-            'pero generalmente es inmediata.\n\n' +
-            `<:point:1501212595464700104> Por favor deja tu reseña en <#${config.CHANNELS.REFERENCIAS}>\n\n` +
-            '¡Esperamos verte pronto en tu próxima compra! <:truepurple:1501214679400190086>'
+            '<:point:1501212595464700104> Tus Robux ya han sido enviados a tu cuenta de Roblox.\n\n' +
+            '<:alert:1501220021035204658> **Importante:** Si los Robux aún no aparecen en tu balance, no te preocupes. En algunas ocasiones, especialmente cuando se trata de cantidades grandes, Roblox puede colocar los fondos en estado **Pendiente** por motivos de seguridad y verificación.\n\n' +
+            '<:point:1501212595464700104> Normalmente este proceso tarda entre **5 y 10 minutos**, pero en casos poco comunes puede extenderse varios días. Aunque es extremadamente raro, algunos pagos pueden tardar hasta **6-7 días** en liberarse. Como máximo, Roblox puede retenerlos hasta **10 días** antes de acreditarlos a tu cuenta.\n\n' +
+            '<:point:1501212595464700104> Este proceso es realizado directamente por Roblox para proteger tanto tu cuenta como la plataforma, por lo que no tenemos control sobre los tiempos de espera.\n\n' +
+            '<:point:1501212595464700104> Puedes revisar el estado de tus Robux y transacciones aquí: [ver transacciones / robux pendientes](<https://www.roblox.com/transactions>)\n\n' +
+            '<:point:1501212595464700104> Te pedimos paciencia mientras Roblox completa la verificación de tu pago.\n\n' +
+            `<:point:1501212595464700104> Por favor, deja tu reseña en <#${config.CHANNELS.REFERENCIAS}>\n\n` +
+            '<:truepurple:1501214679400190086> ¡Gracias por tu compra y esperamos verte nuevamente muy pronto!'
         );
 
     await safeReply(interaction, { embeds: [embed] });

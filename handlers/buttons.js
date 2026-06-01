@@ -1,6 +1,11 @@
 'use strict';
 
+const fs = require('fs');
 const { EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
+
+const EXITOSO_PATH   = './exitosoemoji.gif';
+const EXITOSO_NAME   = 'exitosoemoji.gif';
+const EXITOSO_EXISTS = fs.existsSync(EXITOSO_PATH);
 const { isGone, safeReply, safeEditReply, safeDeferReply, safeShowModal } = require('../utils/safe');
 const { isLocked, lock } = require('../utils/spam');
 const tickets            = require('../utils/tickets');
@@ -160,6 +165,7 @@ async function onConfirmarPago(interaction) {
     const embed = new EmbedBuilder()
         .setColor(0x000000)
         .setTitle('<:truepurple:1501214679400190086> PAGO EXITOSO')
+        .setThumbnail(EXITOSO_EXISTS ? `attachment://${EXITOSO_NAME}` : null)
         .setDescription(
             `<:member:1501261625523699892> ${mention}, ¡tu pago ha sido confirmado y procesado correctamente!\n\n` +
             '<:point:1501212595464700104> Tus Robux ya han sido enviados a tu cuenta de Roblox.\n\n' +
@@ -172,7 +178,11 @@ async function onConfirmarPago(interaction) {
             '<:truepurple:1501214679400190086> ¡Gracias por tu compra y esperamos verte nuevamente muy pronto!'
         );
 
-    await safeReply(interaction, { embeds: [embed] });
+    const replyPayload = {
+        embeds: [embed],
+        ...(EXITOSO_EXISTS && { files: [{ attachment: EXITOSO_PATH, name: EXITOSO_NAME }] }),
+    };
+    await safeReply(interaction, replyPayload);
 
     try {
         const member = ownerId ? await interaction.guild.members.fetch(ownerId).catch(() => null) : null;

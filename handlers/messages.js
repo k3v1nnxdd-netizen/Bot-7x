@@ -1,10 +1,15 @@
 'use strict';
 
+const fs = require('fs');
 const { EmbedBuilder } = require('discord.js');
 const tickets = require('../utils/tickets');
 const { isPaymentConfirmation } = require('../utils/payment');
 const { isLocked, lock } = require('../utils/spam');
 const config = require('../config');
+
+const PENDING_PATH   = './pending.gif';
+const PENDING_NAME   = 'pending.gif';
+const PENDING_EXISTS = fs.existsSync(PENDING_PATH);
 
 async function renameChannel(channel, names) {
     for (const name of names) {
@@ -56,6 +61,7 @@ async function handleMessage(message) {
     const embed = new EmbedBuilder()
         .setColor(0xF59E0B)
         .setTitle('Pago pendiente de revision')
+        .setThumbnail(PENDING_EXISTS ? `attachment://${PENDING_NAME}` : null)
         .setDescription(
             `<@${ownerId}>, recibimos tu aviso de **pago exitoso**.\n\n` +
             'El comprobante queda pendiente de revision por parte del staff. ' +
@@ -68,7 +74,11 @@ async function handleMessage(message) {
         .setFooter({ text: '7x Community - Revision de pago' })
         .setTimestamp();
 
-    await message.channel.send({ embeds: [embed] });
+    const sendPayload = {
+        embeds: [embed],
+        ...(PENDING_EXISTS && { files: [{ attachment: PENDING_PATH, name: PENDING_NAME }] }),
+    };
+    await message.channel.send(sendPayload);
 
     await renameChannel(message.channel, ['⚠-pago-revision', 'pago-revision']);
 }

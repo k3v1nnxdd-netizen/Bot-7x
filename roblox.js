@@ -65,6 +65,13 @@ async function getHeadshot(userId) {
     return res.data?.data?.[0]?.imageUrl ?? null;
 }
 
+async function isUserInGroup(userId, groupId) {
+    const res = await retry(() =>
+        api.get(`https://groups.roblox.com/v1/users/${userId}/groups/roles`)
+    );
+    return res.data?.data?.some(g => g.group?.id === Number(groupId)) ?? false;
+}
+
 module.exports = {
     getUserByUsername,
     getUserProfile,
@@ -72,4 +79,5 @@ module.exports = {
     getFriendCount,
     getAvatarImage,
     getHeadshot,
+    isUserInGroup,
 };

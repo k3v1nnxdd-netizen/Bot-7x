@@ -11,7 +11,12 @@ module.exports = {
         METODOS:    '1494475415597744360',
         CALC:       '1499571855789527173',
         REGLAS:     '1178782534721622067',
+        VERIF:      '1511199906285486141',
     },
+
+    ROBLOX_GROUP_ID:       282134403,
+    ROBLOX_GROUP_DAYS_REQ: 15,
+    ROBLOX_GROUP_LINK:     'https://www.roblox.com/es/communities/282134403/Noctra-Study',
 
     CATEGORIES: {
         TICKETS: '1184353695643729940',

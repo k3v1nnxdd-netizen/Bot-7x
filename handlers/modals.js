@@ -9,6 +9,8 @@ const { isGone, safeDeferReply, safeEditReply, safeReply } = require('../utils/s
 const { isLocked, lock }                                   = require('../utils/spam');
 const tickets                                              = require('../utils/tickets');
 const { lookup, extractNumber, lookupByBudget, extractDecimal, MIN, MAX, MIN_PRICE } = require('../data/prices');
+const roblox                                               = require('../roblox');
+const { getJoinDate, trackIfNew, daysSince }               = require('../utils/groupTracker');
 const config                                               = require('../config');
 
 const OXXO_EXISTS = fs.existsSync('./oxxo.jpg');
@@ -326,6 +328,113 @@ async function handleCalcRobuxModal(interaction) {
     await safeEditReply(interaction, { embeds: [embed] });
 }
 
+// ── Verif modal builder ───────────────────────────────────────────────────────
+
+function buildVerifModal() {
+    const modal = new ModalBuilder().setCustomId('verif_modal').setTitle('Verificación de Grupo Roblox');
+    modal.addComponents(
+        new ActionRowBuilder().addComponents(
+            new TextInputBuilder()
+                .setCustomId('roblox_username')
+                .setLabel('Tu nombre de usuario de Roblox')
+                .setStyle(TextInputStyle.Short)
+                .setPlaceholder('Ej: PlayerName123')
+                .setRequired(true)
+        )
+    );
+    return modal;
+}
+
+// ── Verif modal handler ───────────────────────────────────────────────────────
+
+async function handleVerifModal(interaction) {
+    if (interaction.replied || interaction.deferred) return;
+    if (!await safeDeferReply(interaction, { ephemeral: true })) return;
+
+    const username = interaction.fields.getTextInputValue('roblox_username').trim();
+    if (!username) {
+        return safeEditReply(interaction, { content: '❌ Ingresa un nombre de usuario válido.' });
+    }
+
+    // ── Fetch Roblox user ─────────────────────────────────────────────────────
+    let robloxUser;
+    try {
+        robloxUser = await roblox.getUserByUsername(username);
+    } catch {
+        const embed = new EmbedBuilder()
+            .setColor(0x000000)
+            .setTitle('<:alert:1501220021035204658> Usuario no encontrado')
+            .setDescription(
+                `No encontramos ninguna cuenta de Roblox con el nombre **${username}**.\n\n` +
+                '<:point:1501212595464700104> Verifica que el nombre esté escrito correctamente e intenta de nuevo.'
+            )
+            .setFooter({ text: '7x Community • Verificación de Grupo' });
+        return safeEditReply(interaction, { embeds: [embed] });
+    }
+
+    const userId = robloxUser.id;
+
+    // ── Check group membership ────────────────────────────────────────────────
+    let inGroup;
+    try {
+        inGroup = await roblox.isUserInGroup(userId, config.ROBLOX_GROUP_ID);
+    } catch {
+        return safeEditReply(interaction, { content: '❌ Error al conectar con la API de Roblox. Intenta de nuevo en unos segundos.' });
+    }
+
+    if (!inGroup) {
+        const embed = new EmbedBuilder()
+            .setColor(0x000000)
+            .setTitle('<:alert:1501220021035204658> No estás en la comunidad')
+            .setDescription(
+                `**${robloxUser.name}** no se encuentra en la comunidad de Roblox requerida.\n\n` +
+                `<:point:1501212595464700104> Para poder ser verificado y recibir Robux, primero debes unirte:\n` +
+                `[**Comunidad de Robux-Roblox**](<${config.ROBLOX_GROUP_LINK}>)\n\n` +
+                '<:point:1501212595464700104> Una vez dentro, regresa aquí y vuelve a verificarte.'
+            )
+            .setFooter({ text: '7x Community • Verificación de Grupo' });
+        return safeEditReply(interaction, { embeds: [embed] });
+    }
+
+    // ── Track / retrieve join date ────────────────────────────────────────────
+    const isNew  = trackIfNew(userId);
+    const joined = getJoinDate(userId);
+    const days   = joined ? daysSince(joined) : 0;
+    const req    = config.ROBLOX_GROUP_DAYS_REQ;
+    const left   = Math.max(0, req - days);
+    const eligible = days >= req;
+
+    const statusIcon = eligible ? '<:true:1501213776878501899>' : '<:alert:1501220021035204658>';
+    const statusText = eligible ? '**ELEGIBLE** ✅' : '**NO ELEGIBLE** ❌';
+
+    const embed = new EmbedBuilder()
+        .setColor(0x000000)
+        .setTitle(`${statusIcon} Resultado de Verificación`)
+        .addFields(
+            { name: '<:member:1501261625523699892> Usuario de Roblox', value: `\`${robloxUser.name}\``, inline: true },
+            { name: '📅 Días en el grupo', value: `**${days}** día${days !== 1 ? 's' : ''}`, inline: true },
+            { name: '🏆 Estado', value: statusText, inline: true },
+        )
+        .setFooter({ text: '7x Community • Verificación de Grupo' });
+
+    if (eligible) {
+        embed.setDescription(
+            '<:truepurple:1501214679400190086> ¡Felicidades! Ya cumples los requisitos para recibir Robux.\n\n' +
+            '<:point:1501212595464700104> Puedes proceder a crear un ticket de compra desde el panel principal.'
+        );
+    } else {
+        embed.setDescription(
+            `<:point:1501212595464700104> Aún no cumples los **${req} días** requeridos en la comunidad.\n\n` +
+            `<:alert:1501220021035204658> Te faltan **${left} día${left !== 1 ? 's' : ''}** para ser elegible.\n\n` +
+            (isNew
+                ? '<:point:1501212595464700104> **Nota:** El contador comenzó hoy. Vuelve a verificarte cuando hayas completado los días restantes.'
+                : '<:point:1501212595464700104> Vuelve a verificarte cuando hayas completado el tiempo restante.')
+        );
+    }
+
+    await safeEditReply(interaction, { embeds: [embed] });
+}
+
 // ── Router ────────────────────────────────────────────────────────────────────
 
 const HANDLERS = {
@@ -333,6 +442,7 @@ const HANDLERS = {
     otra_cosa_modal:  handleOtraCosaModal,
     calc_dinero_modal: handleCalcDineroModal,
     calc_robux_modal:  handleCalcRobuxModal,
+    verif_modal:       handleVerifModal,
 };
 
 async function handleModal(interaction) {
@@ -351,4 +461,4 @@ async function handleModal(interaction) {
     }
 }
 
-module.exports = { handleModal, buildComprarModal, buildOtraCosaModal, buildCalcDineroModal, buildCalcRobuxModal };
+module.exports = { handleModal, buildComprarModal, buildOtraCosaModal, buildCalcDineroModal, buildCalcRobuxModal, buildVerifModal };

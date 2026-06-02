@@ -9,7 +9,7 @@ const EXITOSO_EXISTS = fs.existsSync(EXITOSO_PATH);
 const { isGone, safeReply, safeEditReply, safeDeferReply, safeShowModal } = require('../utils/safe');
 const { isLocked, lock } = require('../utils/spam');
 const tickets            = require('../utils/tickets');
-const { buildComprarModal, buildOtraCosaModal, buildCalcDineroModal, buildCalcRobuxModal } = require('./modals');
+const { buildComprarModal, buildOtraCosaModal, buildCalcDineroModal, buildCalcRobuxModal, buildVerifModal } = require('./modals');
 const config             = require('../config');
 
 // ── Countdown timers per ticket channel ───────────────────────────────────────
@@ -37,6 +37,7 @@ function buildAutoCloseEmbed(minutes) {
 
 const PANEL_BUTTONS  = new Set(['comprar', 'otra_cosa']);
 const CALC_BUTTONS   = new Set(['calc_dinero', 'calc_robux']);
+const VERIF_BUTTONS  = new Set(['verif_check']);
 const TICKET_BUTTONS = new Set(['confirmar_pago', 'cerrar_ticket', 'confirmar_cerrar', 'cancelar_cerrar']);
 
 function isTicketChannel(interaction) {
@@ -71,6 +72,12 @@ async function guardButton(interaction) {
     // Calc buttons must come from the calc channel
     if (CALC_BUTTONS.has(interaction.customId) && interaction.channelId !== config.CHANNELS.CALC) {
         await safeReply(interaction, { content: 'Usa los botones del canal de calculadora.', ephemeral: true });
+        return false;
+    }
+
+    // Verif buttons must come from the verif channel
+    if (VERIF_BUTTONS.has(interaction.customId) && interaction.channelId !== config.CHANNELS.VERIF) {
+        await safeReply(interaction, { content: 'Usa los botones del canal de verificación.', ephemeral: true });
         return false;
     }
 
@@ -268,6 +275,14 @@ async function onCancelarCerrar(interaction) {
     await safeReply(interaction, { content: '✅ Cierre del ticket cancelado.', ephemeral: true });
 }
 
+// ── Verif handler ─────────────────────────────────────────────────────────────
+
+async function onVerifCheck(interaction) {
+    if (interaction.replied || interaction.deferred) return;
+    const ok = await safeShowModal(interaction, buildVerifModal());
+    if (!ok) await safeReply(interaction, { content: '❌ No se pudo abrir el formulario. Intenta de nuevo.', ephemeral: true });
+}
+
 // ── Calc handlers ─────────────────────────────────────────────────────────────
 
 async function onCalcDinero(interaction) {
@@ -287,6 +302,7 @@ async function onCalcRobux(interaction) {
 const HANDLERS = {
     comprar:          onComprar,
     otra_cosa:        onOtraCosa,
+    verif_check:      onVerifCheck,
     calc_dinero:      onCalcDinero,
     calc_robux:       onCalcRobux,
     confirmar_pago:   onConfirmarPago,

@@ -8,6 +8,7 @@ const { ensurePanel }     = require('./panel');
 const { ensureCalcPanel }   = require('./calc');
 const { ensureReglasPanel }  = require('./reglas');
 const { ensureMetodosPanel } = require('./metodos');
+const { ensureVerifPanel }   = require('./verif');
 const tickets             = require('./utils/tickets');
 const { handleButton, clearTimers } = require('./handlers/buttons');
 const { handleModal }     = require('./handlers/modals');
@@ -80,6 +81,10 @@ client.once(Events.ClientReady, async () => {
 
     await ensureMetodosPanel(client).catch(err =>
         console.error('[bot] ensureMetodosPanel failed:', err)
+    );
+
+    await ensureVerifPanel(client).catch(err =>
+        console.error('[bot] ensureVerifPanel failed:', err)
     );
 });
 

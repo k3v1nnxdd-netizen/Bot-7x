@@ -2,13 +2,14 @@
 
 require('dotenv').config();
 
-const { Client, GatewayIntentBits, Events } = require('discord.js');
+const { Client, GatewayIntentBits, Events, Partials } = require('discord.js');
 const config              = require('./config');
 const { ensurePanel }     = require('./panel');
 const { ensureCalcPanel }   = require('./calc');
 const { ensureReglasPanel }  = require('./reglas');
 const { ensureMetodosPanel } = require('./metodos');
 const { ensureVerifPanel }   = require('./verif');
+const { ensureRolesPanel, EMOJI_ROLE_MAP, getRolesMsgId } = require('./roles');
 const tickets             = require('./utils/tickets');
 const { handleButton, clearTimers } = require('./handlers/buttons');
 const { handleModal }     = require('./handlers/modals');
@@ -24,18 +25,18 @@ const client = new Client({
         GatewayIntentBits.GuildMessages,
         GatewayIntentBits.MessageContent,
         GatewayIntentBits.GuildMembers,
+        GatewayIntentBits.GuildMessageReactions,
     ],
+    partials: [Partials.Message, Partials.Channel, Partials.Reaction],
 });
 
 // ── Process-level safety net ──────────────────────────────────────────────────
-// Prevents the process from dying on unhandled async errors.
 
 client.on('error', err => console.error('[client] error:', err));
 process.on('unhandledRejection', reason => console.error('[process] unhandledRejection:', reason));
 process.on('uncaughtException',  err    => console.error('[process] uncaughtException:',  err));
 
 // ── Ready ─────────────────────────────────────────────────────────────────────
-// client.once guarantees this runs exactly once per process lifetime.
 
 client.once(Events.ClientReady, async () => {
     console.log(`[bot] Logged in as ${client.user.tag}`);
@@ -50,7 +51,7 @@ client.once(Events.ClientReady, async () => {
         console.error('[bot] rebuildFromGuild failed:', err)
     );
 
-    // Clear any stale global commands (pagos, precios, etc.)
+    // Clear any stale global commands
     await client.application.commands.set([])
         .catch(err => console.error('[bot] global commands.set failed:', err));
 
@@ -65,8 +66,6 @@ client.once(Events.ClientReady, async () => {
         }],
     }]).catch(err => console.error('[bot] commands.set failed:', err));
 
-    // ensurePanel is the ONLY place that ever sends the panel message.
-    // It checks pins → history → waits → re-checks before sending.
     await ensurePanel(client).catch(err =>
         console.error('[bot] ensurePanel failed:', err)
     );
@@ -86,26 +85,16 @@ client.once(Events.ClientReady, async () => {
     await ensureVerifPanel(client).catch(err =>
         console.error('[bot] ensureVerifPanel failed:', err)
     );
+
+    await ensureRolesPanel(client).catch(err =>
+        console.error('[bot] ensureRolesPanel failed:', err)
+    );
 });
 
 // ── Interactions ──────────────────────────────────────────────────────────────
-// Single listener. All routing happens here.
-//
-// Layer 1 — markInteraction: rejects any interaction ID we've already seen.
-//            Discord gateway can replay events on reconnect; this blocks replays.
-//
-// Layer 2 — replied/deferred guard inside each handler (buttons.js / modals.js).
-//
-// Layer 3 — per-key spam locks inside each handler.
-//
-// Nothing outside this listener handles interactions.
 
 client.on(Events.InteractionCreate, async interaction => {
-    // Layer 1: global deduplication by interaction ID (atomic, synchronous Set check)
     if (!markInteraction(interaction.id)) return;
-
-    // Belt-and-suspenders: if Discord delivered an already-acknowledged interaction,
-    // do nothing — every safe* wrapper would bail anyway, but this saves the round-trip.
     if (interaction.replied || interaction.deferred) return;
 
     try {
@@ -122,6 +111,46 @@ client.on(Events.InteractionCreate, async interaction => {
 client.on(Events.MessageCreate, async message => {
     try { await handleMessage(message); }
     catch (err) { console.error('[message] error:', err); }
+});
+
+// ── Reaction roles ────────────────────────────────────────────────────────────
+
+client.on(Events.MessageReactionAdd, async (reaction, user) => {
+    try {
+        if (user.bot) return;
+        if (reaction.message.id !== getRolesMsgId()) return;
+
+        if (reaction.partial) await reaction.fetch();
+        if (user.partial)     await user.fetch();
+
+        const roleId = EMOJI_ROLE_MAP[reaction.emoji.id];
+        if (!roleId) return;
+
+        const guild  = reaction.message.guild;
+        const member = await guild.members.fetch(user.id);
+        await member.roles.add(roleId);
+    } catch (err) {
+        console.error('[reaction:add] error:', err.message);
+    }
+});
+
+client.on(Events.MessageReactionRemove, async (reaction, user) => {
+    try {
+        if (user.bot) return;
+        if (reaction.message.id !== getRolesMsgId()) return;
+
+        if (reaction.partial) await reaction.fetch();
+        if (user.partial)     await user.fetch();
+
+        const roleId = EMOJI_ROLE_MAP[reaction.emoji.id];
+        if (!roleId) return;
+
+        const guild  = reaction.message.guild;
+        const member = await guild.members.fetch(user.id);
+        await member.roles.remove(roleId);
+    } catch (err) {
+        console.error('[reaction:remove] error:', err.message);
+    }
 });
 
 // ── Member auto-role ──────────────────────────────────────────────────────────

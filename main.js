@@ -7,7 +7,7 @@ const config              = require('./config');
 const { ensurePanel }     = require('./panel');
 const { ensureCalcPanel }   = require('./calc');
 const { ensureReglasPanel }  = require('./reglas');
-const { ensureMetodosPanel } = require('./metodos');
+const { ensureMetodosPanel, handleMetodosSelect } = require('./metodos');
 const { ensureVerifPanel }   = require('./verif');
 const { ensureRolesPanel, EMOJI_ROLE_MAP, getRolesMsgId } = require('./roles');
 const tickets             = require('./utils/tickets');
@@ -99,8 +99,9 @@ client.on(Events.InteractionCreate, async interaction => {
 
     try {
         if      (interaction.isChatInputCommand() && interaction.commandName === 'outfit') await handleOutfit(interaction);
-        else if (interaction.isButton())      await handleButton(interaction);
-        else if (interaction.isModalSubmit()) await handleModal(interaction);
+        else if (interaction.isButton())           await handleButton(interaction);
+        else if (interaction.isModalSubmit())      await handleModal(interaction);
+        else if (interaction.isStringSelectMenu()) await handleMetodosSelect(interaction);
     } catch (err) {
         console.error('[interaction] top-level error:', err);
     }

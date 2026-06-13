@@ -4,6 +4,11 @@ const { EmbedBuilder } = require('discord.js');
 const { safeDeferReply, safeReply, safeEditReply } = require('../utils/safe');
 const roblox = require('../roblox');
 const config = require('../config');
+const {
+    buildTransferenciaEmbed, buildTransferenciaRow,
+    buildOxxoEmbed, buildGiftCardEmbed,
+    OXXO_PATH, OXXO_NAME, OXXO_EXISTS,
+} = require('../metodos');
 
 async function handleOutfit(interaction) {
     if (interaction.channelId !== config.CHANNELS.OUTFIT) {
@@ -71,4 +76,26 @@ async function handleOutfit(interaction) {
     }
 }
 
-module.exports = { handleOutfit };
+async function handlePagos(interaction) {
+    const ok = await safeDeferReply(interaction, { ephemeral: true });
+    if (!ok) return;
+
+    const metodo = interaction.options.getString('metodo');
+
+    if (metodo === 'transferencia') {
+        return safeEditReply(interaction, {
+            embeds: [buildTransferenciaEmbed()],
+            components: [buildTransferenciaRow()],
+        });
+    }
+    if (metodo === 'oxxo') {
+        const payload = { embeds: [buildOxxoEmbed()] };
+        if (OXXO_EXISTS) payload.files = [{ attachment: OXXO_PATH, name: OXXO_NAME }];
+        return safeEditReply(interaction, payload);
+    }
+    if (metodo === 'giftcard') {
+        return safeEditReply(interaction, { embeds: [buildGiftCardEmbed()] });
+    }
+}
+
+module.exports = { handleOutfit, handlePagos };

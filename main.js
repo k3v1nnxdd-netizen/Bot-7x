@@ -13,7 +13,7 @@ const { ensureRolesPanel, EMOJI_ROLE_MAP, getRolesMsgId } = require('./roles');
 const tickets             = require('./utils/tickets');
 const { handleButton, clearTimers } = require('./handlers/buttons');
 const { handleModal }     = require('./handlers/modals');
-const { handleOutfit }    = require('./handlers/commands');
+const { handleOutfit, handlePagos } = require('./handlers/commands');
 const { handleMessage }   = require('./handlers/messages');
 const { markInteraction } = require('./utils/spam');
 
@@ -55,16 +55,33 @@ client.once(Events.ClientReady, async () => {
     await client.application.commands.set([])
         .catch(err => console.error('[bot] global commands.set failed:', err));
 
-    await guild.commands.set([{
-        name: 'outfit',
-        description: 'Muestra información y avatar de un usuario de Roblox',
-        options: [{
-            name: 'user',
-            type: 3,
-            description: 'Nombre de usuario de Roblox (ej: sombrapapoi)',
-            required: true,
-        }],
-    }]).catch(err => console.error('[bot] commands.set failed:', err));
+    await guild.commands.set([
+        {
+            name: 'outfit',
+            description: 'Muestra información y avatar de un usuario de Roblox',
+            options: [{
+                name: 'user',
+                type: 3,
+                description: 'Nombre de usuario de Roblox (ej: sombrapapoi)',
+                required: true,
+            }],
+        },
+        {
+            name: 'pagos',
+            description: 'Consulta los métodos de pago disponibles en 7x',
+            options: [{
+                name: 'metodo',
+                type: 3,
+                description: 'Método de pago que deseas consultar',
+                required: true,
+                choices: [
+                    { name: 'Transferencia', value: 'transferencia' },
+                    { name: 'Depósito OXXO', value: 'oxxo' },
+                    { name: 'Gift Card',     value: 'giftcard' },
+                ],
+            }],
+        },
+    ]).catch(err => console.error('[bot] commands.set failed:', err));
 
     await ensurePanel(client).catch(err =>
         console.error('[bot] ensurePanel failed:', err)
@@ -99,6 +116,7 @@ client.on(Events.InteractionCreate, async interaction => {
 
     try {
         if      (interaction.isChatInputCommand() && interaction.commandName === 'outfit') await handleOutfit(interaction);
+        else if (interaction.isChatInputCommand() && interaction.commandName === 'pagos')  await handlePagos(interaction);
         else if (interaction.isButton())           await handleButton(interaction);
         else if (interaction.isModalSubmit())      await handleModal(interaction);
         else if (interaction.isStringSelectMenu()) await handleMetodosSelect(interaction);

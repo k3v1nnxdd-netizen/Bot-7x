@@ -198,4 +198,14 @@ async function ensureMetodosPanel(client) {
     console.log('[metodos] Metodos sent and pinned.');
 }
 
-module.exports = { ensureMetodosPanel, handleMetodosSelect };
+module.exports = {
+    ensureMetodosPanel,
+    handleMetodosSelect,
+    buildTransferenciaEmbed,
+    buildTransferenciaRow,
+    buildOxxoEmbed,
+    buildGiftCardEmbed,
+    OXXO_PATH,
+    OXXO_NAME,
+    OXXO_EXISTS,
+};

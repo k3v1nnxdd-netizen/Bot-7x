@@ -201,6 +201,8 @@ async function ensureMetodosPanel(client) {
 module.exports = {
     ensureMetodosPanel,
     handleMetodosSelect,
+    buildMetodosEmbed,
+    buildMetodosRow,
     buildTransferenciaEmbed,
     buildTransferenciaRow,
     buildOxxoEmbed,

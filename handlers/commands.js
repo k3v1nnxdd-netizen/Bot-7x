@@ -77,7 +77,7 @@ async function handleOutfit(interaction) {
 }
 
 async function handlePagos(interaction) {
-    const ok = await safeDeferReply(interaction, { ephemeral: true });
+    const ok = await safeDeferReply(interaction);
     if (!ok) return;
 
     const metodo = interaction.options.getString('metodo');

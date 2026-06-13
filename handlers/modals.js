@@ -193,12 +193,12 @@ async function handleComprarModal(interaction) {
         // ── Mensaje 3: Pago pendiente ─────────────────────────────────────────
         const embedSteps = new EmbedBuilder()
             .setColor(0xFFA500)
-            .setTitle('<:alert:1501220021035204658> Pago Pendiente')
+            .setTitle('Pago Pendiente')
             .setDescription(
-                '<:point:1501212595464700104> Selecciona tu método de pago en el menú de arriba.\n\n' +
-                '<:point:1501212595464700104> Realiza el pago por el monto exacto.\n\n' +
-                '<:point:1501212595464700104> Envía la **foto del comprobante** en este ticket.\n\n' +
-                '<:point:1501212595464700104> Escribe **PAGO EXITOSO** para que procesemos tu orden.'
+                'Selecciona tu método de pago en el menú de arriba.\n\n' +
+                'Realiza el pago por el monto exacto.\n\n' +
+                'Envía la **foto del comprobante** en este ticket.\n\n' +
+                'Escribe **PAGO EXITOSO** para que procesemos tu orden.'
             )
             .setFooter({ text: '7x Community • Proceso automático' });
 

@@ -3,19 +3,18 @@
 const { EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
 const config = require('./config');
 
-const VERIF_HEADING = '# 7x Community - Verificación de Grupo';
-
 function buildVerifEmbed() {
     return new EmbedBuilder()
         .setColor(0x000000)
         .setDescription(
+            '# 7x Community - Verificación de Grupo\n\n' +
             '¿Quieres saber si ya eres elegible para recibir Robux?\n\n' +
             '<:member:1501261625523699892> = Toca este botón para verificar cuántos días llevas dentro del grupo de Roblox. El bot revisará automáticamente tu tiempo de permanencia y te indicará si ya cumples los requisitos para recibir Robux.\n\n' +
             '<:point:1501212595464700104> Verificación instantánea y automática.\n' +
             '<:point:1501212595464700104> Muestra los días exactos que llevas en el grupo.\n' +
             '<:point:1501212595464700104> Confirma si eres elegible para recibir Robux.\n' +
             '<:point:1501212595464700104> Rápido, sencillo y seguro.\n\n' +
-            `<:truepurple:1501214679400190086> Debes unirte primero a la comunidad de Roblox: [Comunidad de Robux-Roblox](<${config.ROBLOX_GROUP_LINK}>) Si no formas parte del grupo, no podrás ser verificado ni recibir Robux.\n\n` +
+            `<:truepurple:1501214679400190086> Debes unirte primero a la comunidad de Roblox: [Click Aqui](<${config.ROBLOX_GROUP_LINK}>) Si no formas parte del grupo, no podrás ser verificado ni recibir Robux.\n\n` +
             'Presiona el botón para comenzar.'
         );
 }
@@ -31,7 +30,7 @@ function buildVerifRow() {
 
 function buildVerifOptions() {
     return {
-        content: VERIF_HEADING,
+        content: '',
         embeds: [buildVerifEmbed()],
         components: [buildVerifRow()],
     };
@@ -40,9 +39,11 @@ function buildVerifOptions() {
 function isVerifMsg(msg, botId) {
     return (
         msg.author.id === botId &&
+        msg.embeds.length > 0 &&
         (
-            msg.content?.includes('7x Community - Verificación de Grupo') ||
-            msg.embeds[0]?.title?.includes('Verificación de Grupo')
+            msg.embeds[0]?.description?.includes('Verificación de Grupo') ||
+            msg.embeds[0]?.title?.includes('Verificación de Grupo') ||
+            msg.content?.includes('Verificación de Grupo')
         )
     );
 }

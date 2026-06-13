@@ -12,8 +12,7 @@ const { lookup, extractNumber, lookupByBudget, extractDecimal, MIN, MAX, MIN_PRI
 const roblox                                               = require('../roblox');
 const { getJoinDate, trackIfNew, daysSince }               = require('../utils/groupTracker');
 const config                                               = require('../config');
-
-const OXXO_EXISTS = fs.existsSync('./oxxo.jpg');
+const { buildMetodosEmbed, buildMetodosRow }               = require('../metodos');
 
 // ── Modal builders ────────────────────────────────────────────────────────────
 // These are exported so buttons.js can pass them to safeShowModal().
@@ -165,54 +164,46 @@ async function handleComprarModal(interaction) {
         const { amount: finalAmount, price: priceText, rounded } = priceData;
         const channel = await tickets.createTicket(interaction.guild, userId, 'comprar', `comprar-${pad(comprarN++)}`);
 
-        // Welcome embed — sent to the TICKET channel, NOT the panel channel
-        const welcomeDesc =
-            `<@${userId}>\n\n` +
-            'Este ticket es **automático** y será procesado por el bot.\n' +
-            '**No es necesario esperar a un staff** — sigue los pasos indicados.\n\n' +
-            '━━━━━━━━━━━━━━━━━━━━\n\n' +
-            `**Tipo de ticket**\n\`\`\`Compra de Robux\`\`\`\n` +
-            `**Usuario de Roblox**\n\`\`\`${robloxUser}\`\`\`\n` +
-            `**¿Miembro de 7x Studio?**\n\`\`\`${esMiembro}\`\`\`\n` +
-            `**Cantidad**\n\`\`\`${finalAmount.toLocaleString()} Robux\`\`\`` +
-            (rounded ? `\n\n⚠️ Tu monto fue redondeado a **${finalAmount.toLocaleString()} robux**.` : '');
-
+        // ── Mensaje 1: Información de la compra ───────────────────────────────
         const embedWelcome = new EmbedBuilder()
             .setColor(0x000000)
-            .setTitle('🎫 ¡Bienvenido a tu ticket de compra!')
-            .setDescription(welcomeDesc)
+            .setTitle('🎫 Resumen de tu compra')
+            .setDescription(
+                '━━━━━━━━━━━━━━━━━━━━\n\n' +
+                `**👤 Usuario de Roblox**\n\`\`\`${robloxUser}\`\`\`\n` +
+                `**💎 Robux a recibir**\n\`\`\`${finalAmount.toLocaleString()} Robux\`\`\`\n` +
+                `**💰 Precio a pagar**\n\`\`\`${priceText} MXN\`\`\`\n` +
+                `**👥 ¿Miembro de 7x Studio?**\n\`\`\`${esMiembro}\`\`\`` +
+                (rounded ? `\n\n⚠️ Tu monto fue redondeado a **${finalAmount.toLocaleString()} robux**.` : '')
+            )
             .setFooter({ text: '7x Community • Proceso automático' });
 
-        const embedPago = new EmbedBuilder()
-            .setColor(0x000000)
-            .setTitle('💳 MÉTODOS DE PAGO')
-            .setDescription('Elige tu método de pago y completa tu compra de forma segura.')
-            .addFields(
-                { name: '📋 Resumen',      value: `**${finalAmount.toLocaleString()} Robux** → **${priceText} MXN**`,                      inline: false },
-                { name: '🏦 TRANSFERENCIA',value: '**CUENTA 1:**\n```722969040869278041```\n**MERCADO PAGO**\nVICENTA MARIANO VALDOVINOS', inline: false },
-                { name: '🏪 DEPÓSITO OXXO',value: 'Consulta los datos de OXXO en la imagen adjunta.',                                      inline: false },
-                { name: '📞 OTROS MÉTODOS',value: `Consulta <#${config.CHANNELS.METODOS}>`,                                                 inline: false }
-            );
-        if (OXXO_EXISTS) embedPago.setImage('attachment://oxxo.jpg');
+        await channel.send({
+            content: `<@${userId}>`,
+            embeds: [embedWelcome],
+            components: [closeBtnRow()],
+        });
 
+        // ── Mensaje 2: Panel de métodos de pago (con dropdown) ────────────────
+        await channel.send({
+            embeds: [buildMetodosEmbed()],
+            components: [buildMetodosRow()],
+        });
+
+        // ── Mensaje 3: Pago pendiente ─────────────────────────────────────────
         const embedSteps = new EmbedBuilder()
             .setColor(0xFFA500)
-            .setTitle('⏳ SIGUIENTES PASOS')
+            .setTitle('⏳ PAGO PENDIENTE')
             .setDescription(
-                '1. Realiza el pago por el monto exacto.\n' +
-                '2. Envía la **FOTO DEL COMPROBANTE** aquí mismo.\n' +
-                '3. Escribe **PAGO EXITOSO** para enviar tu pago a revision.'
-            );
+                '**Sigue estos pasos para completar tu compra:**\n\n' +
+                '1. Selecciona tu método de pago en el menú de arriba.\n' +
+                '2. Realiza el pago por el monto exacto.\n' +
+                '3. Envía la **foto del comprobante** en este ticket.\n' +
+                '4. Escribe **PAGO EXITOSO** para que procesemos tu orden.'
+            )
+            .setFooter({ text: '7x Community • Proceso automático' });
 
-        await channel.send({ embeds: [embedWelcome], components: [closeBtnRow()] });
-
-        if (OXXO_EXISTS) {
-            await channel.send({ embeds: [embedPago], files: [{ attachment: 'oxxo.jpg', name: 'oxxo.jpg' }] });
-        } else {
-            await channel.send({ embeds: [embedPago] });
-        }
-
-        await channel.send({ embeds: [embedSteps] });
+        await channel.send({ content: `<@${userId}>`, embeds: [embedSteps] });
         await channel.send({ components: [confirmBtnRow()] });
 
         await safeEditReply(interaction, { content: `✅ Ticket creado: ${channel}` });

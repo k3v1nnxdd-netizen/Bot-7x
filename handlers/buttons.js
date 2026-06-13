@@ -186,6 +186,7 @@ async function onConfirmarPago(interaction) {
         );
 
     const replyPayload = {
+        content: ownerId ? `<@${ownerId}>` : undefined,
         embeds: [embed],
         ...(EXITOSO_EXISTS && { files: [{ attachment: EXITOSO_PATH, name: EXITOSO_NAME }] }),
     };

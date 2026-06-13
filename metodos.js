@@ -39,7 +39,7 @@ function buildMetodosRow() {
             .addOptions(
                 new StringSelectMenuOptionBuilder()
                     .setLabel('Transferencia')
-                    .setDescription('Mercado Pago — VICENTA MARIANO VALDOVINOS')
+                    .setDescription('Mercado Pago MX')
                     .setValue('transferencia')
                     .setEmoji({ id: '1501213606077792266', name: 'money' }),
                 new StringSelectMenuOptionBuilder()

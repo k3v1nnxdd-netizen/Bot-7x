@@ -300,7 +300,7 @@ async function onCalcRobux(interaction) {
 async function onCopiarCuenta(interaction) {
     if (interaction.replied || interaction.deferred) return;
     await safeReply(interaction, {
-        content: '```722969040869278041```',
+        content: '722969040869278041',
         ephemeral: true,
     });
 }
@@ -308,7 +308,7 @@ async function onCopiarCuenta(interaction) {
 async function onCopiarNombre(interaction) {
     if (interaction.replied || interaction.deferred) return;
     await safeReply(interaction, {
-        content: '```VICENTA MARIANO VALDOVINOS```',
+        content: 'VICENTA MARIANO VALDOVINOS',
         ephemeral: true,
     });
 }

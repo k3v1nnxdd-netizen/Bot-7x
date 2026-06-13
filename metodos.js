@@ -4,6 +4,8 @@ const fs = require('fs');
 const {
     EmbedBuilder,
     ActionRowBuilder,
+    ButtonBuilder,
+    ButtonStyle,
     StringSelectMenuBuilder,
     StringSelectMenuOptionBuilder,
 } = require('discord.js');
@@ -59,15 +61,34 @@ function buildMetodosRow() {
 function buildTransferenciaEmbed() {
     return new EmbedBuilder()
         .setColor(0x000000)
-        .setTitle('<:money:1501213606077792266> Transferencia — Mercado Pago')
+        .setTitle('🇲🇽 Transferencia — Mercado Pago')
         .setDescription(
-            '**MERCADO PAGO**\n' +
-            'VICENTA MARIANO VALDOVINOS\n\n' +
-            '```722969040869278041```\n\n' +
-            '<:point:1501212595464700104> Verifica cuidadosamente el número de cuenta antes de realizar tu pago.\n\n' +
-            '<:point:1501212595464700104> Una vez realizado el pago, envía tu comprobante en tu ticket para continuar con el proceso.'
+            'Transferencia es uno de nuestros métodos de pago. A continuación se te otorgarán los datos para enviar el dinero.\n\n' +
+            '• **Número de Cuenta:**\n```722969040869278041```\n' +
+            '• **Nombre:** `VICENTA MARIANO VALDOVINOS`\n' +
+            '• **Banco:** `Mercado Pago`\n\n' +
+            '━━━━━━━━━━━━━━━━━━━━\n\n' +
+            '**¿Cuál es el titular de la cuenta?**\n' +
+            '• **Titular:** `VICENTA MARIANO VALDOVINOS`\n\n' +
+            'Una vez enviado el dinero, recuerda enviar el comprobante en tu ticket para que podamos verificar tu pago.'
         )
-        .setFooter({ text: '7x Community • Métodos de Pago' });
+        .setFooter({ text: '7x Community • Métodos de Pago' })
+        .setTimestamp();
+}
+
+function buildTransferenciaRow() {
+    return new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+            .setCustomId('metodos_copy_cuenta')
+            .setLabel('Copiar Cuenta')
+            .setEmoji('🔑')
+            .setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder()
+            .setCustomId('metodos_copy_nombre')
+            .setLabel('Copiar Nombre')
+            .setEmoji('🔑')
+            .setStyle(ButtonStyle.Secondary),
+    );
 }
 
 function buildOxxoEmbed() {
@@ -106,7 +127,10 @@ async function handleMetodosSelect(interaction) {
     const value = interaction.values[0];
 
     if (value === 'transferencia') {
-        return safeEditReply(interaction, { embeds: [buildTransferenciaEmbed()] });
+        return safeEditReply(interaction, {
+            embeds: [buildTransferenciaEmbed()],
+            components: [buildTransferenciaRow()],
+        });
     }
     if (value === 'oxxo') {
         const payload = { embeds: [buildOxxoEmbed()] };

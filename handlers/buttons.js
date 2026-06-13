@@ -297,6 +297,22 @@ async function onCalcRobux(interaction) {
     if (!ok) await safeReply(interaction, { content: '❌ No se pudo abrir el formulario. Intenta de nuevo.', ephemeral: true });
 }
 
+async function onCopiarCuenta(interaction) {
+    if (interaction.replied || interaction.deferred) return;
+    await safeReply(interaction, {
+        content: '```722969040869278041```',
+        ephemeral: true,
+    });
+}
+
+async function onCopiarNombre(interaction) {
+    if (interaction.replied || interaction.deferred) return;
+    await safeReply(interaction, {
+        content: '```VICENTA MARIANO VALDOVINOS```',
+        ephemeral: true,
+    });
+}
+
 // ── Router ────────────────────────────────────────────────────────────────────
 
 const HANDLERS = {
@@ -305,10 +321,12 @@ const HANDLERS = {
     verif_check:      onVerifCheck,
     calc_dinero:      onCalcDinero,
     calc_robux:       onCalcRobux,
-    confirmar_pago:   onConfirmarPago,
-    cerrar_ticket:    onCerrarTicket,
-    confirmar_cerrar: onConfirmarCerrar,
-    cancelar_cerrar:  onCancelarCerrar,
+    confirmar_pago:      onConfirmarPago,
+    cerrar_ticket:       onCerrarTicket,
+    confirmar_cerrar:    onConfirmarCerrar,
+    cancelar_cerrar:     onCancelarCerrar,
+    metodos_copy_cuenta: onCopiarCuenta,
+    metodos_copy_nombre: onCopiarNombre,
 };
 
 async function handleButton(interaction) {

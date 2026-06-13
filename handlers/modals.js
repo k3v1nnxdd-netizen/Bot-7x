@@ -167,14 +167,13 @@ async function handleComprarModal(interaction) {
         // ── Mensaje 1: Información de la compra ───────────────────────────────
         const embedWelcome = new EmbedBuilder()
             .setColor(0x000000)
-            .setTitle('🎫 Resumen de tu compra')
+            .setTitle('<:buy:1501212698556371004> Resumen de tu compra')
             .setDescription(
-                '━━━━━━━━━━━━━━━━━━━━\n\n' +
-                `**👤 Usuario de Roblox**\n\`\`\`${robloxUser}\`\`\`\n` +
-                `**💎 Robux a recibir**\n\`\`\`${finalAmount.toLocaleString()} Robux\`\`\`\n` +
-                `**💰 Precio a pagar**\n\`\`\`${priceText} MXN\`\`\`\n` +
-                `**👥 ¿Miembro de 7x Studio?**\n\`\`\`${esMiembro}\`\`\`` +
-                (rounded ? `\n\n⚠️ Tu monto fue redondeado a **${finalAmount.toLocaleString()} robux**.` : '')
+                `<:member:1501261625523699892> **Usuario de Roblox**\n\`\`\`${robloxUser}\`\`\`\n` +
+                `<a:robuxxx:1510070809366892604> **Robux a recibir**\n\`\`\`${finalAmount.toLocaleString()} Robux\`\`\`\n` +
+                `<:money:1501213606077792266> **Precio a pagar**\n\`\`\`${priceText} MXN\`\`\`\n` +
+                `<:truepurple:1501214679400190086> **¿Miembro de 7x Studio?**\n\`\`\`${esMiembro}\`\`\`` +
+                (rounded ? `\n\n<:alert:1501220021035204658> Tu monto fue redondeado a **${finalAmount.toLocaleString()} robux**.` : '')
             )
             .setFooter({ text: '7x Community • Proceso automático' });
 
@@ -193,17 +192,16 @@ async function handleComprarModal(interaction) {
         // ── Mensaje 3: Pago pendiente ─────────────────────────────────────────
         const embedSteps = new EmbedBuilder()
             .setColor(0xFFA500)
-            .setTitle('⏳ PAGO PENDIENTE')
+            .setTitle('<:alert:1501220021035204658> Pago Pendiente')
             .setDescription(
-                '**Sigue estos pasos para completar tu compra:**\n\n' +
-                '1. Selecciona tu método de pago en el menú de arriba.\n' +
-                '2. Realiza el pago por el monto exacto.\n' +
-                '3. Envía la **foto del comprobante** en este ticket.\n' +
-                '4. Escribe **PAGO EXITOSO** para que procesemos tu orden.'
+                '<:point:1501212595464700104> Selecciona tu método de pago en el menú de arriba.\n\n' +
+                '<:point:1501212595464700104> Realiza el pago por el monto exacto.\n\n' +
+                '<:point:1501212595464700104> Envía la **foto del comprobante** en este ticket.\n\n' +
+                '<:point:1501212595464700104> Escribe **PAGO EXITOSO** para que procesemos tu orden.'
             )
             .setFooter({ text: '7x Community • Proceso automático' });
 
-        await channel.send({ content: `<@${userId}>`, embeds: [embedSteps] });
+        await channel.send({ embeds: [embedSteps] });
         await channel.send({ components: [confirmBtnRow()] });
 
         await safeEditReply(interaction, { content: `✅ Ticket creado: ${channel}` });

@@ -8,7 +8,8 @@
       "Bash(node --check roblox.js)",
       "Bash(node --check panel.js)",
       "Bash(node --check data/prices.js)",
-      "Bash(node --check utils/safe.js)"
+      "Bash(node --check utils/safe.js)",
+      "PowerShell(Get-ChildItem -Path \"C:\\\\Users\\\\USUARIO\\\\Bot-7x\" -File -Recurse | Where-Object {$_.Extension -in '.js', '.json'} | Select-Object FullName | head -40)"
     ],
     "additionalDirectories": [
       "c:\\Users\\Tadeo\\Desktop\\Bot 7x"

@@ -3,10 +3,11 @@
 const { EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
 const config = require('./config');
 
+const VERIF_HEADING = '# 7x Community - Verificación de Grupo';
+
 function buildVerifEmbed() {
     return new EmbedBuilder()
         .setColor(0x000000)
-        .setTitle('#7x Community - Verificación de Grupo')
         .setDescription(
             '¿Quieres saber si ya eres elegible para recibir Robux?\n\n' +
             '<:member:1501261625523699892> = Toca este botón para verificar cuántos días llevas dentro del grupo de Roblox. El bot revisará automáticamente tu tiempo de permanencia y te indicará si ya cumples los requisitos para recibir Robux.\n\n' +
@@ -28,11 +29,21 @@ function buildVerifRow() {
     );
 }
 
+function buildVerifOptions() {
+    return {
+        content: VERIF_HEADING,
+        embeds: [buildVerifEmbed()],
+        components: [buildVerifRow()],
+    };
+}
+
 function isVerifMsg(msg, botId) {
     return (
         msg.author.id === botId &&
-        msg.embeds.length > 0 &&
-        msg.embeds[0]?.title?.includes('Verificación de Grupo')
+        (
+            msg.content?.includes('7x Community - Verificación de Grupo') ||
+            msg.embeds[0]?.title?.includes('Verificación de Grupo')
+        )
     );
 }
 
@@ -47,14 +58,14 @@ async function ensureVerifPanel(client) {
     if (messages) {
         const pinned = messages.find(m => m.pinned && isVerifMsg(m, client.user.id));
         if (pinned) {
-            await pinned.edit({ embeds: [buildVerifEmbed()], components: [buildVerifRow()] })
+            await pinned.edit(buildVerifOptions())
                 .catch(err => console.warn('[verif] Could not edit pinned:', err.message));
             console.log('[verif] Pinned verif panel updated.');
             return;
         }
         const existing = messages.find(m => isVerifMsg(m, client.user.id));
         if (existing) {
-            await existing.edit({ embeds: [buildVerifEmbed()], components: [buildVerifRow()] })
+            await existing.edit(buildVerifOptions())
                 .catch(err => console.warn('[verif] Could not edit:', err.message));
             await existing.pin().catch(err => console.warn('[verif] Could not pin:', err.message));
             console.log('[verif] Verif panel updated and pinned.');
@@ -70,7 +81,7 @@ async function ensureVerifPanel(client) {
         return;
     }
 
-    const msg = await channel.send({ embeds: [buildVerifEmbed()], components: [buildVerifRow()] });
+    const msg = await channel.send(buildVerifOptions());
     await msg.pin().catch(err => console.warn('[verif] Could not pin:', err.message));
     console.log('[verif] Verif panel sent and pinned.');
 }

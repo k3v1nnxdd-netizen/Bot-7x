@@ -4,6 +4,7 @@ const fs   = require('fs');
 const path = require('path');
 
 const FILE = path.join(__dirname, '../data/groupJoins.json');
+const TMP  = FILE + '.tmp';
 
 function load() {
     try { return JSON.parse(fs.readFileSync(FILE, 'utf8')); }
@@ -11,7 +12,11 @@ function load() {
 }
 
 function save(data) {
-    fs.writeFileSync(FILE, JSON.stringify(data, null, 2), 'utf8');
+    const dir = path.dirname(FILE);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    // Atomic write: write to temp then rename to avoid corruption on crash
+    fs.writeFileSync(TMP, JSON.stringify(data, null, 2), 'utf8');
+    fs.renameSync(TMP, FILE);
 }
 
 // Returns the tracked join Date for a userId, or null if not tracked yet.

@@ -167,7 +167,7 @@ async function handleComprarModal(interaction) {
         // ── Mensaje 1: Información de la compra ───────────────────────────────
         const embedWelcome = new EmbedBuilder()
             .setColor(0x000000)
-            .setTitle('<:buy:1501212698556371004> Resumen de tu compra')
+            .setTitle('Resumen de tu compra')
             .setDescription(
                 `<:member:1501261625523699892> **Usuario de Roblox**\n\`\`\`${robloxUser}\`\`\`\n` +
                 `<a:robuxxx:1510070809366892604> **Robux a recibir**\n\`\`\`${finalAmount.toLocaleString()} Robux\`\`\`\n` +
@@ -175,7 +175,8 @@ async function handleComprarModal(interaction) {
                 `<:truepurple:1501214679400190086> **¿Miembro de 7x Studio?**\n\`\`\`${esMiembro}\`\`\`` +
                 (rounded ? `\n\n<:alert:1501220021035204658> Tu monto fue redondeado a **${finalAmount.toLocaleString()} robux**.` : '')
             )
-            .setFooter({ text: '7x Community • Proceso automático' });
+            .setFooter({ text: '7x Community • Proceso automático' })
+            .setTimestamp();
 
         await channel.send({
             content: `<@${userId}>`,

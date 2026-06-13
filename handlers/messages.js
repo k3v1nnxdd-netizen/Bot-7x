@@ -27,6 +27,21 @@ async function handleMessage(message) {
     if (message.author.bot) return;
     if (!message.guild) return;
 
+    // ── Anti-spam: elimina mensajes con 3+ imágenes (excepto tickets y referencias) ──
+    const isTicket  = Boolean(tickets.getOwner(message.channel));
+    const isExempt  = message.channelId === config.CHANNELS.REFERENCIAS;
+    if (!isTicket && !isExempt) {
+        const imageCount = message.attachments.filter(a => a.contentType?.startsWith('image/')).size;
+        if (imageCount >= 3) {
+            await message.delete().catch(() => {});
+            const warn = await message.channel.send({
+                content: `<@${message.author.id}> No puedes enviar 3 o más imágenes a la vez. Por favor envíalas de una en una.`,
+            }).catch(() => null);
+            if (warn) setTimeout(() => warn.delete().catch(() => {}), 6000);
+            return;
+        }
+    }
+
     // Auto-react in referencias channel
     if (message.channelId === config.CHANNELS.REFERENCIAS) {
         await message.react('<:perfect:1501214987190927432>').catch(() => {});

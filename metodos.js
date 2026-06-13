@@ -141,6 +141,7 @@ async function ensureMetodosPanel(client) {
     const payload = {
         embeds: [buildMetodosEmbed()],
         components: [buildMetodosRow()],
+        attachments: [],
     };
 
     const messages = await channel.messages.fetch({ limit: 100 }).catch(() => null);

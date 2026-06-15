@@ -181,13 +181,21 @@ async function onConfirmarPago(interaction) {
             '<:point:1501212595464700104> Este proceso es realizado directamente por Roblox para proteger tanto tu cuenta como la plataforma, por lo que no tenemos control sobre los tiempos de espera.\n\n' +
             '<:point:1501212595464700104> Puedes revisar el estado de tus Robux y transacciones aquí: [ver transacciones / robux pendientes](<https://www.roblox.com/transactions>)\n\n' +
             '<:point:1501212595464700104> Te pedimos paciencia mientras Roblox completa la verificación de tu pago.\n\n' +
-            `<:point:1501212595464700104> Por favor, deja tu reseña en <#${config.CHANNELS.REFERENCIAS}>\n\n` +
             '<:truepurple:1501214679400190086> ¡Gracias por tu compra y esperamos verte nuevamente muy pronto!'
         );
+
+    const refRow = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+            .setLabel('Dejar Reseña')
+            .setEmoji({ id: '1501214679400190086', name: 'truepurple' })
+            .setStyle(ButtonStyle.Link)
+            .setURL(`https://discord.com/channels/1162602588328435802/1452939436525617293`),
+    );
 
     const replyPayload = {
         content: ownerId ? `<@${ownerId}>` : undefined,
         embeds: [embed],
+        components: [refRow],
         ...(EXITOSO_EXISTS && { files: [{ attachment: EXITOSO_PATH, name: EXITOSO_NAME }] }),
     };
     await safeReply(interaction, replyPayload);

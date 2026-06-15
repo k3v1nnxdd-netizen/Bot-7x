@@ -13,7 +13,7 @@ const { ensureRolesPanel, EMOJI_ROLE_MAP, getRolesMsgId } = require('./roles');
 const tickets             = require('./utils/tickets');
 const { handleButton, clearTimers } = require('./handlers/buttons');
 const { handleModal }     = require('./handlers/modals');
-const { handleOutfit, handlePagos } = require('./handlers/commands');
+const { handleOutfit, handlePagos, handlePagoVerified } = require('./handlers/commands');
 const { handleMessage }   = require('./handlers/messages');
 const { markInteraction } = require('./utils/spam');
 
@@ -81,6 +81,10 @@ client.once(Events.ClientReady, async () => {
                 ],
             }],
         },
+        {
+            name: 'pagoverified',
+            description: 'Envía el mensaje de pago verificado (solo owner)',
+        },
     ]).catch(err => console.error('[bot] commands.set failed:', err));
 
     await ensurePanel(client).catch(err =>
@@ -116,7 +120,8 @@ client.on(Events.InteractionCreate, async interaction => {
 
     try {
         if      (interaction.isChatInputCommand() && interaction.commandName === 'outfit') await handleOutfit(interaction);
-        else if (interaction.isChatInputCommand() && interaction.commandName === 'pagos')  await handlePagos(interaction);
+        else if (interaction.isChatInputCommand() && interaction.commandName === 'pagos')          await handlePagos(interaction);
+        else if (interaction.isChatInputCommand() && interaction.commandName === 'pagoverified') await handlePagoVerified(interaction);
         else if (interaction.isButton())           await handleButton(interaction);
         else if (interaction.isModalSubmit())      await handleModal(interaction);
         else if (interaction.isStringSelectMenu()) await handleMetodosSelect(interaction);

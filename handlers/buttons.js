@@ -187,7 +187,7 @@ async function onConfirmarPago(interaction) {
     const refRow = new ActionRowBuilder().addComponents(
         new ButtonBuilder()
             .setLabel('Dejar Reseña')
-            .setEmoji({ id: '1501214679400190086', name: 'truepurple' })
+            .setEmoji({ id: '1514369366878064650', name: 'star', animated: true })
             .setStyle(ButtonStyle.Link)
             .setURL(`https://discord.com/channels/1162602588328435802/1452939436525617293`),
     );

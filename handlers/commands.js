@@ -1,6 +1,6 @@
 'use strict';
 
-const { EmbedBuilder } = require('discord.js');
+const { EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
 const { safeDeferReply, safeReply, safeEditReply } = require('../utils/safe');
 const roblox = require('../roblox');
 const config = require('../config');
@@ -76,6 +76,41 @@ async function handleOutfit(interaction) {
     }
 }
 
+function buildRefRow() {
+    return new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+            .setLabel('Dejar Reseña')
+            .setEmoji({ id: '1514369366878064650', name: 'star', animated: true })
+            .setStyle(ButtonStyle.Link)
+            .setURL('https://discord.com/channels/1162602588328435802/1452939436525617293'),
+    );
+}
+
+async function handlePagoVerified(interaction) {
+    if (interaction.user.id !== config.OWNER_ID) {
+        return safeReply(interaction, { content: '❌ No tienes permiso para usar este comando.', ephemeral: true });
+    }
+
+    const ok = await safeDeferReply(interaction);
+    if (!ok) return;
+
+    const embed = new EmbedBuilder()
+        .setColor(0x000000)
+        .setTitle('<:truepurple:1501214679400190086> Pago Verificado — 7x Community')
+        .setDescription(
+            '¡Gracias por tu compra con **7x Community**!\n\n' +
+            '<:point:1501212595464700104> Ya sea que hayas adquirido **Robux** u otro tipo de producto, esperamos que lo disfrutes al máximo.\n\n' +
+            '<:point:1501212595464700104> Si adquiriste Robux y aún no aparecen en tu balance, no te preocupes. Roblox puede colocarlos en estado **Pendiente** por motivos de seguridad.\n\n' +
+            '<:alert:1501220021035204658> Normalmente se acreditan en **5 a 10 minutos**, aunque en casos poco comunes puede tomar hasta **6-7 días**. Como máximo, Roblox los libera dentro de **10 días**.\n\n' +
+            '<:point:1501212595464700104> Puedes revisar el estado de tus transacciones aquí: [Ver Robux pendientes](<https://www.roblox.com/transactions>)\n\n' +
+            '<:truepurple:1501214679400190086> ¡Gracias por confiar en nosotros y esperamos verte pronto!'
+        )
+        .setFooter({ text: '7x Community • Compra verificada' })
+        .setTimestamp();
+
+    return safeEditReply(interaction, { embeds: [embed], components: [buildRefRow()] });
+}
+
 async function handlePagos(interaction) {
     const ok = await safeDeferReply(interaction);
     if (!ok) return;
@@ -98,4 +133,4 @@ async function handlePagos(interaction) {
     }
 }
 
-module.exports = { handleOutfit, handlePagos };
+module.exports = { handleOutfit, handlePagos, handlePagoVerified };

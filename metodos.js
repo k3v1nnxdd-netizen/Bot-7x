@@ -21,8 +21,8 @@ const OXXO_EXISTS = fs.existsSync(OXXO_PATH);
 function buildMetodosEmbed() {
     return new EmbedBuilder()
         .setColor(0x000000)
-        .setTitle('<:buy:1501212698556371004> 7x - Métodos de Pago')
         .setDescription(
+            '# <:buy:1501212698556371004> 7x - Métodos de Pago\n\n' +
             '<:point:1501212595464700104> Consulta los métodos de pago disponibles actualmente en 7x utilizando el menú desplegable de abajo.\n\n' +
             '<:point:1501212595464700104> Selecciona una opción para ver información detallada sobre cada método de pago, instrucciones y requisitos.\n\n' +
             '<:point:1501212595464700104> Si no encuentras el método que buscas, abre un ticket y nuestro equipo te ayudará.\n\n' +
@@ -150,7 +150,8 @@ function isMetodosMsg(msg, botId) {
         msg.embeds.length > 0 &&
         (
             msg.embeds[0]?.title?.includes('MÉTODOS DE PAGO') ||
-            msg.embeds[0]?.title?.includes('Métodos de Pago')
+            msg.embeds[0]?.title?.includes('Métodos de Pago') ||
+            msg.embeds[0]?.description?.includes('Métodos de Pago')
         )
     );
 }

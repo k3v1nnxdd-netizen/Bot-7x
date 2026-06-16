@@ -208,24 +208,7 @@ async function onConfirmarPago(interaction) {
         console.error('[buttons] rename failed:', err.message);
     }
 
-    // Countdown auto-close
-    let mins = 10;
-    let countdownMsg = null;
-    try { countdownMsg = await interaction.channel.send({ embeds: [buildAutoCloseEmbed(mins)] }); } catch {}
-
-    const interval = setInterval(async () => {
-        mins--;
-        if (mins <= 0) return;
-        try { await countdownMsg?.edit({ embeds: [buildAutoCloseEmbed(mins)] }); } catch {}
-    }, config.TIMEOUTS.COUNTDOWN_TICK_MS);
-
-    const timeout = setTimeout(async () => {
-        clearTimers(channelId);
-        try { await interaction.channel.delete(); }
-        catch (err) { console.error('[buttons] delete failed:', err.message); }
-    }, config.TIMEOUTS.PAYMENT_CLOSE_MS);
-
-    timers.set(channelId, { interval, timeout });
+    await startAutoClose(interaction.channel);
 }
 
 async function onCerrarTicket(interaction) {
@@ -322,6 +305,31 @@ async function onCopiarNombre(interaction) {
     });
 }
 
+// ── Auto-close countdown (shared with /close command) ─────────────────────────
+
+async function startAutoClose(channel) {
+    const channelId = channel.id;
+    clearTimers(channelId);
+
+    let mins = 10;
+    let countdownMsg = null;
+    try { countdownMsg = await channel.send({ embeds: [buildAutoCloseEmbed(mins)] }); } catch {}
+
+    const interval = setInterval(async () => {
+        mins--;
+        if (mins <= 0) return;
+        try { await countdownMsg?.edit({ embeds: [buildAutoCloseEmbed(mins)] }); } catch {}
+    }, config.TIMEOUTS.COUNTDOWN_TICK_MS);
+
+    const timeout = setTimeout(async () => {
+        clearTimers(channelId);
+        try { await channel.delete(); }
+        catch (err) { console.error('[autoclose] delete failed:', err.message); }
+    }, config.TIMEOUTS.PAYMENT_CLOSE_MS);
+
+    timers.set(channelId, { interval, timeout });
+}
+
 // ── Router ────────────────────────────────────────────────────────────────────
 
 const HANDLERS = {
@@ -357,4 +365,4 @@ async function handleButton(interaction) {
     }
 }
 
-module.exports = { handleButton, clearTimers };
+module.exports = { handleButton, clearTimers, startAutoClose };

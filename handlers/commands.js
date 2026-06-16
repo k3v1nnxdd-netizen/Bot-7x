@@ -133,4 +133,22 @@ async function handlePagos(interaction) {
     }
 }
 
-module.exports = { handleOutfit, handlePagos, handlePagoVerified };
+async function handleClose(interaction) {
+    if (interaction.user.id !== config.OWNER_ID) {
+        return safeReply(interaction, { content: '❌ No tienes permiso para usar este comando.', ephemeral: true });
+    }
+
+    const channel = interaction.channel;
+    if (channel?.parentId !== config.CATEGORIES.TICKETS) {
+        return safeReply(interaction, { content: '❌ Este comando solo puede usarse dentro de un ticket.', ephemeral: true });
+    }
+
+    const ok = await safeDeferReply(interaction, { ephemeral: true });
+    if (!ok) return;
+    await safeEditReply(interaction, { content: '🔒 Cierre automático iniciado. El ticket se eliminará en 10 minutos.' });
+
+    const { startAutoClose } = require('./buttons');
+    await startAutoClose(channel);
+}
+
+module.exports = { handleOutfit, handlePagos, handlePagoVerified, handleClose };

@@ -137,15 +137,15 @@ async function handlePagos(interaction) {
 function buildCouponEmbed(codigo, coupon) {
     const remaining = coupon.maxUses - coupon.uses;
     const fields = [
-        { name: '<:sale:1501212817502502913> Código', value: codigo.toUpperCase(),                       inline: false },
-        { name: 'Descuento',                          value: `${coupon.discount}%`,                      inline: false },
-        { name: 'Máx. Robux',                         value: `${coupon.maxRobux.toLocaleString()} Robux`, inline: false },
-        { name: 'Usos máximos',                       value: `${coupon.maxUses}`,                        inline: false },
-        { name: 'Usos restantes',                     value: `${remaining}`,                             inline: false },
-        { name: 'Creado por',                         value: `<@${coupon.creatorId}>`,                   inline: false },
+        { name: '<:sale:1501212817502502913> Código', value: `\`${codigo.toUpperCase()}\``,               inline: true },
+        { name: 'Descuento',                          value: `${coupon.discount}%`,                       inline: true },
+        { name: 'Máx. Robux',                         value: `${coupon.maxRobux.toLocaleString()} Robux`, inline: true },
+        { name: 'Usos máximos',                       value: `${coupon.maxUses}`,                         inline: true },
+        { name: 'Usos restantes',                     value: `${remaining}`,                              inline: true },
+        { name: 'Creado por',                         value: `<@${coupon.creatorId}>`,                    inline: true },
     ];
     if (coupon.roleId) {
-        fields.push({ name: 'Rol', value: `|| <@&${coupon.roleId}> ||`, inline: false });
+        fields.push({ name: 'Rol', value: `<@&${coupon.roleId}>`, inline: true });
     }
     return new EmbedBuilder()
         .setColor(0x5b5b5b)
@@ -191,7 +191,9 @@ async function handleOffer(interaction) {
     createCoupon(codigo, descuento, usos, maxRobux, interaction.user.id, roleId);
     const coupon = getCoupon(codigo);
 
-    await safeEditReply(interaction, { embeds: [buildCouponEmbed(codigo, coupon)] });
+    const payload = { embeds: [buildCouponEmbed(codigo, coupon)] };
+    if (roleId) payload.content = `|| <@&${roleId}> ||`;
+    await safeEditReply(interaction, payload);
 
     // Store message reference so it can be edited on each coupon use
     try {

@@ -224,7 +224,6 @@ async function handleComprarModal(interaction) {
 
         if (rounded) descLines += `\n\n<:alert:1501220021035204658> Tu monto fue redondeado a **${finalAmount.toLocaleString()} robux**.`;
 
-        if (couponApplied && couponObj?.roleId) descLines += `\n\n|| <@&${couponObj.roleId}> ||`;
 
         const embedWelcome = new EmbedBuilder()
             .setColor(0x000000)

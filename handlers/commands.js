@@ -4,7 +4,7 @@ const { EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('
 const { safeDeferReply, safeReply, safeEditReply } = require('../utils/safe');
 const roblox = require('../roblox');
 const config = require('../config');
-const { createCoupon, getCoupon } = require('../utils/coupons');
+const { createCoupon, getCoupon, setMessageRef } = require('../utils/coupons');
 const {
     buildTransferenciaEmbed, buildTransferenciaRow,
     buildOxxoEmbed, buildGiftCardEmbed,
@@ -134,42 +134,67 @@ async function handlePagos(interaction) {
     }
 }
 
+function buildCouponEmbed(codigo, coupon) {
+    const remaining = coupon.maxUses - coupon.uses;
+    return new EmbedBuilder()
+        .setColor(0x5b5b5b)
+        .setTitle('7x - Cupón')
+        .addFields(
+            { name: 'Código',            value: `\`${codigo.toUpperCase()}\``,                                inline: true },
+            { name: 'Descuento',         value: `**${coupon.discount}%**`,                                    inline: true },
+            { name: 'Máx. Robux',        value: `**${coupon.maxRobux.toLocaleString()} Robux**`,              inline: true },
+            { name: 'Usos máximos',      value: `**${coupon.maxUses}**`,                                      inline: true },
+            { name: 'Usos restantes',    value: `**${remaining}**`,                                           inline: true },
+            { name: 'Creado por',        value: `<@${coupon.creatorId}>`,                                     inline: true },
+        )
+        .setFooter({ text: '7x Community • Sistema de cupones' })
+        .setTimestamp();
+}
+
+async function refreshCouponEmbed(client, code) {
+    const coupon = getCoupon(code);
+    if (!coupon?.messageRef) return;
+    try {
+        const ch  = await client.channels.fetch(coupon.messageRef.channelId);
+        const msg = await ch.messages.fetch(coupon.messageRef.messageId);
+        await msg.edit({ embeds: [buildCouponEmbed(code, coupon)] });
+    } catch (err) {
+        console.warn('[offer] Could not refresh coupon embed:', err.message);
+    }
+}
+
 async function handleOffer(interaction) {
     if (interaction.user.id !== config.OWNER_ID) {
         return safeReply(interaction, { content: '❌ No tienes permiso para usar este comando.', ephemeral: true });
     }
 
-    const ok = await safeDeferReply(interaction, { ephemeral: true });
+    const ok = await safeDeferReply(interaction); // público
     if (!ok) return;
 
     const codigo    = interaction.options.getString('codigo').trim().toUpperCase();
     const descuento = interaction.options.getInteger('descuento');
     const usos      = interaction.options.getInteger('usos');
+    const maxRobux  = interaction.options.getInteger('maxrobux');
 
     if (descuento < 1 || descuento > 99) {
-        return safeEditReply(interaction, { content: '❌ El porcentaje de descuento debe estar entre 1 y 99.' });
+        return safeEditReply(interaction, { content: '❌ El porcentaje debe estar entre 1 y 99.' });
     }
     if (usos < 1) {
         return safeEditReply(interaction, { content: '❌ La cantidad de usos debe ser al menos 1.' });
     }
 
-    createCoupon(codigo, descuento, usos, interaction.user.id);
+    createCoupon(codigo, descuento, usos, maxRobux, interaction.user.id);
     const coupon = getCoupon(codigo);
 
-    const embed = new EmbedBuilder()
-        .setColor(0x5b5b5b)
-        .setTitle('7x - Cupón')
-        .addFields(
-            { name: 'Código',             value: `\`${codigo}\``,                                   inline: true  },
-            { name: 'Descuento',          value: `**${descuento}%**`,                               inline: true  },
-            { name: 'Usos máximos',       value: `**${usos}**`,                                     inline: true  },
-            { name: 'Usos restantes',     value: `**${usos - coupon.uses}**`,                       inline: true  },
-            { name: 'Creado por',         value: `<@${interaction.user.id}>`,                       inline: true  },
-        )
-        .setFooter({ text: '7x Community • Sistema de cupones' })
-        .setTimestamp();
+    await safeEditReply(interaction, { embeds: [buildCouponEmbed(codigo, coupon)] });
 
-    return safeEditReply(interaction, { embeds: [embed] });
+    // Store message reference so it can be edited on each coupon use
+    try {
+        const msg = await interaction.fetchReply();
+        setMessageRef(codigo, msg.channelId, msg.id);
+    } catch (err) {
+        console.warn('[offer] Could not store message ref:', err.message);
+    }
 }
 
 async function handleClose(interaction) {
@@ -190,4 +215,4 @@ async function handleClose(interaction) {
     await startAutoClose(channel);
 }
 
-module.exports = { handleOutfit, handlePagos, handlePagoVerified, handleOffer, handleClose };
+module.exports = { handleOutfit, handlePagos, handlePagoVerified, handleOffer, handleClose, refreshCouponEmbed };

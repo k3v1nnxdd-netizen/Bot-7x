@@ -22,14 +22,16 @@ function normalizeCode(code) {
     return String(code).trim().toUpperCase();
 }
 
-function createCoupon(code, discountPct, maxUses, creatorId) {
+function createCoupon(code, discountPct, maxUses, maxRobux, creatorId) {
     const data = load();
     data[normalizeCode(code)] = {
-        discount: discountPct,
+        discount:   discountPct,
         maxUses,
-        uses: 0,
+        uses:       0,
+        maxRobux,
         creatorId,
-        createdAt: new Date().toISOString(),
+        messageRef: null,
+        createdAt:  new Date().toISOString(),
     };
     save(data);
 }
@@ -39,9 +41,20 @@ function getCoupon(code) {
     return load()[normalizeCode(code)] ?? null;
 }
 
-function isValid(code) {
+// amount: optional robux amount to check against maxRobux
+function isValid(code, amount = null) {
     const c = getCoupon(code);
-    return c !== null && c.uses < c.maxUses;
+    if (!c || c.uses >= c.maxUses) return false;
+    if (amount !== null && c.maxRobux !== null && amount > c.maxRobux) return false;
+    return true;
+}
+
+function setMessageRef(code, channelId, messageId) {
+    const data = load();
+    const key  = normalizeCode(code);
+    if (!data[key]) return;
+    data[key].messageRef = { channelId, messageId };
+    save(data);
 }
 
 function useCoupon(code) {
@@ -54,4 +67,4 @@ function useCoupon(code) {
     return true;
 }
 
-module.exports = { createCoupon, getCoupon, isValid, useCoupon };
+module.exports = { createCoupon, getCoupon, isValid, setMessageRef, useCoupon };

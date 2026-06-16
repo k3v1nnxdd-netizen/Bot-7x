@@ -10,6 +10,7 @@ const { isLocked, lock }                                   = require('../utils/s
 const tickets                                              = require('../utils/tickets');
 const { lookup, extractNumber, lookupByBudget, extractDecimal, MIN, MAX, MIN_PRICE } = require('../data/prices');
 const { getCoupon, isValid: isCouponValid, useCoupon } = require('../utils/coupons');
+const { refreshCouponEmbed } = require('./commands');
 const roblox                                               = require('../roblox');
 const { getJoinDate, trackIfNew, daysSince }               = require('../utils/groupTracker');
 const config                                               = require('../config');
@@ -182,7 +183,7 @@ async function handleComprarModal(interaction) {
 
         if (codigoRaw) {
             couponObj = getCoupon(codigoRaw);
-            if (isCouponValid(codigoRaw)) {
+            if (isCouponValid(codigoRaw, finalAmount)) {
                 couponApplied = true;
                 finalPriceNum = Math.round(originalPriceNum * (1 - couponObj.discount / 100));
             } else {
@@ -192,8 +193,11 @@ async function handleComprarModal(interaction) {
 
         const channel = await tickets.createTicket(interaction.guild, userId, 'comprar', `comprar-${pad(comprarN++)}`);
 
-        // Decrement coupon uses after ticket is created successfully
-        if (couponApplied) useCoupon(codigoRaw);
+        // Decrement coupon uses after ticket is created successfully, then refresh the offer embed
+        if (couponApplied) {
+            useCoupon(codigoRaw);
+            refreshCouponEmbed(interaction.client, codigoRaw).catch(() => {});
+        }
 
         // ── Mensaje 1: Información de la compra ───────────────────────────────
         const savedNum = originalPriceNum - finalPriceNum;

@@ -213,7 +213,7 @@ async function handleComprarModal(interaction) {
                 `<:money:1501213606077792266> **Precio final a pagar**\n\`\`\`$${finalPriceNum} MXN\`\`\`\n`;
         } else if (couponInvalid) {
             descLines +=
-                `<:alert:1501220021035204658> **Código "${codigoRaw.toUpperCase()}" — Inválido o sin usos disponibles**\n` +
+                `<:alert:1501220021035204658> **${codigoRaw.toUpperCase()}**\n\`\`\`Inválido o sin usos disponibles\`\`\`\n` +
                 `<:money:1501213606077792266> **Precio a pagar**\n\`\`\`${priceText} MXN\`\`\`\n`;
         } else {
             descLines +=
@@ -223,6 +223,8 @@ async function handleComprarModal(interaction) {
         descLines += `<:truepurple:1501214679400190086> **¿Miembro de comunidad?**\n\`\`\`${esMiembro}\`\`\``;
 
         if (rounded) descLines += `\n\n<:alert:1501220021035204658> Tu monto fue redondeado a **${finalAmount.toLocaleString()} robux**.`;
+
+        if (couponApplied && couponObj?.roleId) descLines += `\n\n|| <@&${couponObj.roleId}> ||`;
 
         const embedWelcome = new EmbedBuilder()
             .setColor(0x000000)

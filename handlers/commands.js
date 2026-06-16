@@ -136,17 +136,21 @@ async function handlePagos(interaction) {
 
 function buildCouponEmbed(codigo, coupon) {
     const remaining = coupon.maxUses - coupon.uses;
+    const fields = [
+        { name: 'Código',         value: `\`${codigo.toUpperCase()}\``,               inline: true },
+        { name: 'Descuento',      value: `**${coupon.discount}%**`,                    inline: true },
+        { name: 'Máx. Robux',     value: `**${coupon.maxRobux.toLocaleString()} Robux**`, inline: true },
+        { name: 'Usos máximos',   value: `**${coupon.maxUses}**`,                      inline: true },
+        { name: 'Usos restantes', value: `**${remaining}**`,                           inline: true },
+        { name: 'Creado por',     value: `<@${coupon.creatorId}>`,                     inline: true },
+    ];
+    if (coupon.roleId) {
+        fields.push({ name: 'Rol', value: `<@&${coupon.roleId}>`, inline: true });
+    }
     return new EmbedBuilder()
         .setColor(0x5b5b5b)
         .setTitle('7x - Cupón')
-        .addFields(
-            { name: 'Código',            value: `\`${codigo.toUpperCase()}\``,                                inline: true },
-            { name: 'Descuento',         value: `**${coupon.discount}%**`,                                    inline: true },
-            { name: 'Máx. Robux',        value: `**${coupon.maxRobux.toLocaleString()} Robux**`,              inline: true },
-            { name: 'Usos máximos',      value: `**${coupon.maxUses}**`,                                      inline: true },
-            { name: 'Usos restantes',    value: `**${remaining}**`,                                           inline: true },
-            { name: 'Creado por',        value: `<@${coupon.creatorId}>`,                                     inline: true },
-        )
+        .addFields(...fields)
         .setFooter({ text: '7x Community • Sistema de cupones' })
         .setTimestamp();
 }
@@ -175,6 +179,7 @@ async function handleOffer(interaction) {
     const descuento = interaction.options.getInteger('descuento');
     const usos      = interaction.options.getInteger('usos');
     const maxRobux  = interaction.options.getInteger('maxrobux');
+    const roleId    = interaction.options.getRole('rol')?.id ?? null;
 
     if (descuento < 1 || descuento > 99) {
         return safeEditReply(interaction, { content: '❌ El porcentaje debe estar entre 1 y 99.' });
@@ -183,7 +188,7 @@ async function handleOffer(interaction) {
         return safeEditReply(interaction, { content: '❌ La cantidad de usos debe ser al menos 1.' });
     }
 
-    createCoupon(codigo, descuento, usos, maxRobux, interaction.user.id);
+    createCoupon(codigo, descuento, usos, maxRobux, interaction.user.id, roleId);
     const coupon = getCoupon(codigo);
 
     await safeEditReply(interaction, { embeds: [buildCouponEmbed(codigo, coupon)] });

@@ -22,7 +22,7 @@ function normalizeCode(code) {
     return String(code).trim().toUpperCase();
 }
 
-function createCoupon(code, discountPct, maxUses, maxRobux, creatorId) {
+function createCoupon(code, discountPct, maxUses, maxRobux, creatorId, roleId = null) {
     const data = load();
     data[normalizeCode(code)] = {
         discount:   discountPct,
@@ -30,6 +30,7 @@ function createCoupon(code, discountPct, maxUses, maxRobux, creatorId) {
         uses:       0,
         maxRobux,
         creatorId,
+        roleId,
         messageRef: null,
         createdAt:  new Date().toISOString(),
     };

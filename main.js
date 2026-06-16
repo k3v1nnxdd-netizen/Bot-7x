@@ -96,7 +96,8 @@ client.once(Events.ClientReady, async () => {
                 { name: 'codigo',    type: 3, description: 'Código del cupón',                        required: true },
                 { name: 'descuento', type: 4, description: 'Porcentaje de descuento (1-99)',           required: true },
                 { name: 'usos',      type: 4, description: 'Cantidad máxima de usos',                 required: true },
-                { name: 'maxrobux',  type: 4, description: 'Máximo de Robux donde aplica (ej: 10000)', required: true },
+                { name: 'maxrobux',  type: 4, description: 'Máximo de Robux donde aplica (ej: 10000)', required: true  },
+                { name: 'rol',       type: 8, description: 'Rol a mencionar en el ticket de descuento',  required: false },
             ],
         },
     ]).catch(err => console.error('[bot] commands.set failed:', err));

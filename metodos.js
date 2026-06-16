@@ -22,7 +22,7 @@ function buildMetodosEmbed() {
     return new EmbedBuilder()
         .setColor(0x000000)
         .setDescription(
-            '# <:buy:1501212698556371004> 7x - Métodos de Pago\n\n' +
+            '# 7x - Métodos de Pago\n\n\n' +
             '<:point:1501212595464700104> Consulta los métodos de pago disponibles actualmente en 7x utilizando el menú desplegable de abajo.\n\n' +
             '<:point:1501212595464700104> Selecciona una opción para ver información detallada sobre cada método de pago, instrucciones y requisitos.\n\n' +
             '<:point:1501212595464700104> Si no encuentras el método que buscas, abre un ticket y nuestro equipo te ayudará.\n\n' +

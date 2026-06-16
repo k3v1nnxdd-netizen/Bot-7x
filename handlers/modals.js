@@ -9,6 +9,7 @@ const { isGone, safeDeferReply, safeEditReply, safeReply } = require('../utils/s
 const { isLocked, lock }                                   = require('../utils/spam');
 const tickets                                              = require('../utils/tickets');
 const { lookup, extractNumber, lookupByBudget, extractDecimal, MIN, MAX, MIN_PRICE } = require('../data/prices');
+const { getCoupon, isValid: isCouponValid, useCoupon } = require('../utils/coupons');
 const roblox                                               = require('../roblox');
 const { getJoinDate, trackIfNew, daysSince }               = require('../utils/groupTracker');
 const config                                               = require('../config');
@@ -38,9 +39,17 @@ function buildComprarModal() {
         new ActionRowBuilder().addComponents(
             new TextInputBuilder()
                 .setCustomId('es_miembro')
-                .setLabel('¿Eres miembro de 7x Studio? (Sí/No)')
+                .setLabel('¿Perteneces a una comunidad de Robux? (Sí/No)')
                 .setStyle(TextInputStyle.Short)
                 .setRequired(true)
+        ),
+        new ActionRowBuilder().addComponents(
+            new TextInputBuilder()
+                .setCustomId('codigo_descuento')
+                .setLabel('Código de descuento (Solo si tienes uno)')
+                .setStyle(TextInputStyle.Short)
+                .setRequired(false)
+                .setPlaceholder('Ej: PROMO20')
         )
     );
     return modal;
@@ -148,6 +157,7 @@ async function handleComprarModal(interaction) {
         const robloxUser  = interaction.fields.getTextInputValue('usuario_roblox').trim();
         const cantidadRaw = interaction.fields.getTextInputValue('cantidad_robux');
         const esMiembro   = interaction.fields.getTextInputValue('es_miembro').trim();
+        const codigoRaw   = interaction.fields.getTextInputValue('codigo_descuento').trim();
 
         const amount = extractNumber(cantidadRaw);
         if (!amount) {
@@ -162,20 +172,59 @@ async function handleComprarModal(interaction) {
         }
 
         const { amount: finalAmount, price: priceText, rounded } = priceData;
+
+        // ── Coupon logic ──────────────────────────────────────────────────────
+        const originalPriceNum = parseFloat(priceText.replace(/[$,]/g, ''));
+        let couponApplied  = false;
+        let couponInvalid  = false;
+        let couponObj      = null;
+        let finalPriceNum  = originalPriceNum;
+
+        if (codigoRaw) {
+            couponObj = getCoupon(codigoRaw);
+            if (isCouponValid(codigoRaw)) {
+                couponApplied = true;
+                finalPriceNum = Math.round(originalPriceNum * (1 - couponObj.discount / 100));
+            } else {
+                couponInvalid = true;
+            }
+        }
+
         const channel = await tickets.createTicket(interaction.guild, userId, 'comprar', `comprar-${pad(comprarN++)}`);
 
+        // Decrement coupon uses after ticket is created successfully
+        if (couponApplied) useCoupon(codigoRaw);
+
         // ── Mensaje 1: Información de la compra ───────────────────────────────
+        const savedNum = originalPriceNum - finalPriceNum;
+
+        let descLines =
+            `<:member:1501261625523699892> **Usuario de Roblox**\n\`\`\`${robloxUser}\`\`\`\n` +
+            `<a:robuxxx:1510070809366892604> **Robux a recibir**\n\`\`\`${finalAmount.toLocaleString()} Robux\`\`\`\n`;
+
+        if (couponApplied) {
+            descLines +=
+                `<:money:1501213606077792266> **Precio original**\n\`\`\`${priceText} MXN\`\`\`\n` +
+                `<:true:1501213776878501899> **Descuento aplicado — ${codigoRaw.toUpperCase()} (${couponObj.discount}%)**\n\`\`\`Ahorras $${savedNum} MXN\`\`\`\n` +
+                `<:money:1501213606077792266> **Precio final a pagar**\n\`\`\`$${finalPriceNum} MXN\`\`\`\n`;
+        } else if (couponInvalid) {
+            descLines +=
+                `<:alert:1501220021035204658> **Código "${codigoRaw.toUpperCase()}" — Inválido o sin usos disponibles**\n` +
+                `<:money:1501213606077792266> **Precio a pagar**\n\`\`\`${priceText} MXN\`\`\`\n`;
+        } else {
+            descLines +=
+                `<:money:1501213606077792266> **Precio a pagar**\n\`\`\`${priceText} MXN\`\`\`\n`;
+        }
+
+        descLines += `<:truepurple:1501214679400190086> **¿Miembro de comunidad?**\n\`\`\`${esMiembro}\`\`\``;
+
+        if (rounded) descLines += `\n\n<:alert:1501220021035204658> Tu monto fue redondeado a **${finalAmount.toLocaleString()} robux**.`;
+
         const embedWelcome = new EmbedBuilder()
             .setColor(0x000000)
             .setTitle('Resumen de tu compra')
             .setThumbnail(interaction.user.displayAvatarURL({ size: 256 }))
-            .setDescription(
-                `<:member:1501261625523699892> **Usuario de Roblox**\n\`\`\`${robloxUser}\`\`\`\n` +
-                `<a:robuxxx:1510070809366892604> **Robux a recibir**\n\`\`\`${finalAmount.toLocaleString()} Robux\`\`\`\n` +
-                `<:money:1501213606077792266> **Precio a pagar**\n\`\`\`${priceText} MXN\`\`\`\n` +
-                `<:truepurple:1501214679400190086> **¿Miembro de 7x Studio?**\n\`\`\`${esMiembro}\`\`\`` +
-                (rounded ? `\n\n<:alert:1501220021035204658> Tu monto fue redondeado a **${finalAmount.toLocaleString()} robux**.` : '')
-            )
+            .setDescription(descLines)
             .setFooter({ text: '7x Community • Proceso automático' })
             .setTimestamp();
 

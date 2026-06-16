@@ -168,6 +168,7 @@ async function handleComprarModal(interaction) {
         const embedWelcome = new EmbedBuilder()
             .setColor(0x000000)
             .setTitle('Resumen de tu compra')
+            .setThumbnail(interaction.user.displayAvatarURL({ size: 256 }))
             .setDescription(
                 `<:member:1501261625523699892> **Usuario de Roblox**\n\`\`\`${robloxUser}\`\`\`\n` +
                 `<a:robuxxx:1510070809366892604> **Robux a recibir**\n\`\`\`${finalAmount.toLocaleString()} Robux\`\`\`\n` +
@@ -236,6 +237,7 @@ async function handleOtraCosaModal(interaction) {
         const embed = new EmbedBuilder()
             .setColor(0x000000)
             .setTitle('🎫 ¡Bienvenido a tu ticket de soporte!')
+            .setThumbnail(interaction.user.displayAvatarURL({ size: 256 }))
             .setDescription(
                 `<@${userId}>\n\n` +
                 'Tu ticket ha sido creado correctamente.\n' +

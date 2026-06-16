@@ -155,13 +155,23 @@ function buildCouponEmbed(codigo, coupon) {
         .setTimestamp();
 }
 
+function buildCouponRow() {
+    return new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+            .setLabel('canjear')
+            .setEmoji({ id: '1182888883344642180', name: 'rro', animated: true })
+            .setStyle(ButtonStyle.Link)
+            .setURL('https://discord.com/channels/1162602588328435802/1442456304420524146'),
+    );
+}
+
 async function refreshCouponEmbed(client, code) {
     const coupon = getCoupon(code);
     if (!coupon?.messageRef) return;
     try {
         const ch  = await client.channels.fetch(coupon.messageRef.channelId);
         const msg = await ch.messages.fetch(coupon.messageRef.messageId);
-        await msg.edit({ embeds: [buildCouponEmbed(code, coupon)] });
+        await msg.edit({ embeds: [buildCouponEmbed(code, coupon)], components: [buildCouponRow()] });
     } catch (err) {
         console.warn('[offer] Could not refresh coupon embed:', err.message);
     }
@@ -191,7 +201,7 @@ async function handleOffer(interaction) {
     createCoupon(codigo, descuento, usos, maxRobux, interaction.user.id, roleId);
     const coupon = getCoupon(codigo);
 
-    await safeEditReply(interaction, { embeds: [buildCouponEmbed(codigo, coupon)] });
+    await safeEditReply(interaction, { embeds: [buildCouponEmbed(codigo, coupon)], components: [buildCouponRow()] });
 
     // Store message reference so it can be edited on each coupon use
     try {

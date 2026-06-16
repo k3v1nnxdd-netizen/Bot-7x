@@ -191,9 +191,7 @@ async function handleOffer(interaction) {
     createCoupon(codigo, descuento, usos, maxRobux, interaction.user.id, roleId);
     const coupon = getCoupon(codigo);
 
-    const payload = { embeds: [buildCouponEmbed(codigo, coupon)] };
-    if (roleId) payload.content = `|| <@&${roleId}> ||`;
-    await safeEditReply(interaction, payload);
+    await safeEditReply(interaction, { embeds: [buildCouponEmbed(codigo, coupon)] });
 
     // Store message reference so it can be edited on each coupon use
     try {

@@ -1,7 +1,7 @@
 'use strict';
 
 const { EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
-const { safeDeferReply, safeReply, safeEditReply } = require('../utils/safe');
+const { safeDeferReply, safeReply, safeEditReply, safeFollowUp } = require('../utils/safe');
 const roblox = require('../roblox');
 const config = require('../config');
 const { createCoupon, getCoupon, setMessageRef } = require('../utils/coupons');
@@ -73,7 +73,8 @@ async function handleOutfit(interaction) {
             : status === 429
                 ? '⏱️ Roblox está limitando las peticiones. Espera unos segundos e intenta de nuevo.'
                 : '❌ No pude obtener la información. Verifica el nombre e intenta de nuevo.';
-        await safeEditReply(interaction, { content: msg });
+        await interaction.deleteReply().catch(() => {});
+        await safeFollowUp(interaction, { content: msg, ephemeral: true });
     }
 }
 

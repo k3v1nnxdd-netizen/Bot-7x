@@ -15,25 +15,17 @@ async function retry(fn, attempts = 2, delayMs = 1200) {
 }
 
 async function getUserByUsername(username) {
-    // Primary v1 endpoint
-    const primary = () => api.post(
-        'https://users.roblox.com/v1/usernames/users',
-        { usernames: [username], excludeBannedUsers: false },
-        { headers: { 'Content-Type': 'application/json' } }
-    ).then(res => {
-        const u = res.data?.data?.[0];
-        if (!u?.id) throw new Error('not_found');
-        return u;
-    });
-
-    return retry(primary).catch(async () => {
-        // Legacy fallback
-        const res = await api.get(
-            `https://api.roblox.com/users/get-by-username?username=${encodeURIComponent(username)}`
-        );
-        if (!res.data?.Id) throw new Error('not_found');
-        return { id: res.data.Id, name: res.data.Username, displayName: res.data.Username };
-    });
+    return retry(() =>
+        api.post(
+            'https://users.roblox.com/v1/usernames/users',
+            { usernames: [username], excludeBannedUsers: false },
+            { headers: { 'Content-Type': 'application/json' } }
+        ).then(res => {
+            const u = res.data?.data?.[0];
+            if (!u?.id) throw new Error('not_found');
+            return u;
+        })
+    );
 }
 
 async function getUserProfile(userId) {

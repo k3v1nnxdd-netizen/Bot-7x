@@ -14,30 +14,61 @@ function load() {
 function save(data) {
     const dir = path.dirname(FILE);
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-    // Atomic write: write to temp then rename to avoid corruption on crash
     fs.writeFileSync(TMP, JSON.stringify(data, null, 2), 'utf8');
     fs.renameSync(TMP, FILE);
 }
 
-// Returns the tracked join Date for a userId, or null if not tracked yet.
-function getJoinDate(userId) {
-    const raw = load()[String(userId)];
-    return raw ? new Date(raw) : null;
+// Normalizes old format (plain ISO string) to new format { joinedAt, lastCheckedAt }
+function normalize(entry) {
+    if (!entry) return null;
+    if (typeof entry === 'string') return { joinedAt: entry, lastCheckedAt: entry };
+    return entry;
 }
 
-// Records today as the join date for userId (only if not already tracked).
+// Returns the tracked join Date or null
+function getJoinDate(userId) {
+    const entry = normalize(load()[String(userId)]);
+    return entry ? new Date(entry.joinedAt) : null;
+}
+
+// Returns the last checked Date or null
+function getLastChecked(userId) {
+    const entry = normalize(load()[String(userId)]);
+    return entry?.lastCheckedAt ? new Date(entry.lastCheckedAt) : null;
+}
+
+// Records join date if not already tracked (first time). Returns true if newly tracked.
 function trackIfNew(userId) {
     const data = load();
     const key  = String(userId);
-    if (data[key]) return false; // already tracked
-    data[key] = new Date().toISOString();
+    const now  = new Date().toISOString();
+    if (data[key]) {
+        // Migrate old format in place
+        if (typeof data[key] === 'string') {
+            data[key] = { joinedAt: data[key], lastCheckedAt: now };
+            save(data);
+        }
+        return false;
+    }
+    data[key] = { joinedAt: now, lastCheckedAt: now };
     save(data);
-    return true; // newly tracked
+    return true;
 }
 
-// Full days elapsed since a Date.
+// Updates the lastCheckedAt timestamp for an existing user
+function updateLastChecked(userId) {
+    const data = load();
+    const key  = String(userId);
+    if (!data[key]) return;
+    const entry = normalize(data[key]);
+    entry.lastCheckedAt = new Date().toISOString();
+    data[key] = entry;
+    save(data);
+}
+
+// Full days elapsed since a Date
 function daysSince(date) {
     return Math.floor((Date.now() - date.getTime()) / 86_400_000);
 }
 
-module.exports = { getJoinDate, trackIfNew, daysSince };
+module.exports = { getJoinDate, getLastChecked, trackIfNew, updateLastChecked, daysSince };

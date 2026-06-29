@@ -12,7 +12,7 @@ const { lookup, extractNumber, lookupByBudget, extractDecimal, MIN, MAX, MIN_PRI
 const { getCoupon, isValid: isCouponValid, useCoupon } = require('../utils/coupons');
 const { refreshCouponEmbed } = require('./commands');
 const roblox                                               = require('../roblox');
-const { getJoinDate, trackIfNew, daysSince }               = require('../utils/groupTracker');
+const { getJoinDate, getLastChecked, trackIfNew, updateLastChecked, daysSince } = require('../utils/groupTracker');
 const config                                               = require('../config');
 const { buildMetodosEmbed, buildMetodosRow }               = require('../metodos');
 
@@ -443,23 +443,31 @@ async function handleVerifModal(interaction) {
     }
 
     // ── Track / retrieve join date ────────────────────────────────────────────
-    const isNew  = trackIfNew(userId);
-    const joined = getJoinDate(userId);
-    const days   = joined ? daysSince(joined) : 0;
-    const req    = config.ROBLOX_GROUP_DAYS_REQ;
-    const left   = Math.max(0, req - days);
-    const eligible = days >= req;
+    const discordUserId = interaction.user.id;
+    const isNew  = trackIfNew(discordUserId);
+    updateLastChecked(discordUserId);
+    const joined      = getJoinDate(discordUserId);
+    const lastChecked = getLastChecked(discordUserId);
+    const days        = joined ? daysSince(joined) : 0;
+    const req         = config.ROBLOX_GROUP_DAYS_REQ;
+    const left        = Math.max(0, req - days);
+    const eligible    = days >= req;
 
     const statusIcon = eligible ? '<:true:1501213776878501899>' : '<:alert:1501220021035204658>';
-    const statusText = eligible ? '**ELEGIBLE** ✅' : '**NO ELEGIBLE** ❌';
+    const statusText = eligible ? '<:true:1501213776878501899> ELEGIBLE' : '<:alert:1501220021035204658> NO ELEGIBLE';
+
+    const lastCheckedStr = lastChecked
+        ? `<t:${Math.floor(lastChecked.getTime() / 1000)}:f>`
+        : 'Primera vez';
 
     const embed = new EmbedBuilder()
         .setColor(0x000000)
         .setTitle(`${statusIcon} Resultado de Verificación`)
         .addFields(
-            { name: '<:member:1501261625523699892> Usuario de Roblox', value: `\`${robloxUser.name}\``, inline: true },
-            { name: '📅 Días en el grupo', value: `**${days}** día${days !== 1 ? 's' : ''}`, inline: true },
-            { name: '🏆 Estado', value: statusText, inline: true },
+            { name: '<:member:1501261625523699892> Usuario de Roblox', value: `\`${robloxUser.name}\``,                  inline: true },
+            { name: '<a:robuxxx:1510070809366892604> Días en el grupo', value: `**${days}** día${days !== 1 ? 's' : ''}`, inline: true },
+            { name: '<:truepurple:1501214679400190086> Estado',         value: statusText,                                inline: true },
+            { name: '<:point:1501212595464700104> Última revisión',     value: lastCheckedStr,                            inline: false },
         )
         .setFooter({ text: '7x Community • Verificación de Grupo' });
 

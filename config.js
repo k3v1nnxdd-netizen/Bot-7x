@@ -23,6 +23,8 @@ module.exports = {
         TICKETS: '1184353695643729940',
     },
 
+    VOICE_CHANNEL_ID: '1515213879905357864',
+
     ROLES: {
         AUTO_ASSIGN: '1500335259575910450',
     },

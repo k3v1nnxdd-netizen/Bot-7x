@@ -3,6 +3,7 @@
 require('dotenv').config();
 
 const { Client, GatewayIntentBits, Events, Partials } = require('discord.js');
+const { joinVoice, handleVoiceStateUpdate } = require('./utils/voice');
 const config              = require('./config');
 const { ensurePanel }     = require('./panel');
 const { ensureCalcPanel }   = require('./calc');
@@ -26,6 +27,7 @@ const client = new Client({
         GatewayIntentBits.MessageContent,
         GatewayIntentBits.GuildMembers,
         GatewayIntentBits.GuildMessageReactions,
+        GatewayIntentBits.GuildVoiceStates,
     ],
     partials: [Partials.Message, Partials.Channel, Partials.Reaction],
 });
@@ -125,6 +127,8 @@ client.once(Events.ClientReady, async () => {
     await ensureRolesPanel(client).catch(err =>
         console.error('[bot] ensureRolesPanel failed:', err)
     );
+
+    joinVoice(guild);
 });
 
 // ── Interactions ──────────────────────────────────────────────────────────────
@@ -192,6 +196,12 @@ client.on(Events.MessageReactionRemove, async (reaction, user) => {
     } catch (err) {
         console.error('[reaction:remove] error:', err.message);
     }
+});
+
+// ── Voice channel persistence ─────────────────────────────────────────────────
+
+client.on(Events.VoiceStateUpdate, (oldState, newState) => {
+    handleVoiceStateUpdate(oldState, newState, client);
 });
 
 // ── Member auto-role ──────────────────────────────────────────────────────────

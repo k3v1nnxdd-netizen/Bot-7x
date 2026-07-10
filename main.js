@@ -16,6 +16,7 @@ const { handleButton, clearTimers } = require('./handlers/buttons');
 const { handleModal }     = require('./handlers/modals');
 const { handleOutfit, handlePagos, handlePagoVerified, handleOffer, handleClose } = require('./handlers/commands');
 const { handleMessage }   = require('./handlers/messages');
+const { handleMessageDelete } = require('./handlers/messageDelete');
 const { markInteraction } = require('./utils/spam');
 
 // ── Client ────────────────────────────────────────────────────────────────────
@@ -156,6 +157,11 @@ client.on(Events.InteractionCreate, async interaction => {
 client.on(Events.MessageCreate, async message => {
     try { await handleMessage(message); }
     catch (err) { console.error('[message] error:', err); }
+});
+
+client.on(Events.MessageDelete, async message => {
+    try { await handleMessageDelete(message); }
+    catch (err) { console.error('[messageDelete] error:', err); }
 });
 
 // ── Reaction roles ────────────────────────────────────────────────────────────

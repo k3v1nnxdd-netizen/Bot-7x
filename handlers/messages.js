@@ -27,6 +27,12 @@ async function handleMessage(message) {
     if (message.author.bot) return;
     if (!message.guild) return;
 
+    // ── Borra cualquier mensaje que mencione el rol prohibido ─────────────────
+    if (message.mentions.roles.has(config.ROLES.NO_PING)) {
+        await message.delete().catch(() => {});
+        return;
+    }
+
     // ── Anti-spam: elimina mensajes con 3+ imágenes (excepto tickets y referencias) ──
     const isTicket  = Boolean(tickets.getOwner(message.channel));
     const isExempt  = message.channelId === config.CHANNELS.REFERENCIAS;

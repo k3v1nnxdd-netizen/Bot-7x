@@ -27,6 +27,7 @@ module.exports = {
 
     ROLES: {
         AUTO_ASSIGN: '1500335259575910450',
+        NO_PING:     '1524950569972666468',
     },
 
     IMAGES: {

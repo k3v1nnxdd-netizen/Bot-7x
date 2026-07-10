@@ -11,8 +11,8 @@ function buildEmbed() {
             '¿Quieres comprar **Robux** o tienes alguna **duda**?\n' +
             'Selecciona una opción abajo para **continuar**.\n\n' +
             '<:point:1501212595464700104>  **Comprar** - Crear ticket para comprar Robux\n' +
-            '<:point:1501212595464700104> ** Soporte** - Resolver dudas, problemas o consultas\n' +
-            '<:point:1501212595464700104> ** Duels** - Crear ticket para comprar sets de Duels\n\n' +
+            '<:point:1501212595464700104> ** Duels** - Crear ticket para comprar sets de Duels\n' +
+            '<:point:1501212595464700104> ** Soporte** - Resolver dudas, problemas o consultas\n\n' +
             '━━━━━━━━━━━━━━━━━━━━\n\n' +
             'Los tickets de compra de **Robux** son automáticos y atendidos por un **bot**.\n' +
             '**No es necesaria la intervención de staff, owner ni menciones a @kevvv7x para completar tu compra**.\n\n' +
@@ -29,15 +29,15 @@ function buildRow() {
             .setStyle(ButtonStyle.Primary)
             .setEmoji('<:buy:1501212698556371004>'),
         new ButtonBuilder()
+            .setCustomId('duels')
+            .setLabel('Duels')
+            .setStyle(ButtonStyle.Primary)
+            .setEmoji('<:7xduels:1524947898264059995>'),
+        new ButtonBuilder()
             .setCustomId('otra_cosa')
             .setLabel('Otra cosa')
             .setStyle(ButtonStyle.Secondary)
-            .setEmoji('<:up:1501217620437897227>'),
-        new ButtonBuilder()
-            .setCustomId('duels')
-            .setLabel('Duels')
-            .setStyle(ButtonStyle.Success)
-            .setEmoji('<:7xduels:1524947898264059995>')
+            .setEmoji('<:up:1501217620437897227>')
     );
 }
 

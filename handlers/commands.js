@@ -5,6 +5,7 @@ const { safeDeferReply, safeReply, safeEditReply, safeFollowUp } = require('../u
 const roblox = require('../roblox');
 const config = require('../config');
 const { createCoupon, getCoupon, setMessageRef } = require('../utils/coupons');
+const { buildRefRow, sendPurchaseDM } = require('../utils/purchaseDm');
 const {
     buildTransferenciaEmbed, buildTransferenciaRow,
     buildOxxoEmbed, buildGiftCardEmbed,
@@ -78,16 +79,6 @@ async function handleOutfit(interaction) {
     }
 }
 
-function buildRefRow() {
-    return new ActionRowBuilder().addComponents(
-        new ButtonBuilder()
-            .setLabel('Dejar Reseña')
-            .setEmoji({ id: '1514369366878064650', name: 'star', animated: true })
-            .setStyle(ButtonStyle.Link)
-            .setURL('https://discord.com/channels/1162602588328435802/1452939436525617293'),
-    );
-}
-
 async function handlePagoVerified(interaction) {
     if (interaction.user.id !== config.OWNER_ID) {
         return safeReply(interaction, { content: '❌ No tienes permiso para usar este comando.', ephemeral: true });
@@ -112,11 +103,15 @@ async function handlePagoVerified(interaction) {
         .setFooter({ text: '7x Community • Compra verificada' })
         .setTimestamp();
 
-    return safeEditReply(interaction, {
+    await safeEditReply(interaction, {
         content: mentionUser ? `<@${mentionUser.id}>` : undefined,
         embeds: [embed],
         components: [buildRefRow()],
     });
+
+    if (mentionUser) {
+        await sendPurchaseDM(interaction.client, mentionUser.id);
+    }
 }
 
 async function handlePagos(interaction) {

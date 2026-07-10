@@ -10,6 +10,7 @@ const { isGone, safeReply, safeEditReply, safeDeferReply, safeShowModal } = requ
 const { isLocked, lock } = require('../utils/spam');
 const tickets            = require('../utils/tickets');
 const { buildComprarModal, buildOtraCosaModal, buildDuelsModal, buildCalcDineroModal, buildCalcRobuxModal, buildVerifModal } = require('./modals');
+const { buildRefRow, sendPurchaseDM } = require('../utils/purchaseDm');
 const config             = require('../config');
 
 // ── Countdown timers per ticket channel ───────────────────────────────────────
@@ -201,21 +202,17 @@ async function onConfirmarPago(interaction) {
             '<:truepurple:1501214679400190086> ¡Gracias por tu compra y esperamos verte nuevamente muy pronto!'
         );
 
-    const refRow = new ActionRowBuilder().addComponents(
-        new ButtonBuilder()
-            .setLabel('Dejar Reseña')
-            .setEmoji({ id: '1514369366878064650', name: 'star', animated: true })
-            .setStyle(ButtonStyle.Link)
-            .setURL(`https://discord.com/channels/1162602588328435802/1452939436525617293`),
-    );
-
     const replyPayload = {
         content: ownerId ? `<@${ownerId}>` : undefined,
         embeds: [embed],
-        components: [refRow],
+        components: [buildRefRow()],
         ...(EXITOSO_EXISTS && { files: [{ attachment: EXITOSO_PATH, name: EXITOSO_NAME }] }),
     };
     await safeReply(interaction, replyPayload);
+
+    if (ownerId) {
+        await sendPurchaseDM(interaction.client, ownerId);
+    }
 
     try {
         const member = ownerId ? await interaction.guild.members.fetch(ownerId).catch(() => null) : null;

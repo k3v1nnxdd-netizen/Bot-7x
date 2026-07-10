@@ -87,6 +87,12 @@ client.once(Events.ClientReady, async () => {
         {
             name: 'pagoverified',
             description: 'Envía el mensaje de pago verificado (solo owner)',
+            options: [{
+                name: 'usuario',
+                type: 6,
+                description: 'Usuario a mencionar en el mensaje',
+                required: false,
+            }],
         },
         {
             name: 'close',

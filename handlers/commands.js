@@ -96,6 +96,8 @@ async function handlePagoVerified(interaction) {
     const ok = await safeDeferReply(interaction);
     if (!ok) return;
 
+    const mentionUser = interaction.options.getUser('usuario');
+
     const embed = new EmbedBuilder()
         .setColor(0x000000)
         .setTitle('<:truepurple:1501214679400190086> Pago Verificado — 7x Community')
@@ -110,7 +112,11 @@ async function handlePagoVerified(interaction) {
         .setFooter({ text: '7x Community • Compra verificada' })
         .setTimestamp();
 
-    return safeEditReply(interaction, { embeds: [embed], components: [buildRefRow()] });
+    return safeEditReply(interaction, {
+        content: mentionUser ? `<@${mentionUser.id}>` : undefined,
+        embeds: [embed],
+        components: [buildRefRow()],
+    });
 }
 
 async function handlePagos(interaction) {

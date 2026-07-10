@@ -101,6 +101,27 @@ function buildOtraCosaModal() {
     return modal;
 }
 
+function buildDuelsModal() {
+    const modal = new ModalBuilder().setCustomId('duels_modal').setTitle('Compra de Duels');
+    modal.addComponents(
+        new ActionRowBuilder().addComponents(
+            new TextInputBuilder()
+                .setCustomId('set_duels')
+                .setLabel('¿Qué set deseas adquirir en Duels?')
+                .setStyle(TextInputStyle.Short)
+                .setRequired(true)
+        ),
+        new ActionRowBuilder().addComponents(
+            new TextInputBuilder()
+                .setCustomId('usuario_roblox_duels')
+                .setLabel('¿Cuál es tu usuario de Roblox?')
+                .setStyle(TextInputStyle.Short)
+                .setRequired(true)
+        )
+    );
+    return modal;
+}
+
 // ── Shared UI helpers ─────────────────────────────────────────────────────────
 
 function closeBtnRow() {
@@ -125,6 +146,7 @@ function confirmBtnRow() {
 // Counter resets on restart — Discord allows duplicate channel names
 let comprarN = 1;
 let soporteN = 1;
+let duelsN = 1;
 function pad(n) { return String(n).padStart(4, '0'); }
 
 function ticketErrorMsg(err) {
@@ -304,6 +326,51 @@ async function handleOtraCosaModal(interaction) {
         await safeEditReply(interaction, { content: `✅ Ticket creado: ${channel}` });
     } catch (err) {
         console.error('[modal:soporte] Error:', err);
+        await safeEditReply(interaction, { content: ticketErrorMsg(err) });
+    }
+}
+
+// ── Duels modal handler ───────────────────────────────────────────────────────
+
+async function handleDuelsModal(interaction) {
+    if (interaction.replied || interaction.deferred) return;
+    if (!await safeDeferReply(interaction, { ephemeral: true })) return;
+
+    const userId = interaction.user.id;
+
+    if (isLocked(`modal:${userId}`)) {
+        return safeEditReply(interaction, { content: '⏳ Espera un momento antes de intentar de nuevo.' });
+    }
+    lock(`modal:${userId}`, config.TIMEOUTS.LOCK_MS);
+
+    try {
+        if (await tickets.hasActiveTicket(interaction.guild, userId)) {
+            return safeEditReply(interaction, { content: '❌ Ya tienes un ticket abierto. Cierra el anterior antes de crear otro.' });
+        }
+
+        const set         = interaction.fields.getTextInputValue('set_duels').trim();
+        const robloxUser  = interaction.fields.getTextInputValue('usuario_roblox_duels').trim();
+        const channel     = await tickets.createTicket(interaction.guild, userId, 'duels', `duels-${pad(duelsN++)}`);
+
+        const embed = new EmbedBuilder()
+            .setColor(0x2B2D31)
+            .setTitle('<:7xduels:1524947898264059995> Ticket de Duels')
+            .setThumbnail(interaction.user.displayAvatarURL({ size: 256 }))
+            .setDescription(
+                `<@${userId}>\n\n` +
+                'Tu ticket ha sido creado correctamente.\n' +
+                'En un momento un miembro del staff te atenderá. Te pedimos paciencia.\n\n' +
+                '━━━━━━━━━━━━━━━━━━━━\n\n' +
+                `**Set solicitado**\n\`\`\`${set}\`\`\`\n` +
+                `**Usuario de Roblox**\n\`\`\`${robloxUser}\`\`\`\n\n` +
+                '<:alert:1501220021035204658> Es necesario enviar una **solicitud de amistad** en Roblox a la cuenta **Nooctraa** para continuar con el proceso.'
+            )
+            .setFooter({ text: '7x Community • Duels' });
+
+        await channel.send({ embeds: [embed], components: [closeBtnRow()] });
+        await safeEditReply(interaction, { content: `✅ Ticket creado: ${channel}` });
+    } catch (err) {
+        console.error('[modal:duels] Error:', err);
         await safeEditReply(interaction, { content: ticketErrorMsg(err) });
     }
 }
@@ -494,6 +561,7 @@ async function handleVerifModal(interaction) {
 const HANDLERS = {
     comprar_modal:    handleComprarModal,
     otra_cosa_modal:  handleOtraCosaModal,
+    duels_modal:       handleDuelsModal,
     calc_dinero_modal: handleCalcDineroModal,
     calc_robux_modal:  handleCalcRobuxModal,
     verif_modal:       handleVerifModal,
@@ -515,4 +583,4 @@ async function handleModal(interaction) {
     }
 }
 
-module.exports = { handleModal, buildComprarModal, buildOtraCosaModal, buildCalcDineroModal, buildCalcRobuxModal, buildVerifModal };
+module.exports = { handleModal, buildComprarModal, buildOtraCosaModal, buildDuelsModal, buildCalcDineroModal, buildCalcRobuxModal, buildVerifModal };

@@ -9,7 +9,7 @@ const EXITOSO_EXISTS = fs.existsSync(EXITOSO_PATH);
 const { isGone, safeReply, safeEditReply, safeDeferReply, safeShowModal } = require('../utils/safe');
 const { isLocked, lock } = require('../utils/spam');
 const tickets            = require('../utils/tickets');
-const { buildComprarModal, buildOtraCosaModal, buildCalcDineroModal, buildCalcRobuxModal, buildVerifModal } = require('./modals');
+const { buildComprarModal, buildOtraCosaModal, buildDuelsModal, buildCalcDineroModal, buildCalcRobuxModal, buildVerifModal } = require('./modals');
 const config             = require('../config');
 
 // ── Countdown timers per ticket channel ───────────────────────────────────────
@@ -35,7 +35,7 @@ function buildAutoCloseEmbed(minutes) {
 
 // ── Channel classification ────────────────────────────────────────────────────
 
-const PANEL_BUTTONS  = new Set(['comprar', 'otra_cosa']);
+const PANEL_BUTTONS  = new Set(['comprar', 'otra_cosa', 'duels']);
 const CALC_BUTTONS   = new Set(['calc_dinero', 'calc_robux']);
 const VERIF_BUTTONS  = new Set(['verif_check']);
 const TICKET_BUTTONS = new Set(['confirmar_pago', 'cerrar_ticket', 'confirmar_cerrar', 'cancelar_cerrar']);
@@ -138,6 +138,23 @@ async function onOtraCosa(interaction) {
     }
 
     await safeShowModal(interaction, buildOtraCosaModal());
+}
+
+async function onDuels(interaction) {
+    if (interaction.replied || interaction.deferred) return;
+
+    const userId = interaction.user.id;
+
+    if (isLocked(`btn:duels:${userId}`)) {
+        return safeReply(interaction, { content: '⏳ Espera un momento antes de intentar de nuevo.', ephemeral: true });
+    }
+    lock(`btn:duels:${userId}`, config.TIMEOUTS.LOCK_MS);
+
+    if (await tickets.hasActiveTicket(interaction.guild, userId)) {
+        return safeReply(interaction, { content: '❌ Ya tienes un ticket abierto. Cierra el anterior antes de crear otro.', ephemeral: true });
+    }
+
+    await safeShowModal(interaction, buildDuelsModal());
 }
 
 async function onConfirmarPago(interaction) {
@@ -335,6 +352,7 @@ async function startAutoClose(channel) {
 const HANDLERS = {
     comprar:          onComprar,
     otra_cosa:        onOtraCosa,
+    duels:            onDuels,
     verif_check:      onVerifCheck,
     calc_dinero:      onCalcDinero,
     calc_robux:       onCalcRobux,

@@ -3,7 +3,7 @@
 const fs = require('fs');
 const { EmbedBuilder } = require('discord.js');
 const tickets = require('../utils/tickets');
-const { isPaymentConfirmation } = require('../utils/payment');
+const { isPaymentConfirmation, isPagoRealizado } = require('../utils/payment');
 const { isLocked, lock } = require('../utils/spam');
 const config = require('../config');
 
@@ -54,28 +54,65 @@ async function handleMessage(message) {
         await message.react('<a:leggit:1510180431738179654>').catch(() => {});
     }
 
-    const channelId = message.channelId;
-    const ownerId = tickets.getOwner(message.channel);
+    const channelId  = message.channelId;
+    const ownerId    = tickets.getOwner(message.channel);
     if (!ownerId) return;
     if (message.author.id !== ownerId) return;
-    if (tickets.getType(message.channel) !== 'comprar') return;
+
+    const ticketType = tickets.getType(message.channel);
+    if (ticketType !== 'comprar' && ticketType !== 'seguidores') return;
     if (tickets.isConfirmed(channelId)) return;
 
     // Lock check first — short-circuits before any expensive operations
     if (isLocked(`review:${channelId}`)) return;
 
     // Persistent state: channel name survives bot restarts
-    if ((message.channel.name ?? '').includes('revision')) return;
+    const channelName = message.channel.name ?? '';
+    if (channelName.includes('revision') || channelName.includes('pendiente')) return;
 
     // In-memory state (fast, cleared on restart — covered by lock + name check)
     if (tickets.isPaymentReview(channelId)) return;
 
-    // Only trigger on the "pago exitoso" keyword
-    if (!isPaymentConfirmation(message.content)) return;
+    if (ticketType === 'comprar') {
+        // Only trigger on the "pago exitoso" keyword
+        if (!isPaymentConfirmation(message.content)) return;
 
-    // Claim the lock and mark state BEFORE any async work.
-    // If send/rename fail, the lock still prevents a duplicate for 30 seconds,
-    // and the name check prevents duplicates after restart once renamed.
+        // Claim the lock and mark state BEFORE any async work.
+        // If send/rename fail, the lock still prevents a duplicate for 30 seconds,
+        // and the name check prevents duplicates after restart once renamed.
+        lock(`review:${channelId}`, 30_000);
+        tickets.markPaymentReview(channelId);
+
+        const embed = new EmbedBuilder()
+            .setColor(0xF59E0B)
+            .setTitle('Pago pendiente de revision')
+            .setThumbnail(PENDING_EXISTS ? `attachment://${PENDING_NAME}` : null)
+            .setDescription(
+                `<@${ownerId}>, recibimos tu aviso de **pago exitoso**.\n\n` +
+                'El comprobante queda pendiente de revision por parte del staff. ' +
+                'Cuando el pago sea validado, se confirmara desde el boton de owner y se enviara la confirmacion final.'
+            )
+            .addFields(
+                { name: 'Estado',         value: '`Pendiente de revision`',       inline: true },
+                { name: 'Siguiente paso', value: '`Espera la validacion del staff`', inline: true }
+            )
+            .setFooter({ text: '7x Community - Revision de pago' })
+            .setTimestamp();
+
+        const sendPayload = {
+            embeds: [embed],
+            ...(PENDING_EXISTS && { files: [{ attachment: PENDING_PATH, name: PENDING_NAME }] }),
+        };
+        await message.channel.send(sendPayload);
+
+        await renameChannel(message.channel, ['⚠-pago-revision', 'pago-revision']);
+        return;
+    }
+
+    // ticketType === 'seguidores'
+    // Only trigger on the "pago realizado" keyword
+    if (!isPagoRealizado(message.content)) return;
+
     lock(`review:${channelId}`, 30_000);
     tickets.markPaymentReview(channelId);
 
@@ -84,12 +121,12 @@ async function handleMessage(message) {
         .setTitle('Pago pendiente de revision')
         .setThumbnail(PENDING_EXISTS ? `attachment://${PENDING_NAME}` : null)
         .setDescription(
-            `<@${ownerId}>, recibimos tu aviso de **pago exitoso**.\n\n` +
-            'El comprobante queda pendiente de revision por parte del staff. ' +
-            'Cuando el pago sea validado, se confirmara desde el boton de owner y se enviara la confirmacion final.'
+            `<@${ownerId}>, recibimos tu aviso de **pago realizado**.\n\n` +
+            'Tu comprobante queda pendiente de revision por parte del staff. ' +
+            'Te notificaremos en cuanto sea validado.'
         )
         .addFields(
-            { name: 'Estado',         value: '`Pendiente de revision`',       inline: true },
+            { name: 'Estado',         value: '`Pendiente de revision`',         inline: true },
             { name: 'Siguiente paso', value: '`Espera la validacion del staff`', inline: true }
         )
         .setFooter({ text: '7x Community - Revision de pago' })
@@ -101,7 +138,10 @@ async function handleMessage(message) {
     };
     await message.channel.send(sendPayload);
 
-    await renameChannel(message.channel, ['⚠-pago-revision', 'pago-revision']);
+    const numMatch  = (message.channel.name ?? '').match(/(\d{4})/);
+    const num       = numMatch ? numMatch[1] : '0000';
+    const cleanName = (message.author.username ?? 'user').toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 20) || 'user';
+    await renameChannel(message.channel, [`seg-pendiente-${num}-${cleanName}`, 'seg-pendiente']);
 }
 
 module.exports = { handleMessage };

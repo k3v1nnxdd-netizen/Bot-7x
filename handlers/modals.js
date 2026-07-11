@@ -572,7 +572,7 @@ async function handleModal(interaction) {
     // Hard stop — same pattern as handleButton
     if (interaction.replied || interaction.deferred) return;
 
-    const isSeg = interaction.customId.startsWith('seg_qty_modal_');
+    const isSeg = interaction.customId.startsWith('seg_');
     const fn = isSeg ? handleSeguidoresModal : HANDLERS[interaction.customId];
     if (!fn) return;
 

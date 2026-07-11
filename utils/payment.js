@@ -43,4 +43,16 @@ function isPaymentConfirmation(text) {
     return hasInOrder(clean, 'exitoso', pagoEnd) !== -1;
 }
 
-module.exports = { isPaymentConfirmation };
+function isPagoRealizado(text) {
+    if (!text || typeof text !== 'string') return false;
+
+    const clean = lettersOnly(text);
+    if (!clean) return false;
+
+    const pagoEnd = hasInOrder(clean, 'pago');
+    if (pagoEnd === -1) return false;
+
+    return hasInOrder(clean, 'realizado', pagoEnd) !== -1;
+}
+
+module.exports = { isPaymentConfirmation, isPagoRealizado };

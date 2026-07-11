@@ -10,6 +10,8 @@ const { isLocked, lock } = require('../utils/spam');
 const tickets = require('../utils/tickets');
 const config = require('../config');
 
+const EMBED_COLOR = 0x2B2D31; // gray, per request
+
 let seguidoresN = 1;
 function pad(n) { return String(n).padStart(4, '0'); }
 
@@ -22,16 +24,6 @@ const PLATFORMS = {
     tiktok:    { label: 'TIK TOK',   emoji: '<:ttk:1525317575783743580>',    hasQuality: true,  rates: { normal: 0.10, premium: 0.15 } },
     roblox:    { label: 'ROBLOX',    emoji: '<:roblox:1525317838938701967>', hasQuality: false, rate: 0.174 },
 };
-
-function closeBtnRow() {
-    return new ActionRowBuilder().addComponents(
-        new ButtonBuilder()
-            .setCustomId('cerrar_ticket')
-            .setLabel('Cerrar Ticket')
-            .setStyle(ButtonStyle.Danger)
-            .setEmoji('🔒')
-    );
-}
 
 function fmtMoney(n) {
     return Math.round(n).toLocaleString('es-MX');
@@ -49,7 +41,7 @@ function isTicketChannelOwnedBy(channel, userId) {
 
 function buildPlatformEmbed(userId) {
     return new EmbedBuilder()
-        .setColor(0x000000)
+        .setColor(EMBED_COLOR)
         .setTitle('SEGUIDORES')
         .setDescription(
             `Hola, <@${userId}>, has abierto un ticket para comprar seguidores.\n\n` +
@@ -124,7 +116,6 @@ function buildQtyRow(platformKey, disabled = false) {
             .setCustomId(`seg_askqty_${platformKey}`)
             .setLabel('Escribir cantidad')
             .setStyle(ButtonStyle.Primary)
-            .setEmoji('✏️')
             .setDisabled(disabled)
     );
 }
@@ -146,10 +137,11 @@ async function handlePlatformSelect(interaction) {
     await interaction.update({ components: [new ActionRowBuilder().addComponents(disabledSelect)] }).catch(() => {});
 
     const embed = new EmbedBuilder()
-        .setColor(0x000000)
+        .setColor(EMBED_COLOR)
         .setTitle('¿Cuántos seguidores quieres?')
         .setDescription(
-            `Plataforma seleccionada: ${platform.emoji} **${platform.label}**\n\n` +
+            'Plataforma seleccionada:\n\n' +
+            `> ${platform.emoji} \`${platform.label}\`\n\n` +
             'Presiona el botón de abajo para escribir la cantidad de seguidores que deseas.'
         )
         .setFooter({ text: '7x Community • Seguidores' });
@@ -226,18 +218,18 @@ async function handleQtyModal(interaction, platformKey) {
 
     if (!platform.hasQuality) {
         const price = qty * platform.rate;
-        await sendFinalInfo(interaction.channel, interaction.user.id, platform.label, qty, price);
+        await sendFinalInfo(interaction.channel, interaction.user.id, platformKey, platform.label, qty, price);
     } else {
         const normalPrice  = qty * platform.rates.normal;
         const premiumPrice = qty * platform.rates.premium;
 
         const embed = new EmbedBuilder()
-            .setColor(0x000000)
+            .setColor(EMBED_COLOR)
             .setTitle('Elige la calidad')
             .setDescription(
                 `${platform.emoji} **${platform.label}** — ${fmtQty(qty)} seguidores\n\n` +
-                `${fmtQty(qty)} seguidores (Calidad Normal): **$${fmtMoney(normalPrice)} MXN**\n` +
-                `${fmtQty(qty)} seguidores (Calidad Premium): **$${fmtMoney(premiumPrice)} MXN**`
+                `> \`${fmtQty(qty)} seguidores (Calidad Normal): $${fmtMoney(normalPrice)} MXN\`\n` +
+                `> \`${fmtQty(qty)} seguidores (Calidad Premium): $${fmtMoney(premiumPrice)} MXN\``
             )
             .setFooter({ text: '7x Community • Seguidores' });
 
@@ -274,24 +266,110 @@ async function handleQualityChoice(interaction, platformKey, quality, qty, price
     const platform = PLATFORMS[platformKey];
     if (!platform) return;
     const qualityLabel = quality === 'premium' ? 'Premium' : 'Normal';
-    await sendFinalInfo(interaction.channel, interaction.user.id, `${platform.label} (Calidad ${qualityLabel})`, qty, price);
+    await sendFinalInfo(interaction.channel, interaction.user.id, platformKey, `${platform.label} (Calidad ${qualityLabel})`, qty, price);
 }
 
-async function sendFinalInfo(channel, userId, platformLabel, qty, price) {
+function buildFinalRow(platformKey, profileDisabled = false) {
+    return new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+            .setCustomId('cerrar_ticket')
+            .setLabel('Cerrar Ticket')
+            .setStyle(ButtonStyle.Danger)
+            .setEmoji('🔒'),
+        new ButtonBuilder()
+            .setCustomId(`seg_profile_btn_${platformKey}`)
+            .setLabel('Agregar Link de Perfil')
+            .setStyle(ButtonStyle.Secondary)
+            .setEmoji('🔗')
+            .setDisabled(profileDisabled)
+    );
+}
+
+async function sendFinalInfo(channel, userId, platformKey, platformLabel, qty, price) {
     const embed = new EmbedBuilder()
-        .setColor(0x000000)
+        .setColor(EMBED_COLOR)
         .setTitle('Resumen de tu pedido')
         .setDescription(
-            `<:member:1501261625523699892> **Usuario de Discord**\n<@${userId}>\n\n` +
             `<a:boost:1525333836181934081> **Plataforma**\n\`\`\`${platformLabel}\`\`\`\n` +
             `<:followers7x:1525326777071960124> **Seguidores solicitados**\n\`\`\`${fmtQty(qty)}\`\`\`\n` +
             `<:money:1501213606077792266> **Precio a pagar**\n\`\`\`$${fmtMoney(price)} MXN\`\`\`\n\n` +
-            'Una vez realices el pago, envía tu **comprobante** en este ticket para que el staff lo revise.'
+            '<:alert:1501220021035204658> Recuerda enviar tu comprobante de pago una vez hayas realizado el pago, ' +
+            'junto con la palabra **PAGO REALIZADO**, para que nuestro equipo pueda validarlo.'
         )
         .setFooter({ text: '7x Community • Seguidores' })
         .setTimestamp();
 
-    await channel.send({ content: `<@${userId}>`, embeds: [embed], components: [closeBtnRow()] });
+    await channel.send({ embeds: [embed], components: [buildFinalRow(platformKey)] });
+}
+
+// ── Step 6 (optional): profile link → tells staff where to send followers ────
+
+function buildProfileModal(platformKey) {
+    const platform = PLATFORMS[platformKey];
+    const modal = new ModalBuilder().setCustomId(`seg_profile_modal_${platformKey}`).setTitle('Link de perfil');
+    modal.addComponents(
+        new ActionRowBuilder().addComponents(
+            new TextInputBuilder()
+                .setCustomId('link_perfil')
+                .setLabel(`Link de tu perfil de ${platform.label}`)
+                .setStyle(TextInputStyle.Short)
+                .setPlaceholder('https://...')
+                .setRequired(true)
+        )
+    );
+    return modal;
+}
+
+async function handleProfileButton(interaction, platformKey) {
+    if (!isTicketChannelOwnedBy(interaction.channel, interaction.user.id)) {
+        return safeReply(interaction, { content: '❌ Solo el creador del ticket puede continuar.', ephemeral: true });
+    }
+    await safeShowModal(interaction, buildProfileModal(platformKey));
+}
+
+async function handleProfileModal(interaction, platformKey) {
+    if (interaction.replied || interaction.deferred) return;
+
+    if (!isTicketChannelOwnedBy(interaction.channel, interaction.user.id)) {
+        return safeReply(interaction, { content: '❌ Solo el creador del ticket puede continuar.', ephemeral: true });
+    }
+
+    const platform = PLATFORMS[platformKey];
+    if (!platform) return;
+
+    const link = interaction.fields.getTextInputValue('link_perfil').trim();
+    if (!link) {
+        return safeReply(interaction, { content: '❌ Escribe un link válido.', ephemeral: true });
+    }
+
+    if (interaction.isFromMessage()) {
+        const rebuilt = new ActionRowBuilder().addComponents(
+            interaction.message.components[0].components.map(c => {
+                const btn = ButtonBuilder.from(c);
+                if (c.customId?.startsWith('seg_profile_btn_')) btn.setDisabled(true);
+                return btn;
+            })
+        );
+        await interaction.update({ components: [rebuilt] }).catch(() => {});
+    } else {
+        await safeDeferReply(interaction, { ephemeral: true });
+    }
+
+    const embed = new EmbedBuilder()
+        .setColor(EMBED_COLOR)
+        .setTitle('🔗 Link de perfil recibido')
+        .setDescription(
+            `**Plataforma:** ${platform.label}\n` +
+            `**Link:** ${link}\n\n` +
+            'Este es el perfil al que se enviarán los seguidores.'
+        )
+        .setFooter({ text: '7x Community • Seguidores' });
+
+    await interaction.channel.send({ embeds: [embed] });
+
+    if (interaction.deferred) {
+        await safeEditReply(interaction, { content: '✅ Link registrado.' });
+    }
 }
 
 // ── Routers (called from handlers/buttons.js and handlers/modals.js) ─────────
@@ -307,6 +385,9 @@ async function handleSeguidoresButton(interaction) {
         const [platformKey, quality, qtyStr, priceStr] = id.slice('seg_quality_'.length).split('_');
         return handleQualityChoice(interaction, platformKey, quality, parseInt(qtyStr, 10), parseInt(priceStr, 10));
     }
+    if (id.startsWith('seg_profile_btn_')) {
+        return handleProfileButton(interaction, id.slice('seg_profile_btn_'.length));
+    }
 }
 
 async function handleSeguidoresModal(interaction) {
@@ -315,6 +396,9 @@ async function handleSeguidoresModal(interaction) {
 
     if (id.startsWith('seg_qty_modal_')) {
         return handleQtyModal(interaction, id.slice('seg_qty_modal_'.length));
+    }
+    if (id.startsWith('seg_profile_modal_')) {
+        return handleProfileModal(interaction, id.slice('seg_profile_modal_'.length));
     }
 }
 

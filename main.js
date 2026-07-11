@@ -18,6 +18,7 @@ const { handleModal }     = require('./handlers/modals');
 const { handleOutfit, handlePagos, handlePagoVerified, handleOffer, handleClose } = require('./handlers/commands');
 const { handleMessage }   = require('./handlers/messages');
 const { handleMessageDelete } = require('./handlers/messageDelete');
+const { handleSeguidoresSelect } = require('./handlers/seguidoresFlow');
 const { markInteraction } = require('./utils/spam');
 
 // ── Client ────────────────────────────────────────────────────────────────────
@@ -157,6 +158,7 @@ client.on(Events.InteractionCreate, async interaction => {
         else if (interaction.isChatInputCommand() && interaction.commandName === 'offer')        await handleOffer(interaction);
         else if (interaction.isButton())           await handleButton(interaction);
         else if (interaction.isModalSubmit())      await handleModal(interaction);
+        else if (interaction.isStringSelectMenu() && interaction.customId.startsWith('seg_')) await handleSeguidoresSelect(interaction);
         else if (interaction.isStringSelectMenu()) await handleMetodosSelect(interaction);
     } catch (err) {
         console.error('[interaction] top-level error:', err);

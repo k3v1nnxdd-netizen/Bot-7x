@@ -2,6 +2,7 @@
 
 const {
     EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle,
+    StringSelectMenuBuilder, StringSelectMenuOptionBuilder,
     ModalBuilder, TextInputBuilder, TextInputStyle,
 } = require('discord.js');
 const { safeReply, safeEditReply, safeDeferReply, safeShowModal } = require('../utils/safe');
@@ -11,6 +12,9 @@ const config = require('../config');
 
 let seguidoresN = 1;
 function pad(n) { return String(n).padStart(4, '0'); }
+
+// Channels where the quantity has already been submitted — answer only once per ticket.
+const qtySubmitted = new Set();
 
 // Rate = price (MXN) per single follower, derived from the published per-1000 prices.
 const PLATFORMS = {
@@ -37,6 +41,10 @@ function fmtQty(n) {
     return n.toLocaleString('es-MX');
 }
 
+function isTicketChannelOwnedBy(channel, userId) {
+    return channel?.parentId === config.CATEGORIES.TICKETS && tickets.getOwner(channel) === userId;
+}
+
 // ── Step 1: panel button click → create ticket, ask platform ─────────────────
 
 function buildPlatformEmbed(userId) {
@@ -52,9 +60,26 @@ function buildPlatformEmbed(userId) {
 
 function buildPlatformRow() {
     return new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId('seg_platform_instagram').setLabel('INSTAGRAM').setStyle(ButtonStyle.Primary).setEmoji(PLATFORMS.instagram.emoji),
-        new ButtonBuilder().setCustomId('seg_platform_tiktok').setLabel('TIK TOK').setStyle(ButtonStyle.Primary).setEmoji(PLATFORMS.tiktok.emoji),
-        new ButtonBuilder().setCustomId('seg_platform_roblox').setLabel('ROBLOX').setStyle(ButtonStyle.Primary).setEmoji(PLATFORMS.roblox.emoji),
+        new StringSelectMenuBuilder()
+            .setCustomId('seg_platform_select')
+            .setPlaceholder('Selecciona una plataforma')
+            .addOptions(
+                new StringSelectMenuOptionBuilder()
+                    .setLabel('INSTAGRAM')
+                    .setDescription('Comprar seguidores de Instagram')
+                    .setValue('instagram')
+                    .setEmoji(PLATFORMS.instagram.emoji),
+                new StringSelectMenuOptionBuilder()
+                    .setLabel('TIK TOK')
+                    .setDescription('Comprar seguidores de TikTok')
+                    .setValue('tiktok')
+                    .setEmoji(PLATFORMS.tiktok.emoji),
+                new StringSelectMenuOptionBuilder()
+                    .setLabel('ROBLOX')
+                    .setDescription('Comprar seguidores de Roblox')
+                    .setValue('roblox')
+                    .setEmoji(PLATFORMS.roblox.emoji),
+            )
     );
 }
 
@@ -76,7 +101,11 @@ async function startSeguidoresTicket(interaction) {
 
     try {
         const channel = await tickets.createTicket(interaction.guild, userId, 'seguidores', `seguidores-${pad(seguidoresN++)}`);
-        await channel.send({ embeds: [buildPlatformEmbed(userId)], components: [buildPlatformRow()] });
+        await channel.send({
+            content: `<@${userId}>`,
+            embeds: [buildPlatformEmbed(userId)],
+            components: [buildPlatformRow()],
+        });
         await safeEditReply(interaction, { content: `✅ Ticket creado: ${channel}` });
     } catch (err) {
         console.error('[seguidores] ticket creation error:', err);
@@ -87,31 +116,34 @@ async function startSeguidoresTicket(interaction) {
     }
 }
 
-// ── Step 2: platform chosen → ask quantity ────────────────────────────────────
+// ── Step 2: platform chosen (select menu) → ask quantity ─────────────────────
 
-function buildQtyRow(platformKey) {
+function buildQtyRow(platformKey, disabled = false) {
     return new ActionRowBuilder().addComponents(
         new ButtonBuilder()
             .setCustomId(`seg_askqty_${platformKey}`)
             .setLabel('Escribir cantidad')
             .setStyle(ButtonStyle.Primary)
             .setEmoji('✏️')
+            .setDisabled(disabled)
     );
 }
 
-async function handlePlatformChoice(interaction, platformKey) {
-    const ownerId = tickets.getOwner(interaction.channel);
-    if (interaction.user.id !== ownerId) {
+async function handlePlatformSelect(interaction) {
+    if (interaction.customId !== 'seg_platform_select') return;
+
+    if (!isTicketChannelOwnedBy(interaction.channel, interaction.user.id)) {
         return safeReply(interaction, { content: '❌ Solo el creador del ticket puede elegir la plataforma.', ephemeral: true });
     }
 
+    const platformKey = interaction.values[0];
     const platform = PLATFORMS[platformKey];
     if (!platform) return;
 
-    const disabledRow = new ActionRowBuilder().addComponents(
-        interaction.message.components[0].components.map(c => ButtonBuilder.from(c).setDisabled(true))
-    );
-    await interaction.update({ components: [disabledRow] }).catch(() => {});
+    const disabledSelect = StringSelectMenuBuilder
+        .from(interaction.message.components[0].components[0])
+        .setDisabled(true);
+    await interaction.update({ components: [new ActionRowBuilder().addComponents(disabledSelect)] }).catch(() => {});
 
     const embed = new EmbedBuilder()
         .setColor(0x000000)
@@ -144,9 +176,11 @@ function buildQtyModal(platformKey) {
 }
 
 async function handleAskQtyButton(interaction, platformKey) {
-    const ownerId = tickets.getOwner(interaction.channel);
-    if (interaction.user.id !== ownerId) {
+    if (!isTicketChannelOwnedBy(interaction.channel, interaction.user.id)) {
         return safeReply(interaction, { content: '❌ Solo el creador del ticket puede continuar.', ephemeral: true });
+    }
+    if (qtySubmitted.has(interaction.channelId)) {
+        return safeReply(interaction, { content: '❌ Ya indicaste la cantidad de seguidores para este ticket.', ephemeral: true });
     }
     await safeShowModal(interaction, buildQtyModal(platformKey));
 }
@@ -163,54 +197,67 @@ function extractQty(raw) {
 
 async function handleQtyModal(interaction, platformKey) {
     if (interaction.replied || interaction.deferred) return;
-    if (!await safeDeferReply(interaction, { ephemeral: true })) return;
 
-    const ownerId = tickets.getOwner(interaction.channel);
-    if (interaction.user.id !== ownerId) {
-        return safeEditReply(interaction, { content: '❌ Solo el creador del ticket puede continuar.' });
+    if (!isTicketChannelOwnedBy(interaction.channel, interaction.user.id)) {
+        return safeReply(interaction, { content: '❌ Solo el creador del ticket puede continuar.', ephemeral: true });
     }
 
     const platform = PLATFORMS[platformKey];
-    if (!platform) return safeEditReply(interaction, { content: '❌ Plataforma no válida.' });
+    if (!platform) return;
+
+    // Answer-once guard — blocks a second submit even if two modals were open at once
+    if (qtySubmitted.has(interaction.channelId)) {
+        return safeReply(interaction, { content: '❌ Ya indicaste la cantidad de seguidores para este ticket.', ephemeral: true });
+    }
 
     const qty = extractQty(interaction.fields.getTextInputValue('cantidad_seguidores'));
     if (!qty) {
-        return safeEditReply(interaction, { content: '❌ Escribe una cantidad válida de seguidores. Ejemplo: 3500' });
+        return safeReply(interaction, { content: '❌ Escribe una cantidad válida de seguidores. Ejemplo: 3500', ephemeral: true });
+    }
+
+    qtySubmitted.add(interaction.channelId);
+
+    // Disable the "Escribir cantidad" button on the source message (modal was opened from it)
+    if (interaction.isFromMessage()) {
+        await interaction.update({ components: [buildQtyRow(platformKey, true)] }).catch(() => {});
+    } else {
+        await safeDeferReply(interaction, { ephemeral: true });
     }
 
     if (!platform.hasQuality) {
         const price = qty * platform.rate;
         await sendFinalInfo(interaction.channel, interaction.user.id, platform.label, qty, price);
-        await safeEditReply(interaction, { content: '✅ Solicitud registrada.' });
-        return;
+    } else {
+        const normalPrice  = qty * platform.rates.normal;
+        const premiumPrice = qty * platform.rates.premium;
+
+        const embed = new EmbedBuilder()
+            .setColor(0x000000)
+            .setTitle('Elige la calidad')
+            .setDescription(
+                `${platform.emoji} **${platform.label}** — ${fmtQty(qty)} seguidores\n\n` +
+                `${fmtQty(qty)} seguidores (Calidad Normal): **$${fmtMoney(normalPrice)} MXN**\n` +
+                `${fmtQty(qty)} seguidores (Calidad Premium): **$${fmtMoney(premiumPrice)} MXN**`
+            )
+            .setFooter({ text: '7x Community • Seguidores' });
+
+        const row = new ActionRowBuilder().addComponents(
+            new ButtonBuilder()
+                .setCustomId(`seg_quality_${platformKey}_normal_${qty}_${Math.round(normalPrice)}`)
+                .setLabel(`Calidad Normal — $${fmtMoney(normalPrice)} MXN`)
+                .setStyle(ButtonStyle.Secondary),
+            new ButtonBuilder()
+                .setCustomId(`seg_quality_${platformKey}_premium_${qty}_${Math.round(premiumPrice)}`)
+                .setLabel(`Calidad Premium — $${fmtMoney(premiumPrice)} MXN`)
+                .setStyle(ButtonStyle.Primary),
+        );
+
+        await interaction.channel.send({ embeds: [embed], components: [row] });
     }
 
-    const normalPrice  = qty * platform.rates.normal;
-    const premiumPrice = qty * platform.rates.premium;
-
-    const embed = new EmbedBuilder()
-        .setColor(0x000000)
-        .setTitle('Elige la calidad')
-        .setDescription(
-            `${platform.emoji} **${platform.label}** — ${fmtQty(qty)} seguidores\n\n` +
-            `${fmtQty(qty)} seguidores (Calidad Normal): **$${fmtMoney(normalPrice)} MXN**\n` +
-            `${fmtQty(qty)} seguidores (Calidad Premium): **$${fmtMoney(premiumPrice)} MXN**`
-        )
-        .setFooter({ text: '7x Community • Seguidores' });
-
-    const row = new ActionRowBuilder().addComponents(
-        new ButtonBuilder()
-            .setCustomId(`seg_quality_${platformKey}_normal_${qty}_${Math.round(normalPrice)}`)
-            .setLabel(`Calidad Normal — $${fmtMoney(normalPrice)} MXN`)
-            .setStyle(ButtonStyle.Secondary),
-        new ButtonBuilder()
-            .setCustomId(`seg_quality_${platformKey}_premium_${qty}_${Math.round(premiumPrice)}`)
-            .setLabel(`Calidad Premium — $${fmtMoney(premiumPrice)} MXN`)
-            .setStyle(ButtonStyle.Primary),
-    );
-
-    await interaction.channel.send({ embeds: [embed], components: [row] });
-    await safeEditReply(interaction, { content: '✅ Cantidad registrada. Elige la calidad arriba.' });
+    if (interaction.deferred) {
+        await safeEditReply(interaction, { content: '✅ Cantidad registrada.' });
+    }
 }
 
 // ── Step 5: quality chosen → final order summary ──────────────────────────────
@@ -218,8 +265,7 @@ async function handleQtyModal(interaction, platformKey) {
 async function handleQualityChoice(interaction, platformKey, quality, qty, price) {
     if (interaction.replied || interaction.deferred) return;
 
-    const ownerId = tickets.getOwner(interaction.channel);
-    if (interaction.user.id !== ownerId) {
+    if (!isTicketChannelOwnedBy(interaction.channel, interaction.user.id)) {
         return safeReply(interaction, { content: '❌ Solo el creador del ticket puede elegir la calidad.', ephemeral: true });
     }
 
@@ -236,9 +282,9 @@ async function sendFinalInfo(channel, userId, platformLabel, qty, price) {
         .setColor(0x000000)
         .setTitle('Resumen de tu pedido')
         .setDescription(
-            `<:member:1501261625523699892> **Usuario de Discord**\n\`\`\`<@${userId}>\`\`\`\n` +
-            `**Plataforma**\n\`\`\`${platformLabel}\`\`\`\n` +
-            `**Seguidores solicitados**\n\`\`\`${fmtQty(qty)}\`\`\`\n` +
+            `<:member:1501261625523699892> **Usuario de Discord**\n<@${userId}>\n\n` +
+            `<a:boost:1525333836181934081> **Plataforma**\n\`\`\`${platformLabel}\`\`\`\n` +
+            `<:followers7x:1525326777071960124> **Seguidores solicitados**\n\`\`\`${fmtQty(qty)}\`\`\`\n` +
             `<:money:1501213606077792266> **Precio a pagar**\n\`\`\`$${fmtMoney(price)} MXN\`\`\`\n\n` +
             'Una vez realices el pago, envía tu **comprobante** en este ticket para que el staff lo revise.'
         )
@@ -254,9 +300,6 @@ async function handleSeguidoresButton(interaction) {
     if (interaction.replied || interaction.deferred) return;
     const id = interaction.customId;
 
-    if (id.startsWith('seg_platform_')) {
-        return handlePlatformChoice(interaction, id.slice('seg_platform_'.length));
-    }
     if (id.startsWith('seg_askqty_')) {
         return handleAskQtyButton(interaction, id.slice('seg_askqty_'.length));
     }
@@ -275,4 +318,10 @@ async function handleSeguidoresModal(interaction) {
     }
 }
 
-module.exports = { startSeguidoresTicket, handleSeguidoresButton, handleSeguidoresModal };
+async function handleSeguidoresSelect(interaction) {
+    if (interaction.customId === 'seg_platform_select') {
+        return handlePlatformSelect(interaction);
+    }
+}
+
+module.exports = { startSeguidoresTicket, handleSeguidoresButton, handleSeguidoresModal, handleSeguidoresSelect };

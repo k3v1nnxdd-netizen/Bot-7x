@@ -11,6 +11,7 @@ const { ensureReglasPanel }  = require('./reglas');
 const { ensureMetodosPanel, handleMetodosSelect } = require('./metodos');
 const { ensureVerifPanel }   = require('./verif');
 const { ensureRolesPanel, EMOJI_ROLE_MAP, getRolesMsgId } = require('./roles');
+const { ensureSeguidoresPanel } = require('./seguidores');
 const tickets             = require('./utils/tickets');
 const { handleButton, clearTimers } = require('./handlers/buttons');
 const { handleModal }     = require('./handlers/modals');
@@ -133,6 +134,10 @@ client.once(Events.ClientReady, async () => {
 
     await ensureRolesPanel(client).catch(err =>
         console.error('[bot] ensureRolesPanel failed:', err)
+    );
+
+    await ensureSeguidoresPanel(client).catch(err =>
+        console.error('[bot] ensureSeguidoresPanel failed:', err)
     );
 
     joinVoice(guild);

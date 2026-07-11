@@ -12,6 +12,7 @@ function buildEmbed() {
             'Selecciona una opción abajo para **continuar**.\n\n' +
             '<:point:1501212595464700104>  **Comprar** - Crear ticket para comprar Robux\n' +
             '<:point:1501212595464700104> ** Duels** - Crear ticket para comprar sets de Duels\n' +
+            '<:point:1501212595464700104> ** Seguidores** - Crear ticket para comprar seguidores\n' +
             '<:point:1501212595464700104> ** Soporte** - Resolver dudas, problemas o consultas\n\n' +
             '━━━━━━━━━━━━━━━━━━━━\n\n' +
             'Los tickets de compra de **Robux** son automáticos y atendidos por un **bot**.\n' +
@@ -32,7 +33,12 @@ function buildRow() {
             .setCustomId('duels')
             .setLabel('Duels')
             .setStyle(ButtonStyle.Primary)
-            .setEmoji('<:7xduels:1524947898264059995>'),
+            .setEmoji('<:duels7x2:1525325282624540732>'),
+        new ButtonBuilder()
+            .setCustomId('seguidores')
+            .setLabel('Seguidores')
+            .setStyle(ButtonStyle.Primary)
+            .setEmoji('<:followers7x:1525326777071960124>'),
         new ButtonBuilder()
             .setCustomId('otra_cosa')
             .setLabel('Otra cosa')

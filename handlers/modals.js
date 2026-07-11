@@ -15,6 +15,7 @@ const roblox                                               = require('../roblox'
 const { getJoinDate, getLastChecked, trackIfNew, updateLastChecked, daysSince } = require('../utils/groupTracker');
 const config                                               = require('../config');
 const { buildMetodosEmbed, buildMetodosRow }               = require('../metodos');
+const { handleSeguidoresModal }                             = require('./seguidoresFlow');
 
 // ── Modal builders ────────────────────────────────────────────────────────────
 // These are exported so buttons.js can pass them to safeShowModal().
@@ -571,7 +572,8 @@ async function handleModal(interaction) {
     // Hard stop — same pattern as handleButton
     if (interaction.replied || interaction.deferred) return;
 
-    const fn = HANDLERS[interaction.customId];
+    const isSeg = interaction.customId.startsWith('seg_qty_modal_');
+    const fn = isSeg ? handleSeguidoresModal : HANDLERS[interaction.customId];
     if (!fn) return;
 
     try {

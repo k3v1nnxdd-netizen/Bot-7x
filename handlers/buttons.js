@@ -11,6 +11,7 @@ const { isLocked, lock } = require('../utils/spam');
 const tickets            = require('../utils/tickets');
 const { buildComprarModal, buildOtraCosaModal, buildDuelsModal, buildCalcDineroModal, buildCalcRobuxModal, buildVerifModal } = require('./modals');
 const { buildRefRow, sendPurchaseDM } = require('../utils/purchaseDm');
+const { startSeguidoresTicket, handleSeguidoresButton } = require('./seguidoresFlow');
 const config             = require('../config');
 
 // ── Countdown timers per ticket channel ───────────────────────────────────────
@@ -36,7 +37,7 @@ function buildAutoCloseEmbed(minutes) {
 
 // ── Channel classification ────────────────────────────────────────────────────
 
-const PANEL_BUTTONS  = new Set(['comprar', 'otra_cosa', 'duels']);
+const PANEL_BUTTONS  = new Set(['comprar', 'otra_cosa', 'duels', 'seguidores']);
 const CALC_BUTTONS   = new Set(['calc_dinero', 'calc_robux']);
 const VERIF_BUTTONS  = new Set(['verif_check']);
 const TICKET_BUTTONS = new Set(['confirmar_pago', 'cerrar_ticket', 'confirmar_cerrar', 'cancelar_cerrar']);
@@ -84,6 +85,12 @@ async function guardButton(interaction) {
 
     // Ticket-only buttons must come from an active ticket channel
     if (TICKET_BUTTONS.has(interaction.customId) && !isTicketChannel(interaction)) {
+        await safeReply(interaction, { content: 'Este boton solo funciona dentro de un ticket activo.', ephemeral: true });
+        return false;
+    }
+
+    // Seguidores flow buttons (seg_platform_*, seg_askqty_*, seg_quality_*) are ticket-only too
+    if (interaction.customId.startsWith('seg_') && !isTicketChannel(interaction)) {
         await safeReply(interaction, { content: 'Este boton solo funciona dentro de un ticket activo.', ephemeral: true });
         return false;
     }
@@ -350,6 +357,7 @@ const HANDLERS = {
     comprar:          onComprar,
     otra_cosa:        onOtraCosa,
     duels:            onDuels,
+    seguidores:       startSeguidoresTicket,
     verif_check:      onVerifCheck,
     calc_dinero:      onCalcDinero,
     calc_robux:       onCalcRobux,
@@ -366,7 +374,8 @@ async function handleButton(interaction) {
     // but this is the final safety net before any response attempt.
     if (interaction.replied || interaction.deferred) return;
 
-    const fn = HANDLERS[interaction.customId];
+    const isSeg = interaction.customId.startsWith('seg_');
+    const fn = isSeg ? handleSeguidoresButton : HANDLERS[interaction.customId];
     if (!fn) return;
 
     try {

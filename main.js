@@ -18,6 +18,7 @@ const { handleModal }     = require('./handlers/modals');
 const { handleOutfit, handlePagos, handlePagoVerified, handleOffer, handleClose } = require('./handlers/commands');
 const { handleMessage }   = require('./handlers/messages');
 const { handleMessageDelete } = require('./handlers/messageDelete');
+const { handleAntiScam }  = require('./handlers/antiScam');
 const { handleSeguidoresSelect } = require('./handlers/seguidoresFlow');
 const { markInteraction } = require('./utils/spam');
 
@@ -168,8 +169,10 @@ client.on(Events.InteractionCreate, async interaction => {
 // ── Messages ──────────────────────────────────────────────────────────────────
 
 client.on(Events.MessageCreate, async message => {
-    try { await handleMessage(message); }
-    catch (err) { console.error('[message] error:', err); }
+    try {
+        if (await handleAntiScam(message)) return;
+        await handleMessage(message);
+    } catch (err) { console.error('[message] error:', err); }
 });
 
 client.on(Events.MessageDelete, async message => {

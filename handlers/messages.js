@@ -11,6 +11,19 @@ const PENDING_PATH   = './pending.gif';
 const PENDING_NAME   = 'pending.gif';
 const PENDING_EXISTS = fs.existsSync(PENDING_PATH);
 
+function buildNoMediaEmbed(userId) {
+    return new EmbedBuilder()
+        .setColor(0x2B2D31)
+        .setTitle('📷 Imagen o video requerido')
+        .setDescription(
+            `Hola <@${userId}>, este canal está destinado exclusivamente a referencias. ` +
+            'No es posible publicar un mensaje sin una imagen o video adjunto.\n\n' +
+            'Por favor, vuelve a enviar tu mensaje incluyendo una imagen o video.'
+        )
+        .setFooter({ text: '7x Community • Referencias' })
+        .setTimestamp();
+}
+
 async function renameChannel(channel, names) {
     for (const name of names) {
         try {
@@ -48,8 +61,17 @@ async function handleMessage(message) {
         }
     }
 
-    // Auto-react in referencias channel
+    // Referencias channel: every message must include at least one image or video
     if (message.channelId === config.CHANNELS.REFERENCIAS) {
+        const hasMedia = message.attachments.some(
+            a => a.contentType?.startsWith('image/') || a.contentType?.startsWith('video/')
+        );
+        if (!hasMedia) {
+            await message.delete().catch(() => {});
+            const warn = await message.channel.send({ embeds: [buildNoMediaEmbed(message.author.id)] }).catch(() => null);
+            if (warn) setTimeout(() => warn.delete().catch(() => {}), 8000);
+            return;
+        }
         await message.react('<:perfect:1501214987190927432>').catch(() => {});
         await message.react('<a:leggit:1510180431738179654>').catch(() => {});
     }

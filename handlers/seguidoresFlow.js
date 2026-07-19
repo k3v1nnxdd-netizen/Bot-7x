@@ -9,6 +9,7 @@ const { safeReply, safeEditReply, safeDeferReply, safeShowModal } = require('../
 const { isLocked, lock } = require('../utils/spam');
 const tickets = require('../utils/tickets');
 const config = require('../config');
+const { buildMetodosEmbed, buildMetodosRow } = require('../metodos');
 
 const EMBED_COLOR = 0x2B2D31; // gray, per request
 
@@ -48,6 +49,26 @@ function buildPlatformEmbed(userId) {
             'A continuación, dinos de qué plataforma quieres tus seguidores.'
         )
         .setFooter({ text: '7x Community • Seguidores' });
+}
+
+function buildCloseReminderEmbed(userId) {
+    return new EmbedBuilder()
+        .setColor(EMBED_COLOR)
+        .setTitle('¿Deseas cerrar tu ticket?')
+        .setDescription(
+            `<@${userId}>, si en algún momento ya no necesitas este ticket, puedes cerrarlo con el botón de abajo.`
+        )
+        .setFooter({ text: '7x Community • Seguidores' });
+}
+
+function buildCloseReminderRow() {
+    return new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+            .setCustomId('cerrar_ticket')
+            .setLabel('Cerrar Ticket')
+            .setStyle(ButtonStyle.Danger)
+            .setEmoji('🔒')
+    );
 }
 
 function buildPlatformRow() {
@@ -97,6 +118,10 @@ async function startSeguidoresTicket(interaction) {
             content: `<@${userId}>`,
             embeds: [buildPlatformEmbed(userId)],
             components: [buildPlatformRow()],
+        });
+        await channel.send({
+            embeds: [buildCloseReminderEmbed(userId)],
+            components: [buildCloseReminderRow()],
         });
         await safeEditReply(interaction, { content: `✅ Ticket creado: ${channel}` });
     } catch (err) {
@@ -281,7 +306,12 @@ function buildFinalRow(platformKey, profileDisabled = false) {
             .setLabel('Agregar Link de Perfil')
             .setStyle(ButtonStyle.Secondary)
             .setEmoji('🔗')
-            .setDisabled(profileDisabled)
+            .setDisabled(profileDisabled),
+        new ButtonBuilder()
+            .setCustomId('seg_pagar_btn')
+            .setLabel('Pagar')
+            .setStyle(ButtonStyle.Success)
+            .setEmoji('💳')
     );
 }
 
@@ -372,6 +402,23 @@ async function handleProfileModal(interaction, platformKey) {
     }
 }
 
+// ── Pagar button → posts the payment methods panel into the ticket ───────────
+
+async function handlePagarButton(interaction) {
+    if (interaction.replied || interaction.deferred) return;
+
+    if (!isTicketChannelOwnedBy(interaction.channel, interaction.user.id)) {
+        return safeReply(interaction, { content: '❌ Solo el creador del ticket puede continuar.', ephemeral: true });
+    }
+
+    await interaction.channel.send({
+        embeds: [buildMetodosEmbed()],
+        components: [buildMetodosRow()],
+    });
+
+    await safeReply(interaction, { content: '✅ Métodos de pago enviados.', ephemeral: true });
+}
+
 // ── Routers (called from handlers/buttons.js and handlers/modals.js) ─────────
 
 async function handleSeguidoresButton(interaction) {
@@ -387,6 +434,9 @@ async function handleSeguidoresButton(interaction) {
     }
     if (id.startsWith('seg_profile_btn_')) {
         return handleProfileButton(interaction, id.slice('seg_profile_btn_'.length));
+    }
+    if (id === 'seg_pagar_btn') {
+        return handlePagarButton(interaction);
     }
 }
 

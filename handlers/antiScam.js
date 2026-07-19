@@ -11,6 +11,7 @@ async function handleAntiScam(message) {
     if (message.author.id === config.OWNER_ID) return false;
     if (message.author.id === config.INTERMEDIARY_ID) return false;
     if (message.channel.parentId === config.CATEGORIES.TICKETS) return false;
+    if (message.channelId === config.CHANNELS.REFERENCIAS) return false;
     if (!containsScamTerm(message.content)) return false;
 
     await message.delete().catch(() => {});

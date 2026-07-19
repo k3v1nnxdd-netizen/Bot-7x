@@ -27,38 +27,56 @@ function sleep(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+function matchesWindow(entry, now) {
+    return now - entry.createdTimestamp <= AUDIT_LOG_WINDOW_MS;
+}
+
 async function wasDeletedBySomeoneElse(message) {
-    try {
-        await sleep(AUDIT_LOG_FETCH_DELAY_MS);
+    await sleep(AUDIT_LOG_FETCH_DELAY_MS);
+    const now = Date.now();
 
-        const logs = await message.guild.fetchAuditLogs({ limit: 5 });
-        const now = Date.now();
+    // Fetch each audit log type explicitly (instead of one mixed "latest 5"
+    // fetch) so unrelated mod actions (bans, role edits, etc.) happening in
+    // the same window can't push the relevant delete entry out of range.
+    const [singleLogs, bulkLogs] = await Promise.allSettled([
+        message.guild.fetchAuditLogs({ type: AuditLogEvent.MessageDelete, limit: 5 }),
+        message.guild.fetchAuditLogs({ type: AuditLogEvent.MessageBulkDelete, limit: 5 }),
+    ]);
 
-        for (const entry of logs.entries.values()) {
-            if (now - entry.createdTimestamp > AUDIT_LOG_WINDOW_MS) continue;
+    // If BOTH fetches failed (e.g. the bot is missing "View Audit Log"),
+    // we have no way to verify who deleted it. Fail CLOSED: do not repost,
+    // since wrongly reposting content a moderator removed on purpose is
+    // worse than occasionally missing a genuine self-delete repost.
+    if (singleLogs.status === 'rejected' && bulkLogs.status === 'rejected') {
+        console.error(
+            '[messageDelete] audit log fetch failed (missing "View Audit Log" permission?):',
+            singleLogs.reason?.message
+        );
+        return true;
+    }
 
-            if (
-                entry.action === AuditLogEvent.MessageDelete &&
-                entry.target?.id === message.author.id &&
-                entry.extra?.channel?.id === message.channelId
-            ) {
+    if (singleLogs.status === 'fulfilled') {
+        for (const entry of singleLogs.value.entries.values()) {
+            if (!matchesWindow(entry, now)) continue;
+            if (entry.target?.id === message.author.id && entry.extra?.channel?.id === message.channelId) {
                 return true;
             }
+        }
+    }
 
+    if (bulkLogs.status === 'fulfilled') {
+        for (const entry of bulkLogs.value.entries.values()) {
+            if (!matchesWindow(entry, now)) continue;
             if (
-                entry.action === AuditLogEvent.MessageBulkDelete &&
                 entry.extra?.channel?.id === message.channelId &&
                 (KNOWN_MODERATION_BOT_IDS.has(entry.executorId) || entry.executor?.bot)
             ) {
                 return true;
             }
         }
-
-        return false;
-    } catch (err) {
-        console.error('[messageDelete] audit log fetch failed:', err.message);
-        return false; // fail open: if we can't verify, treat as self-delete
     }
+
+    return false;
 }
 
 async function handleMessageDelete(message) {

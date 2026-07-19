@@ -11,12 +11,12 @@ const PENDING_PATH   = './pending.gif';
 const PENDING_NAME   = 'pending.gif';
 const PENDING_EXISTS = fs.existsSync(PENDING_PATH);
 
-function buildNoMediaEmbed(userId) {
+function buildNoMediaEmbed() {
     return new EmbedBuilder()
         .setColor(0x2B2D31)
         .setTitle('📷 Imagen o video requerido')
         .setDescription(
-            `Hola <@${userId}>, este canal está destinado exclusivamente a referencias. ` +
+            'Este canal está destinado exclusivamente a referencias. ' +
             'No es posible publicar un mensaje sin una imagen o video adjunto.\n\n' +
             'Por favor, vuelve a enviar tu mensaje incluyendo una imagen o video.'
         )
@@ -68,7 +68,10 @@ async function handleMessage(message) {
         );
         if (!hasMedia) {
             await message.delete().catch(() => {});
-            const warn = await message.channel.send({ embeds: [buildNoMediaEmbed(message.author.id)] }).catch(() => null);
+            const warn = await message.channel.send({
+                content: `<@${message.author.id}>`,
+                embeds: [buildNoMediaEmbed()],
+            }).catch(() => null);
             if (warn) setTimeout(() => warn.delete().catch(() => {}), 8000);
             return;
         }

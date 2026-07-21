@@ -1,6 +1,6 @@
 'use strict';
 
-const { EmbedBuilder, AuditLogEvent } = require('discord.js');
+const { EmbedBuilder, AuditLogEvent, PermissionFlagsBits } = require('discord.js');
 const config = require('../config');
 
 // Discord only writes a MESSAGE_DELETE / MESSAGE_BULK_DELETE audit log entry
@@ -31,7 +31,51 @@ function matchesWindow(entry, now) {
     return now - entry.createdTimestamp <= AUDIT_LOG_WINDOW_MS;
 }
 
+// Log the exact rejection reason instead of a generic guess — a rejected
+// fetchAuditLogs() can fail for reasons that have nothing to do with
+// permissions (bad guild reference, API outage, rate limit, etc.), and
+// assuming "missing permission" without checking hides the real cause.
+function describeError(err) {
+    return { name: err?.name, code: err?.code, httpStatus: err?.status, message: err?.message };
+}
+
+// Resolves the bot's own GuildMember with a forced re-fetch (not the cache)
+// so a stale members.me snapshot can't produce a false "missing permission"
+// read right after a role was granted.
+async function fetchFreshBotMember(guild) {
+    try {
+        return await guild.members.fetchMe({ force: true });
+    } catch (err) {
+        console.error('[messageDelete] could not fetch bot member (guild.members.fetchMe):', describeError(err));
+        return guild.members.me ?? null; // fall back to cache rather than nothing
+    }
+}
+
 async function wasDeletedBySomeoneElse(message) {
+    if (!message.guild) {
+        console.warn('[messageDelete] message.guild is null (DM or uncached) — cannot check audit log, failing closed.');
+        return true;
+    }
+
+    const botMember = await fetchFreshBotMember(message.guild);
+    if (!botMember) {
+        console.error('[messageDelete] bot GuildMember could not be resolved at all — failing closed.');
+        return true;
+    }
+
+    console.log(
+        `[messageDelete] bot effective permissions in guild "${message.guild.name}" (${message.guild.id}):`,
+        botMember.permissions.toArray().join(', ')
+    );
+
+    if (!botMember.permissions.has(PermissionFlagsBits.ViewAuditLog)) {
+        console.error(
+            '[messageDelete] ViewAuditLog missing from guild.members.me.permissions — ' +
+            'the bot\'s role does not actually grant it (or Administrator was revoked). Failing closed.'
+        );
+        return true;
+    }
+
     await sleep(AUDIT_LOG_FETCH_DELAY_MS);
     const now = Date.now();
 
@@ -43,16 +87,12 @@ async function wasDeletedBySomeoneElse(message) {
         message.guild.fetchAuditLogs({ type: AuditLogEvent.MessageBulkDelete, limit: 5 }),
     ]);
 
-    // If BOTH fetches failed (e.g. the bot is missing "View Audit Log"),
-    // we have no way to verify who deleted it. Fail CLOSED: do not repost,
-    // since wrongly reposting content a moderator removed on purpose is
-    // worse than occasionally missing a genuine self-delete repost.
+    // Permissions check passed above, so a rejection here means something
+    // else is wrong (API error, network blip, etc.) — log the real reason.
     if (singleLogs.status === 'rejected' && bulkLogs.status === 'rejected') {
-        console.error(
-            '[messageDelete] audit log fetch failed (missing "View Audit Log" permission?):',
-            singleLogs.reason?.message
-        );
-        return true;
+        console.error('[messageDelete] fetchAuditLogs (MessageDelete) failed:', describeError(singleLogs.reason));
+        console.error('[messageDelete] fetchAuditLogs (MessageBulkDelete) failed:', describeError(bulkLogs.reason));
+        return true; // fail closed — cannot verify who deleted it
     }
 
     if (singleLogs.status === 'fulfilled') {

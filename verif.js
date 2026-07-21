@@ -1,38 +1,30 @@
 'use strict';
 
-const { EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
+const { EmbedBuilder } = require('discord.js');
 const config = require('./config');
 
 function buildVerifEmbed() {
     return new EmbedBuilder()
         .setColor(0x000000)
         .setDescription(
-            '# 7x Community - Verificación de Grupo\n\n' +
-            '¿Quieres saber si ya eres elegible para recibir Robux?\n\n' +
-            '<:member:1501261625523699892> = Toca este botón para verificar cuántos días llevas dentro del grupo de Roblox. El bot revisará automáticamente tu tiempo de permanencia y te indicará si ya cumples los requisitos para recibir Robux.\n\n' +
-            '<:point:1501212595464700104> Verificación instantánea y automática.\n' +
-            '<:point:1501212595464700104> Muestra los días exactos que llevas en el grupo.\n' +
-            '<:point:1501212595464700104> Confirma si eres elegible para recibir Robux.\n' +
-            '<:point:1501212595464700104> Rápido, sencillo y seguro.\n\n' +
-            `<:truepurple:1501214679400190086> Debes unirte primero a la comunidad de Roblox: [Click Aqui](<${config.ROBLOX_GROUP_LINK}>) Si no formas parte del grupo, no podrás ser verificado ni recibir Robux.\n\n` +
-            'Presiona el botón para comenzar.'
+            "# 7x Community - Group's\n\n" +
+            "<:followers7x:1525326777071960124> **7x Community's**\n" +
+            'https://www.roblox.com/share/g/59218460\n\n' +
+            '<:followers7x:1525326777071960124> **Noctra Study**\n' +
+            'https://www.roblox.com/share/g/282134403\n\n' +
+            '<:followers7x:1525326777071960124> **7x $tudio**\n' +
+            'https://www.roblox.com/share/g/1101699267\n\n' +
+            '<:point:1501212595464700104> **Actualmente los Robux se envían únicamente mediante el grupo *Noctra Study*.** Sin embargo, con el paso del tiempo también se utilizarán las demás comunidades para realizar los pagos.\n\n' +
+            '<:rules:1525317070764511343> **Roblox exige que un usuario permanezca al menos 14 días dentro del grupo antes de poder recibir pagos de Robux.** Por ello, es importante unirte cuanto antes.\n\n' +
+            '<:point:1501212595464700104> **Es obligatorio unirse a todas las comunidades**, no solo a una. En cualquier momento los pagos pueden realizarse desde cualquiera de estos grupos.'
         );
-}
-
-function buildVerifRow() {
-    return new ActionRowBuilder().addComponents(
-        new ButtonBuilder()
-            .setCustomId('verif_check')
-            .setEmoji({ id: '1501261625523699892', name: 'member' })
-            .setStyle(ButtonStyle.Secondary),
-    );
 }
 
 function buildVerifOptions() {
     return {
         content: '',
         embeds: [buildVerifEmbed()],
-        components: [buildVerifRow()],
+        components: [],
     };
 }
 
@@ -43,7 +35,8 @@ function isVerifMsg(msg, botId) {
         (
             msg.embeds[0]?.description?.includes('Verificación de Grupo') ||
             msg.embeds[0]?.title?.includes('Verificación de Grupo') ||
-            msg.content?.includes('Verificación de Grupo')
+            msg.content?.includes('Verificación de Grupo') ||
+            msg.embeds[0]?.description?.includes("7x Community - Group's")
         )
     );
 }

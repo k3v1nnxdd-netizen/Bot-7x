@@ -57,6 +57,17 @@ async function getHeadshot(userId) {
     return res.data?.data?.[0]?.imageUrl ?? null;
 }
 
+// Single lightweight check, no retry-on-not-found — callers own their own retry/backoff.
+async function checkUsernameAvailable(username) {
+    const res = await api.post(
+        'https://users.roblox.com/v1/usernames/users',
+        { usernames: [username], excludeBannedUsers: false },
+        { headers: { 'Content-Type': 'application/json' } }
+    );
+    const found = res.data?.data?.[0];
+    return !found;
+}
+
 async function isUserInGroup(userId, groupId) {
     const res = await retry(() =>
         api.get(`https://groups.roblox.com/v1/users/${userId}/groups/roles`)
@@ -71,5 +82,6 @@ module.exports = {
     getFriendCount,
     getAvatarImage,
     getHeadshot,
+    checkUsernameAvailable,
     isUserInGroup,
 };

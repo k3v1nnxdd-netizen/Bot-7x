@@ -16,6 +16,7 @@ const tickets             = require('./utils/tickets');
 const { handleButton, clearTimers } = require('./handlers/buttons');
 const { handleModal }     = require('./handlers/modals');
 const { handleOutfit, handlePagos, handlePagoVerified, handleOffer, handleClose } = require('./handlers/commands');
+const { handleSnipeUsername, handleStopSnipe } = require('./snipe');
 const { handleMessage }   = require('./handlers/messages');
 const { handleMessageDelete } = require('./handlers/messageDelete');
 const { handleAntiScam }  = require('./handlers/antiScam');
@@ -112,6 +113,44 @@ client.once(Events.ClientReady, async () => {
                 { name: 'rol',       type: 8, description: 'Rol a mencionar en el ticket de descuento',  required: false },
             ],
         },
+        {
+            name: 'snipeusername',
+            description: 'Inicia una búsqueda automática de usernames de Roblox disponibles (solo owner)',
+            options: [
+                {
+                    name: 'max_characters',
+                    type: 4,
+                    description: 'Número máximo de caracteres (3-12)',
+                    required: true,
+                    min_value: 3,
+                    max_value: 12,
+                },
+                {
+                    name: 'underscores',
+                    type: 3,
+                    description: '¿Permitir guiones bajos?',
+                    required: true,
+                    choices: [
+                        { name: 'Sí', value: 'si' },
+                        { name: 'No', value: 'no' },
+                    ],
+                },
+                {
+                    name: 'numbers',
+                    type: 3,
+                    description: '¿Permitir números?',
+                    required: true,
+                    choices: [
+                        { name: 'Sí', value: 'si' },
+                        { name: 'No', value: 'no' },
+                    ],
+                },
+            ],
+        },
+        {
+            name: 'stopsnipe',
+            description: 'Detiene la búsqueda activa de usernames (solo owner)',
+        },
     ]).catch(err => console.error('[bot] commands.set failed:', err));
 
     await ensurePanel(client).catch(err =>
@@ -157,6 +196,8 @@ client.on(Events.InteractionCreate, async interaction => {
         else if (interaction.isChatInputCommand() && interaction.commandName === 'pagoverified') await handlePagoVerified(interaction);
         else if (interaction.isChatInputCommand() && interaction.commandName === 'close')        await handleClose(interaction);
         else if (interaction.isChatInputCommand() && interaction.commandName === 'offer')        await handleOffer(interaction);
+        else if (interaction.isChatInputCommand() && interaction.commandName === 'snipeusername') await handleSnipeUsername(interaction);
+        else if (interaction.isChatInputCommand() && interaction.commandName === 'stopsnipe')    await handleStopSnipe(interaction);
         else if (interaction.isButton())           await handleButton(interaction);
         else if (interaction.isModalSubmit())      await handleModal(interaction);
         else if (interaction.isStringSelectMenu() && interaction.customId.startsWith('seg_')) await handleSeguidoresSelect(interaction);
@@ -170,7 +211,7 @@ client.on(Events.InteractionCreate, async interaction => {
 
 client.on(Events.MessageCreate, async message => {
     try {
-        if (await handleAntiScam(message)) return;
+        if (config.FEATURES.ANTI_SCAM && await handleAntiScam(message)) return;
         await handleMessage(message);
     } catch (err) { console.error('[message] error:', err); }
 });

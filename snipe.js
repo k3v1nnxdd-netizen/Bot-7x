@@ -61,6 +61,19 @@ function generateUniqueUsername(session) {
     return name;
 }
 
+function formatDuration(ms) {
+    const totalSec = Math.floor(ms / 1000);
+    const m = Math.floor(totalSec / 60);
+    const s = totalSec % 60;
+    return `${m}m ${s}s`;
+}
+
+function formatFoundList(list) {
+    if (list.length === 0) return 'Ninguno';
+    const shown = list.slice(0, 15).map(u => `\`${u}\``).join(', ');
+    return list.length > 15 ? `${shown} y ${list.length - 15} más` : shown;
+}
+
 function buildActiveEmbed({ maxCharacters, allowUnderscores, allowNumbers }) {
     return new EmbedBuilder()
         .setColor(0x2ECC71)
@@ -72,12 +85,24 @@ function buildActiveEmbed({ maxCharacters, allowUnderscores, allowNumbers }) {
         );
 }
 
+function buildDeactiveEmbed(session) {
+    return new EmbedBuilder()
+        .setColor(0xE74C3C)
+        .setDescription(
+            '<a:desactive:1529681682670813326> **Snipe Desactivado**\n\n' +
+            `> **Duración:** \`${formatDuration(Date.now() - session.startedAt)}\`\n` +
+            `> **Usernames comprobados:** \`${session.checked}\`\n` +
+            `> **Usernames encontrados:** \`${session.foundUsernames.length}\`\n` +
+            `> **Encontrados:** ${formatFoundList(session.foundUsernames)}`
+        );
+}
+
 function buildResultEmbed(username, available) {
     return new EmbedBuilder()
         .setColor(available ? 0x2ECC71 : 0xE74C3C)
         .addFields(
             { name: 'Username', value: username, inline: true },
-            { name: 'Estado',   value: available ? '🟢 Disponible' : '🔴 No disponible', inline: true },
+            { name: 'Estado',   value: available ? 'Disponible' : 'No disponible', inline: true },
         );
 }
 
@@ -102,8 +127,18 @@ async function runLoop(client, session) {
         try {
             const available = await roblox.checkUsernameAvailable(username);
             consecutiveErrors = 0;
+            session.checked++;
             console.log(`[snipe] ${username} -> ${available ? 'available' : 'taken'}`);
-            await sendToResultsChannel(client, { embeds: [buildResultEmbed(username, available)] });
+
+            if (available) {
+                session.foundUsernames.push(username);
+                await sendToResultsChannel(client, {
+                    content: `<@${config.OWNER_ID}>`,
+                    embeds: [buildResultEmbed(username, true)],
+                });
+            } else {
+                await sendToResultsChannel(client, { embeds: [buildResultEmbed(username, false)] });
+            }
         } catch (err) {
             consecutiveErrors++;
             const status = err?.response?.status;
@@ -141,6 +176,8 @@ async function handleSnipeUsername(interaction) {
         ownerId: interaction.user.id,
         options: { maxCharacters, allowUnderscores, allowNumbers },
         seen: new Set(),
+        checked: 0,
+        foundUsernames: [],
         startedAt: Date.now(),
     };
     activeSession = session;
@@ -167,14 +204,13 @@ async function handleStopSnipe(interaction) {
         return safeReply(interaction, { content: 'ℹ️ No hay ninguna búsqueda activa en este momento.', ephemeral: true });
     }
 
-    activeSession.stopped = true;
+    const session = activeSession;
+    session.stopped = true;
     activeSession = null;
 
-    const embed = new EmbedBuilder()
-        .setColor(0xE74C3C)
-        .setDescription('🛑 La búsqueda de usernames fue detenida correctamente.');
+    await sendToResultsChannel(interaction.client, { embeds: [buildDeactiveEmbed(session)] });
 
-    return safeReply(interaction, { embeds: [embed], ephemeral: true });
+    return safeReply(interaction, { content: '🛑 Búsqueda detenida correctamente.', ephemeral: true });
 }
 
 module.exports = { handleSnipeUsername, handleStopSnipe };

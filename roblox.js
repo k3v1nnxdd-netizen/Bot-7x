@@ -68,6 +68,21 @@ async function checkUsernameAvailable(username) {
     return !found;
 }
 
+// Checks many usernames in a single request — this endpoint accepts a batch,
+// so checking e.g. 15 at once costs the same one request as checking 1,
+// which is what lets the sniper go faster without hitting Roblox more often.
+async function checkUsernamesAvailable(usernames) {
+    const res = await api.post(
+        'https://users.roblox.com/v1/usernames/users',
+        { usernames, excludeBannedUsers: false },
+        { headers: { 'Content-Type': 'application/json' } }
+    );
+    const taken = new Set((res.data?.data ?? []).map(u => u.requestedUsername));
+    const result = {};
+    for (const name of usernames) result[name] = !taken.has(name);
+    return result;
+}
+
 async function isUserInGroup(userId, groupId) {
     const res = await retry(() =>
         api.get(`https://groups.roblox.com/v1/users/${userId}/groups/roles`)
@@ -83,5 +98,6 @@ module.exports = {
     getAvatarImage,
     getHeadshot,
     checkUsernameAvailable,
+    checkUsernamesAvailable,
     isUserInGroup,
 };

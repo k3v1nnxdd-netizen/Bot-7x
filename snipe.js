@@ -10,9 +10,10 @@ const { safeReply, safeDeferReply, safeEditReply } = require('./utils/safe');
 const LETTERS = 'abcdefghijklmnopqrstuvwxyz';
 const DIGITS  = '0123456789';
 
-const CHECK_DELAY_MS = 500;
+const BATCH_SIZE = 15;        // usernames checked per Roblox request
+const BATCH_DELAY_MS = 900;   // pause between batches — ~16.7 checks/s at ~1.1 req/s to Roblox
 const MAX_BACKOFF_MS = 30_000;
-const CHECKSNIPE_DELAY_MS = 300;
+const CHECKSNIPE_DELAY_MS = 500;
 
 let activeSession = null;
 
@@ -201,27 +202,34 @@ async function dmRoleMembers(client, memberIds, payload) {
 }
 
 async function runLoop(client, session) {
-    console.log(`[snipe] Loop started — chars=${session.options.minCharacters}-${session.options.maxCharacters} underscores=${session.options.allowUnderscores} numbers=${session.options.allowNumbers}`);
+    console.log(`[snipe] Loop started — chars=${session.options.minCharacters}-${session.options.maxCharacters} underscores=${session.options.allowUnderscores} numbers=${session.options.allowNumbers} batch=${BATCH_SIZE}`);
     let consecutiveErrors = 0;
 
     while (!session.stopped) {
-        const username = generateUniqueUsername(session);
+        const batch = [];
+        for (let i = 0; i < BATCH_SIZE; i++) batch.push(generateUniqueUsername(session));
 
         try {
-            const available = await roblox.checkUsernameAvailable(username);
+            const results = await roblox.checkUsernamesAvailable(batch);
             consecutiveErrors = 0;
-            session.checked++;
-            console.log(`[snipe] ${username} -> ${available ? 'available' : 'taken'}`);
 
-            if (available) {
-                session.foundUsernames.push(username);
-                snipeHistory.addFound(username);
-                const foundEmbed = buildFoundEmbed(username);
-                await sendToChannel(client, config.CHANNELS.SNIPE_RESULTS, { embeds: [buildResultEmbed(username, true)] });
-                await sendToChannel(client, config.CHANNELS.SNIPE_FOUND, { embeds: [foundEmbed] });
-                await dmRoleMembers(client, session.notifyTargets, { embeds: [foundEmbed] });
-            } else {
-                await sendToChannel(client, config.CHANNELS.SNIPE_RESULTS, { embeds: [buildResultEmbed(username, false)] });
+            for (const username of batch) {
+                const available = results[username];
+                session.checked++;
+                console.log(`[snipe] ${username} -> ${available ? 'available' : 'taken'}`);
+
+                if (available) {
+                    session.foundUsernames.push(username);
+                    snipeHistory.addFound(username);
+                    const foundEmbed = buildFoundEmbed(username);
+                    await sendToChannel(client, config.CHANNELS.SNIPE_RESULTS, { embeds: [buildResultEmbed(username, true)] });
+                    await sendToChannel(client, config.CHANNELS.SNIPE_FOUND, { embeds: [foundEmbed] });
+                    await dmRoleMembers(client, session.notifyTargets, { embeds: [foundEmbed] });
+                } else {
+                    await sendToChannel(client, config.CHANNELS.SNIPE_RESULTS, { embeds: [buildResultEmbed(username, false)] });
+                }
+
+                if (session.stopped) break;
             }
         } catch (err) {
             consecutiveErrors++;
@@ -231,12 +239,12 @@ async function runLoop(client, session) {
                 ? retryAfter * 1000
                 : Math.min(1500 * consecutiveErrors, MAX_BACKOFF_MS);
 
-            console.warn(`[snipe] Check failed for "${username}" (${status ?? err.message}) — backing off ${backoff}ms`);
+            console.warn(`[snipe] Batch check failed (${status ?? err.message}) — backing off ${backoff}ms`);
             await sleep(backoff, session);
             continue;
         }
 
-        await sleep(CHECK_DELAY_MS, session);
+        await sleep(BATCH_DELAY_MS, session);
     }
 
     console.log('[snipe] Loop stopped.');
@@ -313,18 +321,19 @@ async function handleCheckSnipe(interaction) {
     const ok = await safeDeferReply(interaction, { ephemeral: true });
     if (!ok) return;
 
-    const all = snipeHistory.getAllFound();
+    const all = snipeHistory.getAllFound().map(f => f.username);
     const results = [];
 
-    for (const { username } of all) {
-        let status;
+    for (let i = 0; i < all.length; i += BATCH_SIZE) {
+        const chunk = all.slice(i, i + BATCH_SIZE);
         try {
-            const available = await roblox.checkUsernameAvailable(username);
-            status = available ? 'Disponible' : 'No disponible';
+            const available = await roblox.checkUsernamesAvailable(chunk);
+            for (const username of chunk) {
+                results.push({ username, status: available[username] ? 'Disponible' : 'No disponible' });
+            }
         } catch (err) {
-            status = 'Error al comprobar';
+            for (const username of chunk) results.push({ username, status: 'Error al comprobar' });
         }
-        results.push({ username, status });
         await delay(CHECKSNIPE_DELAY_MS);
     }
 

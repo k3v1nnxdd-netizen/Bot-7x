@@ -16,7 +16,7 @@ const tickets             = require('./utils/tickets');
 const { handleButton, clearTimers } = require('./handlers/buttons');
 const { handleModal }     = require('./handlers/modals');
 const { handleOutfit, handlePagos, handlePagoVerified, handleOffer, handleClose } = require('./handlers/commands');
-const { handleSnipeUsername, handleStopSnipe, handleSnipeAccept } = require('./snipe');
+const { handleSnipeUsername, handleStopSnipe, handleCheckSnipe } = require('./snipe');
 const { handleMessage }   = require('./handlers/messages');
 const { handleMessageDelete } = require('./handlers/messageDelete');
 const { handleAntiScam }  = require('./handlers/antiScam');
@@ -160,7 +160,7 @@ client.once(Events.ClientReady, async () => {
             description: 'Detiene la búsqueda activa de usernames (solo owner)',
         },
         {
-            name: 'snipeaccept',
+            name: 'checksnipe',
             description: 'Muestra todos los usernames encontrados y si siguen disponibles (solo owner)',
         },
     ]).catch(err => console.error('[bot] commands.set failed:', err));
@@ -210,7 +210,7 @@ client.on(Events.InteractionCreate, async interaction => {
         else if (interaction.isChatInputCommand() && interaction.commandName === 'offer')        await handleOffer(interaction);
         else if (interaction.isChatInputCommand() && interaction.commandName === 'snipeusername') await handleSnipeUsername(interaction);
         else if (interaction.isChatInputCommand() && interaction.commandName === 'stopsnipe')    await handleStopSnipe(interaction);
-        else if (interaction.isChatInputCommand() && interaction.commandName === 'snipeaccept')  await handleSnipeAccept(interaction);
+        else if (interaction.isChatInputCommand() && interaction.commandName === 'checksnipe')   await handleCheckSnipe(interaction);
         else if (interaction.isButton())           await handleButton(interaction);
         else if (interaction.isModalSubmit())      await handleModal(interaction);
         else if (interaction.isStringSelectMenu() && interaction.customId.startsWith('seg_')) await handleSeguidoresSelect(interaction);

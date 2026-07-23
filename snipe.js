@@ -4,6 +4,7 @@ const { EmbedBuilder } = require('discord.js');
 const config = require('./config');
 const roblox = require('./roblox');
 const snipeHistory = require('./utils/snipeHistory');
+const snipeSeen = require('./utils/snipeSeen');
 const { safeReply, safeDeferReply, safeEditReply } = require('./utils/safe');
 
 const LETTERS = 'abcdefghijklmnopqrstuvwxyz';
@@ -11,7 +12,7 @@ const DIGITS  = '0123456789';
 
 const CHECK_DELAY_MS = 500;
 const MAX_BACKOFF_MS = 30_000;
-const ACCEPT_CHECK_DELAY_MS = 300;
+const CHECKSNIPE_DELAY_MS = 300;
 
 let activeSession = null;
 
@@ -51,19 +52,24 @@ function generateUsername({ minCharacters, maxCharacters, allowUnderscores, allo
     return chars.join('');
 }
 
+// session.seen is preloaded from disk (utils/snipeSeen) with every username
+// ever generated across all sessions/restarts, so this dedupes globally,
+// not just within the current run.
 function generateUniqueUsername(session) {
     for (let i = 0; i < 100; i++) {
         const name = generateUsername(session.options);
         if (!session.seen.has(name)) {
             session.seen.add(name);
+            snipeSeen.appendSeen(name);
             return name;
         }
     }
-    // Astronomically unlikely fallback to guarantee no repeats in-session.
+    // Astronomically unlikely fallback to guarantee no repeats, ever.
     let name;
     do { name = generateUsername(session.options) + LETTERS[randomInt(0, LETTERS.length - 1)]; }
     while (session.seen.has(name));
     session.seen.add(name);
+    snipeSeen.appendSeen(name);
     return name;
 }
 
@@ -122,8 +128,8 @@ function buildFoundEmbed(username) {
         );
 }
 
-function buildAcceptEmbed(results) {
-    const header = '<a:activee:1529710078754553968> **Snipe Accept**\n\n';
+function buildCheckSnipeEmbed(results) {
+    const header = '<a:activee:1529710078754553968> **Check Snipe**\n\n';
 
     if (results.length === 0) {
         return new EmbedBuilder()
@@ -258,7 +264,7 @@ async function handleSnipeUsername(interaction) {
         stopped: false,
         ownerId: interaction.user.id,
         options: { minCharacters, maxCharacters, allowUnderscores, allowNumbers },
-        seen: new Set(),
+        seen: snipeSeen.loadSeen(),
         checked: 0,
         foundUsernames: [],
         notifyTargets: [],
@@ -299,7 +305,7 @@ async function handleStopSnipe(interaction) {
     return safeReply(interaction, { content: '🛑 Búsqueda detenida correctamente.', ephemeral: true });
 }
 
-async function handleSnipeAccept(interaction) {
+async function handleCheckSnipe(interaction) {
     if (interaction.user.id !== config.OWNER_ID) {
         return safeReply(interaction, { content: '❌ No tienes permisos para usar este comando.', ephemeral: true });
     }
@@ -319,10 +325,10 @@ async function handleSnipeAccept(interaction) {
             status = 'Error al comprobar';
         }
         results.push({ username, status });
-        await delay(ACCEPT_CHECK_DELAY_MS);
+        await delay(CHECKSNIPE_DELAY_MS);
     }
 
-    return safeEditReply(interaction, { embeds: [buildAcceptEmbed(results)] });
+    return safeEditReply(interaction, { embeds: [buildCheckSnipeEmbed(results)] });
 }
 
-module.exports = { handleSnipeUsername, handleStopSnipe, handleSnipeAccept };
+module.exports = { handleSnipeUsername, handleStopSnipe, handleCheckSnipe };

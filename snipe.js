@@ -8,7 +8,7 @@ const { safeReply } = require('./utils/safe');
 const LETTERS = 'abcdefghijklmnopqrstuvwxyz';
 const DIGITS  = '0123456789';
 
-const CHECK_DELAY_MS = 350;
+const CHECK_DELAY_MS = 500;
 const MAX_BACKOFF_MS = 30_000;
 
 let activeSession = null;
@@ -61,25 +61,39 @@ function generateUniqueUsername(session) {
     return name;
 }
 
-function buildResultEmbed(username) {
+function buildActiveEmbed({ maxCharacters, allowUnderscores, allowNumbers }) {
     return new EmbedBuilder()
         .setColor(0x2ECC71)
-        .addFields(
-            { name: 'Username', value: username, inline: true },
-            { name: 'Estado',   value: '🟢 Disponible', inline: true },
+        .setDescription(
+            '<a:active:1529678531473309848> **Active Snipe**\n\n' +
+            `> **Máx. caracteres:** \`${maxCharacters}\`\n` +
+            `> **Números:** \`${allowNumbers ? 'yes' : 'no'}\`\n` +
+            `> **Guiones bajos:** \`${allowUnderscores ? 'yes' : 'no'}\``
         );
 }
 
-async function sendResult(client, username) {
+function buildResultEmbed(username, available) {
+    return new EmbedBuilder()
+        .setColor(available ? 0x2ECC71 : 0xE74C3C)
+        .addFields(
+            { name: 'Username', value: username, inline: true },
+            { name: 'Estado',   value: available ? '🟢 Disponible' : '🔴 No disponible', inline: true },
+        );
+}
+
+async function sendToResultsChannel(client, payload) {
     try {
         const channel = await client.channels.fetch(config.CHANNELS.SNIPE_RESULTS);
-        await channel.send({ embeds: [buildResultEmbed(username)] });
+        await channel.send(payload);
+        return true;
     } catch (err) {
-        console.warn('[snipe] Could not send result embed:', err.message);
+        console.warn('[snipe] Could not send to results channel:', err.message);
+        return false;
     }
 }
 
 async function runLoop(client, session) {
+    console.log(`[snipe] Loop started — max=${session.options.maxCharacters} underscores=${session.options.allowUnderscores} numbers=${session.options.allowNumbers}`);
     let consecutiveErrors = 0;
 
     while (!session.stopped) {
@@ -88,10 +102,8 @@ async function runLoop(client, session) {
         try {
             const available = await roblox.checkUsernameAvailable(username);
             consecutiveErrors = 0;
-
-            if (available) {
-                await sendResult(client, username);
-            }
+            console.log(`[snipe] ${username} -> ${available ? 'available' : 'taken'}`);
+            await sendToResultsChannel(client, { embeds: [buildResultEmbed(username, available)] });
         } catch (err) {
             consecutiveErrors++;
             const status = err?.response?.status;
@@ -107,6 +119,8 @@ async function runLoop(client, session) {
 
         await sleep(CHECK_DELAY_MS, session);
     }
+
+    console.log('[snipe] Loop stopped.');
 }
 
 async function handleSnipeUsername(interaction) {
@@ -130,6 +144,8 @@ async function handleSnipeUsername(interaction) {
         startedAt: Date.now(),
     };
     activeSession = session;
+
+    await sendToResultsChannel(interaction.client, { embeds: [buildActiveEmbed(session.options)] });
 
     runLoop(interaction.client, session).catch(err => {
         console.error('[snipe] Loop crashed:', err);

@@ -90,6 +90,55 @@ async function isUserInGroup(userId, groupId) {
     return res.data?.data?.some(g => g.group?.id === Number(groupId)) ?? false;
 }
 
+// One page (100) of a group's member list.
+async function getGroupMembersPage(groupId, cursor = null) {
+    const query = cursor ? `&cursor=${encodeURIComponent(cursor)}` : '';
+    const res = await api.get(`https://groups.roblox.com/v1/groups/${groupId}/users?limit=100&sortOrder=Asc${query}`);
+    return {
+        members: (res.data?.data ?? []).map(m => ({ userId: m.user.userId, username: m.user.username })),
+        nextCursor: res.data?.nextPageCursor ?? null,
+    };
+}
+
+// Asset ids the user currently has equipped (their outfit).
+async function getWornAssetIds(userId) {
+    const res = await api.get(`https://avatar.roblox.com/v1/users/${userId}/avatar`);
+    return (res.data?.assets ?? []).map(a => a.id);
+}
+
+// catalog.roblox.com requires an XSRF token — cache it and only refresh
+// when Roblox rejects a stale one, instead of doing the 403 dance every call.
+let catalogCsrfToken = null;
+
+async function postCatalogDetails(assetIds) {
+    const body = { items: assetIds.map(id => ({ itemType: 'Asset', id })) };
+    const headers = { 'Content-Type': 'application/json' };
+    if (catalogCsrfToken) headers['x-csrf-token'] = catalogCsrfToken;
+
+    try {
+        return await api.post('https://catalog.roblox.com/v1/catalog/items/details', body, { headers });
+    } catch (err) {
+        const freshToken = err.response?.status === 403 && err.response.headers['x-csrf-token'];
+        if (!freshToken) throw err;
+        catalogCsrfToken = freshToken;
+        return api.post('https://catalog.roblox.com/v1/catalog/items/details', body, {
+            headers: { ...headers, 'x-csrf-token': catalogCsrfToken },
+        });
+    }
+}
+
+// Total Robux value of a set of assets — live resale price for
+// limiteds/collectibles when available, otherwise the listed price.
+async function getAssetsValue(assetIds) {
+    if (assetIds.length === 0) return 0;
+    const res = await postCatalogDetails(assetIds);
+    const items = res.data?.data ?? [];
+    return items.reduce((sum, item) => {
+        const value = item.lowestResalePrice > 0 ? item.lowestResalePrice : (item.price || 0);
+        return sum + value;
+    }, 0);
+}
+
 module.exports = {
     getUserByUsername,
     getUserProfile,
@@ -100,4 +149,7 @@ module.exports = {
     checkUsernameAvailable,
     checkUsernamesAvailable,
     isUserInGroup,
+    getGroupMembersPage,
+    getWornAssetIds,
+    getAssetsValue,
 };

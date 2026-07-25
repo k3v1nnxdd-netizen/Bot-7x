@@ -17,6 +17,7 @@ const { handleButton, clearTimers } = require('./handlers/buttons');
 const { handleModal }     = require('./handlers/modals');
 const { handleOutfit, handlePagos, handlePagoVerified, handleOffer, handleClose } = require('./handlers/commands');
 const { handleSnipeUsername, handleStopSnipe, handleCheckSnipe } = require('./snipe');
+const { handleGroupMembers, handleStopGroupMembers } = require('./groupmembers');
 const { handleMessage }   = require('./handlers/messages');
 const { handleMessageDelete } = require('./handlers/messageDelete');
 const { handleAntiScam }  = require('./handlers/antiScam');
@@ -163,6 +164,19 @@ client.once(Events.ClientReady, async () => {
             name: 'checksnipe',
             description: 'Muestra todos los usernames encontrados y si siguen disponibles (solo owner)',
         },
+        {
+            name: 'groupmembers',
+            description: 'Busca miembros del grupo de Roblox con outfits en un rango de precio (solo owner)',
+            options: [
+                { name: 'min_price', type: 4, description: 'Precio mínimo del outfit en Robux',            required: true, min_value: 0 },
+                { name: 'max_price', type: 4, description: 'Precio máximo del outfit en Robux',             required: true, min_value: 0 },
+                { name: 'amount',    type: 4, description: 'Cuántos outfits en ese rango buscar antes de detenerse', required: true, min_value: 1 },
+            ],
+        },
+        {
+            name: 'stopgroupmembers',
+            description: 'Detiene el escaneo activo de miembros del grupo (solo owner)',
+        },
     ]).catch(err => console.error('[bot] commands.set failed:', err));
 
     await ensurePanel(client).catch(err =>
@@ -211,6 +225,8 @@ client.on(Events.InteractionCreate, async interaction => {
         else if (interaction.isChatInputCommand() && interaction.commandName === 'snipeusername') await handleSnipeUsername(interaction);
         else if (interaction.isChatInputCommand() && interaction.commandName === 'stopsnipe')    await handleStopSnipe(interaction);
         else if (interaction.isChatInputCommand() && interaction.commandName === 'checksnipe')   await handleCheckSnipe(interaction);
+        else if (interaction.isChatInputCommand() && interaction.commandName === 'groupmembers') await handleGroupMembers(interaction);
+        else if (interaction.isChatInputCommand() && interaction.commandName === 'stopgroupmembers') await handleStopGroupMembers(interaction);
         else if (interaction.isButton())           await handleButton(interaction);
         else if (interaction.isModalSubmit())      await handleModal(interaction);
         else if (interaction.isStringSelectMenu() && interaction.customId.startsWith('seg_')) await handleSeguidoresSelect(interaction);

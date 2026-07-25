@@ -1,5 +1,6 @@
 node_modules/
 .env
+scratch-test-*.js
 data/groupJoins.json
 data/groupJoins.json.tmp
 data/snipeFound.json

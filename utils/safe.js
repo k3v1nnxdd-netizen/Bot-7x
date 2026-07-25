@@ -8,6 +8,7 @@ const GONE_CODES = new Set([
     10062, // Unknown interaction  (token expired after 3 s without a response)
     40060, // Interaction has already been acknowledged
     10015, // Unknown webhook
+    10008, // Unknown Message — e.g. a tracked message was deleted
 ]);
 
 function isGone(err) {
@@ -101,6 +102,22 @@ async function safeShowModal(interaction, modal) {
     }
 }
 
+// Edits a plain Message (not an interaction reply) — same "never throw"
+// convention as the interaction wrappers above. Used by long-running
+// features that send once and periodically edit in place (e.g.
+// /groupmembers' live progress embed).
+async function safeMessageEdit(message, options) {
+    try {
+        if (!message) return false;
+        await message.edit(options);
+        return true;
+    } catch (err) {
+        if (isGone(err)) return false;
+        log('messageEdit', err);
+        return false;
+    }
+}
+
 module.exports = {
     isGone,          // exported so handlers can filter their own error catches
     safeDeferReply,
@@ -108,4 +125,5 @@ module.exports = {
     safeEditReply,
     safeFollowUp,
     safeShowModal,
+    safeMessageEdit,
 };

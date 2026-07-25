@@ -5,7 +5,10 @@ const config = require('./config');
 const roblox = require('./roblox');
 const { safeReply } = require('./utils/safe');
 
-const USER_DELAY_MS = 700;
+const MIN_DELAY_MS = 1000;
+const START_DELAY_MS = 1500;
+const MAX_DELAY_MS = 20_000;
+const SUCCESS_STREAK_TO_EASE = 20;
 const MAX_BACKOFF_MS = 30_000;
 
 let activeScan = null;
@@ -59,6 +62,8 @@ async function runScan(client, session) {
     let cursor = null;
     let pageErrors = 0;
     let rateLimitStreak = 0;
+    let successStreak = 0;
+    let delayMs = START_DELAY_MS;
 
     pageLoop:
     while (!session.stopped) {
@@ -84,6 +89,18 @@ async function runScan(client, session) {
                 rateLimitStreak = 0;
                 console.log(`[groupmembers] ${member.username} (${member.userId}) -> ${value} robux`);
 
+                // Only speed back up after a long, clean run — a handful of
+                // successes right after a throttle doesn't mean it's safe yet.
+                successStreak++;
+                if (successStreak >= SUCCESS_STREAK_TO_EASE) {
+                    successStreak = 0;
+                    const eased = Math.max(MIN_DELAY_MS, Math.round(delayMs * 0.85));
+                    if (eased !== delayMs) {
+                        delayMs = eased;
+                        console.log(`[groupmembers] Steady pace — easing delay to ${delayMs}ms`);
+                    }
+                }
+
                 if (value >= session.minPrice && value <= session.maxPrice) {
                     session.foundCount++;
                     const avatarUrl = await roblox.getAvatarImage(member.userId).catch(() => null);
@@ -92,19 +109,23 @@ async function runScan(client, session) {
                 }
             } catch (err) {
                 if (err?.response?.status === 429) {
+                    successStreak = 0;
                     rateLimitStreak++;
+                    // Persistently slow the steady-state pace, not just this one retry —
+                    // a flat per-error wait alone kept re-hitting the same ceiling.
+                    delayMs = Math.min(MAX_DELAY_MS, Math.round(delayMs * 1.6));
                     const retryAfter = Number(err.response.headers?.['retry-after']);
                     const backoff = Number.isFinite(retryAfter)
                         ? retryAfter * 1000
                         : Math.min(3000 * rateLimitStreak, MAX_BACKOFF_MS);
-                    console.warn(`[groupmembers] Rate limited on ${member.userId} (x${rateLimitStreak}) — backing off ${backoff}ms`);
+                    console.warn(`[groupmembers] Rate limited on ${member.userId} (x${rateLimitStreak}) — backing off ${backoff}ms, pace now ${delayMs}ms`);
                     await sleep(backoff, session);
                 } else {
                     console.warn(`[groupmembers] Skipping ${member.userId}:`, err.message);
                 }
             }
 
-            await sleep(USER_DELAY_MS, session);
+            await sleep(delayMs, session);
         }
 
         cursor = page.nextCursor;

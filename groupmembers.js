@@ -5,7 +5,7 @@ const config = require('./config');
 const roblox = require('./roblox');
 const { safeReply } = require('./utils/safe');
 
-const USER_DELAY_MS = 300;
+const USER_DELAY_MS = 700;
 const MAX_BACKOFF_MS = 30_000;
 
 let activeScan = null;
@@ -57,17 +57,18 @@ async function sendToChannel(client, payload) {
 async function runScan(client, session) {
     console.log(`[groupmembers] Scan started — price=${session.minPrice}-${session.maxPrice} amount=${session.amount}`);
     let cursor = null;
-    let consecutiveErrors = 0;
+    let pageErrors = 0;
+    let rateLimitStreak = 0;
 
     pageLoop:
     while (!session.stopped) {
         let page;
         try {
             page = await roblox.getGroupMembersPage(config.GROUPMEMBERS_GROUP_ID, cursor);
-            consecutiveErrors = 0;
+            pageErrors = 0;
         } catch (err) {
-            consecutiveErrors++;
-            const backoff = Math.min(2000 * consecutiveErrors, MAX_BACKOFF_MS);
+            pageErrors++;
+            const backoff = Math.min(2000 * pageErrors, MAX_BACKOFF_MS);
             console.warn('[groupmembers] Page fetch failed:', err.message, '— backing off', backoff, 'ms');
             await sleep(backoff, session);
             continue;
@@ -80,6 +81,7 @@ async function runScan(client, session) {
             try {
                 const assetIds = await roblox.getWornAssetIds(member.userId);
                 const value = await roblox.getAssetsValue(assetIds);
+                rateLimitStreak = 0;
                 console.log(`[groupmembers] ${member.username} (${member.userId}) -> ${value} robux`);
 
                 if (value >= session.minPrice && value <= session.maxPrice) {
@@ -90,8 +92,13 @@ async function runScan(client, session) {
                 }
             } catch (err) {
                 if (err?.response?.status === 429) {
-                    console.warn(`[groupmembers] Rate limited on ${member.userId} — backing off 3s`);
-                    await sleep(3000, session);
+                    rateLimitStreak++;
+                    const retryAfter = Number(err.response.headers?.['retry-after']);
+                    const backoff = Number.isFinite(retryAfter)
+                        ? retryAfter * 1000
+                        : Math.min(3000 * rateLimitStreak, MAX_BACKOFF_MS);
+                    console.warn(`[groupmembers] Rate limited on ${member.userId} (x${rateLimitStreak}) — backing off ${backoff}ms`);
+                    await sleep(backoff, session);
                 } else {
                     console.warn(`[groupmembers] Skipping ${member.userId}:`, err.message);
                 }

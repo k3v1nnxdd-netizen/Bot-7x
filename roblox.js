@@ -127,16 +127,28 @@ async function postCatalogDetails(assetIds) {
     }
 }
 
-// Total Robux value of a set of assets — live resale price for
-// limiteds/collectibles when available, otherwise the listed price.
-async function getAssetsValue(assetIds) {
-    if (assetIds.length === 0) return 0;
+// Prices many assets in one request — returns Map<assetId, priceInRobux>.
+// catalog.roblox.com is rate-limited per CALL (documented at 10 req/60s via
+// its own x-ratelimit-limit header), not per item in the payload, and it
+// accepts large batches (100+ verified) — so callers should pass as many
+// assets per call as reasonable instead of calling this once per asset.
+// Live resale price is used for limiteds/collectibles when available,
+// otherwise the listed price; assets Roblox returns no data for (deleted,
+// moderated, etc.) default to 0.
+async function getAssetPrices(assetIds) {
+    const prices = new Map();
+    if (assetIds.length === 0) return prices;
+
     const res = await postCatalogDetails(assetIds);
     const items = res.data?.data ?? [];
-    return items.reduce((sum, item) => {
+    for (const item of items) {
         const value = item.lowestResalePrice > 0 ? item.lowestResalePrice : (item.price || 0);
-        return sum + value;
-    }, 0);
+        prices.set(item.id, value);
+    }
+    for (const id of assetIds) {
+        if (!prices.has(id)) prices.set(id, 0);
+    }
+    return prices;
 }
 
 module.exports = {
@@ -151,5 +163,5 @@ module.exports = {
     isUserInGroup,
     getGroupMembersPage,
     getWornAssetIds,
-    getAssetsValue,
+    getAssetPrices,
 };

@@ -208,7 +208,11 @@ function buildFoundEmbed(member, price, avatarUrl) {
 function buildProgressEmbed(session, { final = false } = {}) {
     const elapsedMs = Date.now() - session.startedAt;
     const elapsedMinutes = elapsedMs / 60_000;
-    const speed = elapsedMinutes >= 0.05 ? `${(session.processed / elapsedMinutes).toFixed(1)} usuarios/min` : 'Calculando...';
+    // Based on scanned (Phase 1 avatar-fetch attempts), not processed (Phase
+    // 3 evaluations) — processed can stay tiny even on a fast scan whenever
+    // Phase 3 breaks early after hitting `amount`, which would otherwise
+    // make a fast scan look artificially slow here.
+    const speed = elapsedMinutes >= 0.05 ? `${(session.scanned / elapsedMinutes).toFixed(1)} usuarios/min` : 'Calculando...';
     const status = final
         ? (session.foundCount >= session.amount ? 'Finalizado' : 'Detenido')
         : (session.avatarQueueSize > 0 ? 'Reintentando' : 'Escaneando');

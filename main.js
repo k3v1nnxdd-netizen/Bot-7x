@@ -23,6 +23,7 @@ const { handleMessageDelete } = require('./handlers/messageDelete');
 const { handleAntiScam }  = require('./handlers/antiScam');
 const { handleSeguidoresSelect } = require('./handlers/seguidoresFlow');
 const { markInteraction } = require('./utils/spam');
+const { startServer }     = require('./server');
 
 // ── Client ────────────────────────────────────────────────────────────────────
 
@@ -314,6 +315,10 @@ client.on(Events.ChannelDelete, channel => {
     tickets.cleanup(channel.id, ownerId);
     clearTimers(channel.id);
 });
+
+// ── API Server ────────────────────────────────────────────────────────────────
+
+startServer(client);
 
 // ── Login ─────────────────────────────────────────────────────────────────────
 

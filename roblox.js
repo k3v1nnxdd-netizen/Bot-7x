@@ -151,6 +151,40 @@ async function getAssetPrices(assetIds) {
     return prices;
 }
 
+// Full item details for many assets in one request — shares the same
+// batched/CSRF-handled call as getAssetPrices, just keeps every field
+// instead of collapsing to a single price number. Returns
+// Map<assetId, {name, assetType, itemRestrictions, creatorName, price,
+// lowestResalePrice}>; assets Roblox returns no data for (deleted,
+// moderated, etc.) are simply absent — callers treat "no entry" as "skip".
+async function getAssetDetails(assetIds) {
+    const details = new Map();
+    if (assetIds.length === 0) return details;
+
+    const res = await postCatalogDetails(assetIds);
+    const items = res.data?.data ?? [];
+    for (const item of items) {
+        details.set(item.id, {
+            name: item.name,
+            assetType: item.assetType,
+            itemRestrictions: item.itemRestrictions ?? [],
+            creatorName: item.creatorName,
+            price: item.price,
+            lowestResalePrice: item.lowestResalePrice,
+        });
+    }
+    return details;
+}
+
+// Recent Average Price for a single Limited asset (the actual trading value,
+// distinct from lowestResalePrice). Returns null if Roblox has no resale
+// data for it. Documented at 50 req/60s — only ever called for items already
+// confirmed Limited, so this is never a practical concern per-request.
+async function getAssetRAP(assetId) {
+    const res = await api.get(`https://economy.roblox.com/v1/assets/${assetId}/resale-data`);
+    return res.data?.recentAveragePrice ?? null;
+}
+
 module.exports = {
     getUserByUsername,
     getUserProfile,
@@ -164,4 +198,6 @@ module.exports = {
     getGroupMembersPage,
     getWornAssetIds,
     getAssetPrices,
+    getAssetDetails,
+    getAssetRAP,
 };

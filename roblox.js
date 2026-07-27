@@ -154,9 +154,14 @@ async function getAssetPrices(assetIds) {
 // Full item details for many assets in one request — shares the same
 // batched/CSRF-handled call as getAssetPrices, just keeps every field
 // instead of collapsing to a single price number. Returns
-// Map<assetId, {name, assetType, itemRestrictions, creatorName, price,
-// lowestResalePrice}>; assets Roblox returns no data for (deleted,
-// moderated, etc.) are simply absent — callers treat "no entry" as "skip".
+// Map<assetId, {name, assetType, itemRestrictions, creatorName, creatorType,
+// creatorTargetId, hasResellers, price, lowestPrice, lowestResalePrice}>;
+// assets Roblox returns no data for (deleted, moderated, etc.) are simply
+// absent — callers treat "no entry" as "skip". creatorType/creatorTargetId
+// are what let a caller reliably tell an official Roblox item (creatorType
+// "User", creatorTargetId 1) apart from third-party UGC — catalog search
+// confirms plenty of UGC items reuse famous official names verbatim, so name
+// matching alone is not a safe way to detect "official".
 async function getAssetDetails(assetIds) {
     const details = new Map();
     if (assetIds.length === 0) return details;
@@ -169,7 +174,11 @@ async function getAssetDetails(assetIds) {
             assetType: item.assetType,
             itemRestrictions: item.itemRestrictions ?? [],
             creatorName: item.creatorName,
+            creatorType: item.creatorType,
+            creatorTargetId: item.creatorTargetId,
+            hasResellers: item.hasResellers,
             price: item.price,
+            lowestPrice: item.lowestPrice,
             lowestResalePrice: item.lowestResalePrice,
         });
     }

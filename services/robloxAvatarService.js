@@ -8,8 +8,11 @@ const { limitedRequest, limitedCatalogRequest } = require('./robloxRequestLimite
 // accessories with resale value. Excluded entirely, per spec.
 const IGNORED_ASSET_TYPES = new Set([2, 11]);
 
-// Caps a single non-Limited item's contribution to the score, so one
-// absurdly-priced fake/scam UGC listing can't dominate the total.
+// Caps a single non-Limited, non-official (i.e. third-party UGC) item's
+// contribution to the score, so one absurdly-priced fake/scam UGC listing
+// can't dominate the total. Official Roblox items and anything with a real
+// resale market (Limiteds) are exempt — see isOfficialRobloxItem/
+// isLimitedItem below and how they're used in buildAvatarValuationUncached.
 const MAX_NON_LIMITED_ITEM_VALUE = 10_000;
 
 const ASSET_TYPE_NAMES = {
@@ -23,8 +26,24 @@ function assetTypeName(assetType) {
     return ASSET_TYPE_NAMES[assetType] ?? `Type_${assetType}`;
 }
 
+// Roblox's own corporate account — every genuinely official item (Headless
+// Horseman, Korblox, Sparkle Time, official bundles/heads/faces, etc.) is
+// created by this exact account. This is the only reliable signal: catalog
+// search turns up dozens of UGC items with names like "Headless Horseman"
+// or "Korblox Deathspeaker" made by random groups (verified live), so
+// matching by name would be trivially exploitable.
+function isOfficialRobloxItem(details) {
+    return details.creatorType === 'User' && details.creatorTargetId === 1;
+}
+
+// True Limited/LimitedUnique tag OR hasResellers=true (a real, currently
+// active resale market) — the latter is included defensively in case a
+// future item type has an active market without carrying the classic tag;
+// in every real item sampled while building this, the two always agreed.
 function isLimitedItem(details) {
-    return details.itemRestrictions.includes('Limited') || details.itemRestrictions.includes('LimitedUnique');
+    return details.itemRestrictions.includes('Limited')
+        || details.itemRestrictions.includes('LimitedUnique')
+        || details.hasResellers === true;
 }
 
 // Cache TTLs. avatar (worn items) and RAP are both 5 minutes, as requested —
@@ -116,27 +135,62 @@ async function buildAvatarValuationUncached(userId) {
         const details = detailsById.get(assetId);
         if (!details) continue; // deleted/moderated asset — ignore
         if (IGNORED_ASSET_TYPES.has(details.assetType)) continue; // 2D shirt/tshirt — ignore
-        kept.push({ assetId, details, isLimited: isLimitedItem(details) });
+        kept.push({
+            assetId,
+            details,
+            isLimited: isLimitedItem(details),
+            isOfficial: isOfficialRobloxItem(details),
+        });
     }
 
     await Promise.all(kept.filter(k => k.isLimited).map(async k => {
         try {
             k.rap = await getRapCached(k.assetId);
         } catch (err) {
-            console.warn(`[robloxAvatarService] RAP lookup failed for asset ${k.assetId}:`, err.message);
-            k.rap = 0;
+            // A failed RAP lookup shouldn't collapse a known-valuable Limited
+            // to 0 — fall back to whatever resale price the catalog call
+            // already gave us (still far more accurate than zeroing it out).
+            console.warn(`[robloxAvatarService] RAP lookup failed for asset ${k.assetId}, falling back to lowestResalePrice:`, err.message);
+            k.rap = k.details.lowestResalePrice || 0;
         }
     }));
 
-    const accessories = kept.map(({ assetId, details, isLimited, rap }) => ({
-        assetId,
-        name: details.name,
-        type: assetTypeName(details.assetType),
-        isLimited,
-        rap: isLimited ? (rap ?? 0) : null,
-        price: isLimited ? null : Math.min(details.price || details.lowestResalePrice || 0, MAX_NON_LIMITED_ITEM_VALUE),
-        creator: details.creatorName ?? 'Desconocido',
-    }));
+    // Three distinct rules, per item:
+    //  - Limited (official or UGC): market-verified via RAP — real trading
+    //    activity, not something a creator can just set, so it's trusted
+    //    uncapped regardless of who made it.
+    //  - Official non-Limited (creatorTargetId 1): trusted Roblox data, used
+    //    uncapped even when Offsale/no-longer-purchasable — Korblox
+    //    Deathspeaker, for example, is Offsale with itemRestrictions:[] and
+    //    hasResellers:false, but still carries a real historical price (475)
+    //    that a null/0-only fallback chain would otherwise miss entirely.
+    //  - Third-party UGC, non-Limited: the one case actually worth
+    //    distrusting — capped, since nothing here stops a creator from
+    //    listing a reskinned freebie at an absurd price with zero market
+    //    backing to justify it.
+    const accessories = kept.map(({ assetId, details, isLimited, isOfficial, rap }) => {
+        let price = null;
+        let rapValue = null;
+
+        if (isLimited) {
+            rapValue = rap ?? 0;
+        } else if (isOfficial) {
+            price = details.lowestResalePrice || details.price || details.lowestPrice || 0;
+        } else {
+            price = Math.min(details.price || details.lowestResalePrice || 0, MAX_NON_LIMITED_ITEM_VALUE);
+        }
+
+        return {
+            assetId,
+            name: details.name,
+            type: assetTypeName(details.assetType),
+            isLimited,
+            isOfficial,
+            rap: rapValue,
+            price,
+            creator: details.creatorName ?? 'Desconocido',
+        };
+    });
 
     const totalRAP = accessories.reduce((sum, a) => sum + (a.rap ?? 0), 0);
     const totalPrice = accessories.reduce((sum, a) => sum + (a.price ?? 0), 0);

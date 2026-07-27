@@ -19,12 +19,32 @@ function set(key, value, ttlMs) {
     store.set(key, { value, expiresAt: Date.now() + ttlMs });
 }
 
+// Requests already in flight for a given key, keyed the same as `store`.
+// If two callers ask for the same uncached key at the same time (e.g. two
+// Roblox game servers requesting the same player within milliseconds of
+// each other), the second one joins the first's in-flight fetch instead of
+// firing a duplicate request — this is on top of, not instead of, the TTL
+// cache above.
+const inFlight = new Map();
+
 async function getOrFetch(key, ttlMs, fetchFn) {
     const cached = get(key);
     if (cached !== undefined) return cached;
-    const value = await fetchFn();
-    set(key, value, ttlMs);
-    return value;
+
+    if (inFlight.has(key)) return inFlight.get(key);
+
+    const promise = (async () => {
+        try {
+            const value = await fetchFn();
+            set(key, value, ttlMs);
+            return value;
+        } finally {
+            inFlight.delete(key);
+        }
+    })();
+
+    inFlight.set(key, promise);
+    return promise;
 }
 
 // Periodic sweep so keys that are never queried again don't sit in memory

@@ -2,7 +2,7 @@
 
 const roblox = require('../roblox');
 const cache = require('./cache');
-const { limitedRequest } = require('./robloxRequestLimiter');
+const { limitedRequest, limitedCatalogRequest } = require('./robloxRequestLimiter');
 
 // TShirt (2) and Shirt (11) — flat 2D clothing textures, not real
 // accessories with resale value. Excluded entirely, per spec.
@@ -42,6 +42,13 @@ const TTL = {
     WORN_ASSETS: 5 * 60_000,
     ASSET_DETAILS: 30 * 60_000,
     RAP: 5 * 60_000,
+    // Caches the ENTIRE valuation per user, not just the sub-pieces above —
+    // a cache hit here skips every Roblox call (including the catalog batch,
+    // which is what's actually been 429ing), not just some of them. Matches
+    // WORN_ASSETS since that's already the outfit-freshness ceiling; there's
+    // no point re-deriving the same result from unchanged worn items sooner
+    // than that.
+    FULL_VALUATION: 5 * 60_000,
 };
 
 async function getUserBasicInfo(userId) {
@@ -68,7 +75,9 @@ async function getAssetDetailsCached(assetIds) {
         else uncached.push(id);
     }
     if (uncached.length) {
-        const fresh = await limitedRequest(() => roblox.getAssetDetails(uncached));
+        // catalog.roblox.com specifically — routed through its own
+        // proactive token bucket (10 req/60s), not the generic gate.
+        const fresh = await limitedCatalogRequest(() => roblox.getAssetDetails(uncached));
         for (const [id, details] of fresh) {
             cache.set(`asset:${id}`, details, TTL.ASSET_DETAILS);
             result.set(id, details);
@@ -81,27 +90,18 @@ function getRapCached(assetId) {
     return cache.getOrFetch(`rap:${assetId}`, TTL.RAP, () => limitedRequest(() => roblox.getAssetRAP(assetId)));
 }
 
-// Valuations currently being computed, keyed by userId. GET /battle calls
-// buildAvatarValuation for two different users, but if either of those is
-// ALSO mid-flight for a separate concurrent /avatar request (or the same
-// user appears in two battles at once), this makes the second caller join
-// the first's in-flight work instead of re-running the whole pipeline (and
-// re-hitting Roblox) a second time for the same user.
-const inFlightValuations = new Map();
-
-function buildAvatarValuation(userId) {
-    if (inFlightValuations.has(userId)) return inFlightValuations.get(userId);
-
-    const promise = buildAvatarValuationUncached(userId).finally(() => {
-        inFlightValuations.delete(userId);
-    });
-    inFlightValuations.set(userId, promise);
-    return promise;
-}
-
 // The single source of truth for "what is this avatar worth" — used
 // directly by GET /avatar/:userId and reused (called twice) by
 // GET /battle/:user1/:user2, so the valuation rules only live in one place.
+// cache.getOrFetch gives this two things at once: a TTL cache of the WHOLE
+// result (so a user queried again soon skips every Roblox call, not just
+// some), and in-flight dedup for free (two concurrent requests for the same
+// userId — e.g. that user showing up in two different /battle calls at
+// once — join the same in-flight computation instead of running it twice).
+function buildAvatarValuation(userId) {
+    return cache.getOrFetch(`valuation:${userId}`, TTL.FULL_VALUATION, () => buildAvatarValuationUncached(userId));
+}
+
 async function buildAvatarValuationUncached(userId) {
     const [basicInfo, avatarThumbnail, wornAssetIds] = await Promise.all([
         getUserBasicInfo(userId),

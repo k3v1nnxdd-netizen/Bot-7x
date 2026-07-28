@@ -194,6 +194,19 @@ async function getAssetRAP(assetId) {
     return res.data?.recentAveragePrice ?? null;
 }
 
+// Same idea as getAssetRAP, but for Roblox's newer GUID-keyed collectible
+// economy (e.g. the newer "animated face" Limiteds — Snowflake Eyes, Beast
+// Mode, etc.) — the classic economy.roblox.com/v1/assets/{id}/resale-data
+// endpoint rejects their asset ids outright ("The asset id is invalid"),
+// since they're not tracked in the legacy per-asset economy at all. This
+// endpoint takes the item's `collectibleItemId` (a GUID, present on the
+// catalog item's own details) instead, and returns the same
+// `recentAveragePrice` field.
+async function getCollectibleRAP(collectibleItemId) {
+    const res = await api.get(`https://apis.roblox.com/marketplace-sales/v1/item/${collectibleItemId}/resale-data`);
+    return res.data?.recentAveragePrice ?? null;
+}
+
 module.exports = {
     getUserByUsername,
     getUserProfile,
@@ -209,4 +222,5 @@ module.exports = {
     getAssetPrices,
     getAssetDetails,
     getAssetRAP,
+    getCollectibleRAP,
 };

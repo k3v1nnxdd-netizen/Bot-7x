@@ -53,6 +53,16 @@ function parseMaxHeaderValue(headerValue) {
     return nums.length ? Math.max(...nums) : null;
 }
 
+// Same comma-separated format as above, but for x-ratelimit-LIMIT: take the
+// MIN of the parsed values instead — that's the strictest active policy
+// (e.g. "1, 1;w=60, 70000" -> 1, ignoring the generic 70000 platform quota
+// that's basically never the binding constraint).
+function parseMinHeaderValue(headerValue) {
+    if (!headerValue) return null;
+    const nums = String(headerValue).split(',').map(s => parseFloat(s.trim())).filter(Number.isFinite);
+    return nums.length ? Math.min(...nums) : null;
+}
+
 // Roblox's Retry-After header is sometimes far shorter than how long the
 // endpoint actually stays throttled (seen in production: retry-after=5 while
 // the real reset was 26s) — prefer x-ratelimit-reset when both are present.
@@ -105,17 +115,19 @@ async function limitedRequest(fn) {
 
 // Proactive rate limiter specifically for
 // catalog.roblox.com/v1/catalog/items/details — the endpoint actually
-// observed 429ing in production. It's documented at 10 requests/60s, well
-// below avatar.roblox.com's 40/60s, and the generic 3-concurrent gate above
-// doesn't stop callers from bursting past that on their own — it only
-// reacts (retries) after Roblox already rejected a request. This paces
-// catalog calls to stay under the real budget proactively, and runs
-// independently of the generic queue so unrelated calls (user info,
-// thumbnails, worn items) never wait behind it or vice versa.
-const CATALOG_MAX_TOKENS = 10;
+// observed 429ing in production. Originally documented at 10 requests/60s,
+// but Roblox tightened it WITHOUT WARNING to 1 request/60s for this IP
+// (observed live: x-ratelimit-limit went from "10, 10;w=60, 70000" to
+// "1, 1;w=60, 70000"), which a hardcoded 10-token bucket would just keep
+// violating forever. This bucket's capacity now SELF-ADJUSTS from Roblox's
+// own header on every 429 instead of trusting a number that can go stale —
+// see observeCatalogLimit. It still runs independently of the generic
+// 3-concurrent gate above, so unrelated calls (user info, thumbnails, worn
+// items) never wait behind it or vice versa.
+let catalogMaxTokens = 10; // starting assumption only — corrected live from real responses
 const CATALOG_WINDOW_MS = 60_000;
 
-let catalogTokens = CATALOG_MAX_TOKENS;
+let catalogTokens = catalogMaxTokens;
 let catalogLastRefill = Date.now();
 
 async function takeCatalogToken() {
@@ -123,12 +135,23 @@ async function takeCatalogToken() {
         const now = Date.now();
         const elapsed = now - catalogLastRefill;
         if (elapsed > 0) {
-            catalogTokens = Math.min(CATALOG_MAX_TOKENS, catalogTokens + (elapsed / CATALOG_WINDOW_MS) * CATALOG_MAX_TOKENS);
+            catalogTokens = Math.min(catalogMaxTokens, catalogTokens + (elapsed / CATALOG_WINDOW_MS) * catalogMaxTokens);
             catalogLastRefill = now;
         }
         if (catalogTokens >= 1) { catalogTokens -= 1; return; }
         await sleep(100);
     }
+}
+
+// Reads the real capacity Roblox just reported and adopts it immediately —
+// this is what keeps the bucket correct even after Roblox changes the limit
+// on its own, instead of requiring a code change + redeploy every time.
+function observeCatalogLimit(headers) {
+    const observed = parseMinHeaderValue(headers?.['x-ratelimit-limit']);
+    if (observed === null || observed <= 0 || observed === catalogMaxTokens) return;
+    console.warn(`[robloxRequestLimiter] Roblox cambió el límite de catalog: ${catalogMaxTokens} -> ${observed} req/${CATALOG_WINDOW_MS / 1000}s. Ajustando el limitador en caliente.`);
+    catalogMaxTokens = observed;
+    catalogTokens = Math.min(catalogTokens, catalogMaxTokens);
 }
 
 // Same 429 retry/backoff behavior as limitedRequest, just paced by the
@@ -140,6 +163,7 @@ async function limitedCatalogRequest(fn) {
         try {
             return await fn();
         } catch (err) {
+            if (err?.response?.headers) observeCatalogLimit(err.response.headers);
             if (err?.response?.status !== 429 || attempt >= MAX_RETRIES) throw err;
             attempt++;
             const backoff = computeBackoffMs(err, attempt);
@@ -149,6 +173,7 @@ async function limitedCatalogRequest(fn) {
                     attempt,
                     maxRetries: MAX_RETRIES,
                     backoffMs: Math.round(backoff),
+                    catalogMaxTokens,
                     url: err.config?.url,
                     method: err.config?.method,
                     status: err.response?.status,
@@ -160,4 +185,8 @@ async function limitedCatalogRequest(fn) {
     }
 }
 
-module.exports = { limitedRequest, limitedCatalogRequest };
+module.exports = {
+    limitedRequest,
+    limitedCatalogRequest,
+    __test: { parseMinHeaderValue, observeCatalogLimit, getCatalogMaxTokens: () => catalogMaxTokens },
+};

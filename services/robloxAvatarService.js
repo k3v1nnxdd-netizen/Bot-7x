@@ -4,6 +4,8 @@ const roblox = require('../roblox');
 const cache = require('./cache');
 const { limitedRequest, limitedCatalogRequest } = require('./robloxRequestLimiter');
 const { ASSET_TO_OVERRIDE } = require('../data/officialItemValues');
+const { KNOWN_LIMITED_IDS } = require('../data/knownLimitedItems');
+const { COMPONENT_TO_LIMITED_BUNDLE } = require('../data/limitedBundles');
 
 // TShirt (2) and Shirt (11) — flat 2D clothing textures, not real
 // accessories with resale value. Excluded entirely, per spec.
@@ -37,14 +39,17 @@ function isOfficialRobloxItem(details) {
     return details.creatorType === 'User' && details.creatorTargetId === 1;
 }
 
-// True Limited/LimitedUnique tag OR hasResellers=true (a real, currently
-// active resale market) — the latter is included defensively in case a
-// future item type has an active market without carrying the classic tag;
-// in every real item sampled while building this, the two always agreed.
-function isLimitedItem(details) {
+// True Limited/LimitedUnique tag, OR hasResellers=true (a real, currently
+// active resale market — included defensively in case a future item has an
+// active market without carrying the classic tag), OR the asset id is in
+// the explicit KNOWN_LIMITED_IDS registry (data/knownLimitedItems.js) —
+// a manually-curated safety net for specific known-important Limiteds, in
+// case the automatic signals above ever miss one.
+function isLimitedItem(details, assetId) {
     return details.itemRestrictions.includes('Limited')
         || details.itemRestrictions.includes('LimitedUnique')
-        || details.hasResellers === true;
+        || details.hasResellers === true
+        || KNOWN_LIMITED_IDS.has(assetId);
 }
 
 // Cache TTLs. avatar (worn items) and RAP are both 5 minutes, as requested —
@@ -110,6 +115,14 @@ function getRapCached(assetId) {
     return cache.getOrFetch(`rap:${assetId}`, TTL.RAP, () => limitedRequest(() => roblox.getAssetRAP(assetId)));
 }
 
+// Same as getRapCached, but for the newer GUID-keyed collectible economy
+// (data/limitedBundles.js — the "animated face" Limiteds) via
+// getCollectibleRAP. Same TTL: this is real-time market value, not a fixed
+// price, so it still needs to stay fresh.
+function getCollectibleRapCached(collectibleItemId) {
+    return cache.getOrFetch(`collectible-rap:${collectibleItemId}`, TTL.RAP, () => limitedRequest(() => roblox.getCollectibleRAP(collectibleItemId)));
+}
+
 // The single source of truth for "what is this avatar worth" — used
 // directly by GET /avatar/:userId and reused (called twice) by
 // GET /battle/:user1/:user2, so the valuation rules only live in one place.
@@ -129,19 +142,29 @@ async function buildAvatarValuationUncached(userId) {
         getWornAssets(userId),
     ]);
 
-    // Detect known official bundles (Headless Horseman, Korblox, etc.) —
-    // matched via their equipped COMPONENT assets, since a bundle id is
-    // never itself a worn asset (see data/officialItemValues.js). Wearing
-    // multiple pieces of the same bundle still only counts its value once,
-    // and every matched component id is excluded from the normal per-item
-    // pass below (and never even sent to catalog.roblox.com for pricing) so
-    // it isn't also valued individually.
+    // Detect known bundles — matched via their equipped COMPONENT assets,
+    // since a bundle id is never itself a worn asset. Two kinds:
+    //  - Official fixed-value bundles (Headless Horseman, Korblox, etc. —
+    //    data/officialItemValues.js).
+    //  - Limited "animated face" bundles with real, live resale value
+    //    (Snowflake Eyes, Beast Mode, etc. — data/limitedBundles.js).
+    // Wearing multiple pieces of the same bundle still only counts its
+    // value once, and every matched component id is excluded from the
+    // normal per-item pass below (and never even sent to catalog.roblox.com
+    // for pricing) so it isn't also valued individually.
     const matchedOverrides = new Map(); // override.id -> override
+    const matchedLimitedBundles = new Map(); // bundle.id -> bundle
     const overriddenAssetIds = new Set();
     for (const assetId of wornAssetIds) {
         const override = ASSET_TO_OVERRIDE.get(assetId);
         if (override) {
             matchedOverrides.set(override.id, override);
+            overriddenAssetIds.add(assetId);
+            continue;
+        }
+        const limitedBundle = COMPONENT_TO_LIMITED_BUNDLE.get(assetId);
+        if (limitedBundle) {
+            matchedLimitedBundles.set(limitedBundle.id, limitedBundle);
             overriddenAssetIds.add(assetId);
         }
     }
@@ -157,22 +180,32 @@ async function buildAvatarValuationUncached(userId) {
         kept.push({
             assetId,
             details,
-            isLimited: isLimitedItem(details),
+            isLimited: isLimitedItem(details, assetId),
             isOfficial: isOfficialRobloxItem(details),
         });
     }
 
-    await Promise.all(kept.filter(k => k.isLimited).map(async k => {
-        try {
-            k.rap = await getRapCached(k.assetId);
-        } catch (err) {
-            // A failed RAP lookup shouldn't collapse a known-valuable Limited
-            // to 0 — fall back to whatever resale price the catalog call
-            // already gave us (still far more accurate than zeroing it out).
-            console.warn(`[robloxAvatarService] RAP lookup failed for asset ${k.assetId}, falling back to lowestResalePrice:`, err.message);
-            k.rap = k.details.lowestResalePrice || 0;
-        }
-    }));
+    await Promise.all([
+        ...kept.filter(k => k.isLimited).map(async k => {
+            try {
+                k.rap = await getRapCached(k.assetId);
+            } catch (err) {
+                // A failed RAP lookup shouldn't collapse a known-valuable Limited
+                // to 0 — fall back to whatever resale price the catalog call
+                // already gave us (still far more accurate than zeroing it out).
+                console.warn(`[robloxAvatarService] RAP lookup failed for asset ${k.assetId}, falling back to lowestResalePrice:`, err.message);
+                k.rap = k.details.lowestResalePrice || 0;
+            }
+        }),
+        ...[...matchedLimitedBundles.values()].map(async bundle => {
+            try {
+                bundle.rap = await getCollectibleRapCached(bundle.collectibleItemId);
+            } catch (err) {
+                console.warn(`[robloxAvatarService] Collectible RAP lookup failed for bundle ${bundle.id} (${bundle.name}):`, err.message);
+                bundle.rap = 0;
+            }
+        }),
+    ]);
 
     // Three distinct rules, per item:
     //  - Limited (official or UGC): market-verified via RAP — real trading
@@ -222,6 +255,22 @@ async function buildAvatarValuationUncached(userId) {
             isOfficial: true,
             rap: null,
             price: override.value,
+            creator: 'Roblox',
+        });
+    }
+
+    // One synthetic entry per matched Limited bundle — real-time RAP from
+    // the collectible economy, same shape as a normal Limited item (see
+    // data/limitedBundles.js).
+    for (const bundle of matchedLimitedBundles.values()) {
+        accessories.push({
+            assetId: bundle.id,
+            name: bundle.name,
+            type: 'Bundle',
+            isLimited: true,
+            isOfficial: true,
+            rap: bundle.rap ?? 0,
+            price: null,
             creator: 'Roblox',
         });
     }

@@ -11,11 +11,11 @@ const STATS_EMOJI = '<:stats:1190502686886481991>';
 
 function buildReviewEmbed(buyerId) {
     return new EmbedBuilder()
-        .setColor(0x57F287)
+        .setColor(0x2B2D31)
         .setDescription(
             `${SHOP_EMOJI} Compra por <@${buyerId}>\n\n` +
             'Gracias por tu compra. ¿Podrías evaluar la atención y el trato del staff hacia tu ticket?\n\n' +
-            'Presiona el botón de abajo y escribe un número del **1 al 5** (5 = la mejor atención).'
+            '• Presiona el botón de abajo y escribe un número del **1 al 5** (5 = la mejor atención).'
         )
         .setFooter({ text: '7x Community • Sistema de reseñas' });
 }
@@ -41,7 +41,9 @@ function buildAnnounceEmbed(buyerId, score = null) {
     return new EmbedBuilder()
         .setColor(0x2B2D31) // reviews channel is always gray, pending or rated
         .setDescription(
-            `${SHOP_EMOJI} Compra hecha por <@${buyerId}>\n\n` +
+            // No bullet on the "Reseña" line — a "•" right next to the
+            // repeated star/stats emojis breaks the line rendering.
+            `${SHOP_EMOJI} • Compra hecha por <@${buyerId}>\n\n` +
             `**Reseña:** ${value}`
         )
         .setFooter({ text: '7x Community • Sistema de reseñas' })

@@ -11,7 +11,7 @@ const STATS_EMOJI = '<:stats:1190502686886481991>';
 
 function buildReviewEmbed(buyerId) {
     return new EmbedBuilder()
-        .setColor(0xFEE75C)
+        .setColor(0x57F287)
         .setDescription(
             `${SHOP_EMOJI} Compra por <@${buyerId}>\n\n` +
             'Gracias por tu compra. ¿Podrías evaluar la atención y el trato del staff hacia tu ticket?\n\n' +
@@ -26,7 +26,7 @@ function buildReviewRow(ticketChannelId, disabled = false) {
             .setCustomId(`review_rate:${ticketChannelId}`)
             .setLabel(disabled ? 'Ya calificado' : 'Calificar atención')
             .setEmoji({ id: '1514369366878064650', name: 'star', animated: true })
-            .setStyle(ButtonStyle.Success)
+            .setStyle(ButtonStyle.Secondary)
             .setDisabled(disabled)
     );
 }
@@ -39,7 +39,7 @@ function buildAnnounceEmbed(buyerId, score = null) {
         : `${score >= 5 ? STAR_EMOJI.repeat(5) : STATS_EMOJI.repeat(score)} **(${score}/5)**`;
 
     return new EmbedBuilder()
-        .setColor(score === null ? 0x2B2D31 : 0xFFD700)
+        .setColor(0x2B2D31) // reviews channel is always gray, pending or rated
         .setDescription(
             `${SHOP_EMOJI} Compra hecha por <@${buyerId}>\n\n` +
             `**Reseña:** ${value}`

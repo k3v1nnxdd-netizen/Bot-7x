@@ -9,8 +9,9 @@ const EXITOSO_EXISTS = fs.existsSync(EXITOSO_PATH);
 const { isGone, safeReply, safeEditReply, safeDeferReply, safeShowModal } = require('../utils/safe');
 const { isLocked, lock } = require('../utils/spam');
 const tickets            = require('../utils/tickets');
-const { buildComprarModal, buildOtraCosaModal, buildDuelsModal, buildCalcDineroModal, buildCalcRobuxModal, buildVerifModal } = require('./modals');
+const { buildComprarModal, buildOtraCosaModal, buildDuelsModal, buildCalcDineroModal, buildCalcRobuxModal, buildVerifModal, buildReviewModal } = require('./modals');
 const { buildRefRow, sendPurchaseDM } = require('../utils/purchaseDm');
+const reviews            = require('../utils/reviews');
 const { startSeguidoresTicket, handleSeguidoresButton } = require('./seguidoresFlow');
 const config             = require('../config');
 
@@ -326,6 +327,28 @@ async function onCopiarNombre(interaction) {
     });
 }
 
+// ── Review rating handler (button lives in both a ticket channel and a DM) ────
+
+async function onReviewRate(interaction) {
+    if (interaction.replied || interaction.deferred) return;
+
+    const ticketChannelId = interaction.customId.slice('review_rate:'.length);
+    const review = reviews.getReview(ticketChannelId);
+
+    if (!review) {
+        return safeReply(interaction, { content: '❌ Esta solicitud de reseña ya no es válida.', ephemeral: true });
+    }
+    if (review.rating !== null) {
+        return safeReply(interaction, { content: '❌ Esta compra ya fue calificada.', ephemeral: true });
+    }
+    if (interaction.user.id !== review.buyerId) {
+        return safeReply(interaction, { content: '❌ Solo el comprador puede calificar esta compra.', ephemeral: true });
+    }
+
+    const ok = await safeShowModal(interaction, buildReviewModal(ticketChannelId));
+    if (!ok) await safeReply(interaction, { content: '❌ No se pudo abrir el formulario. Intenta de nuevo.', ephemeral: true });
+}
+
 // ── Auto-close countdown (shared with /close command) ─────────────────────────
 
 async function startAutoClose(channel) {
@@ -374,8 +397,9 @@ async function handleButton(interaction) {
     // but this is the final safety net before any response attempt.
     if (interaction.replied || interaction.deferred) return;
 
-    const isSeg = interaction.customId.startsWith('seg_');
-    const fn = isSeg ? handleSeguidoresButton : HANDLERS[interaction.customId];
+    const isSeg    = interaction.customId.startsWith('seg_');
+    const isReview = interaction.customId.startsWith('review_rate:');
+    const fn = isSeg ? handleSeguidoresButton : isReview ? onReviewRate : HANDLERS[interaction.customId];
     if (!fn) return;
 
     try {

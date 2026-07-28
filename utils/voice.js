@@ -6,11 +6,18 @@ const {
     entersState,
 } = require('@discordjs/voice');
 const config = require('../config');
+const { safeReply } = require('./safe');
 
 let connection = null;
 let reconnectTimer = null;
+// Set by leaveVoice() (i.e. an explicit /connect disconnect) — suppresses
+// the auto-rejoin logic below, which exists specifically to fight
+// UNwanted disconnects (kicked from the channel, network blip, etc.) and
+// would otherwise undo a deliberate manual disconnect within 5 seconds.
+let manuallyDisconnected = false;
 
 function scheduleReconnect(guild) {
+    if (manuallyDisconnected) return;
     if (reconnectTimer) return;
     reconnectTimer = setTimeout(() => {
         reconnectTimer = null;
@@ -19,6 +26,7 @@ function scheduleReconnect(guild) {
 }
 
 function joinVoice(guild) {
+    manuallyDisconnected = false;
     const channel = guild.channels.cache.get(config.VOICE_CHANNEL_ID);
     if (!channel) {
         console.warn('[voice] Voice channel not found:', config.VOICE_CHANNEL_ID);
@@ -64,9 +72,32 @@ function joinVoice(guild) {
     }
 }
 
+// Tears down the connection deliberately (e.g. via /connect) — unlike a
+// disconnect the bot didn't choose, this one should stick, so it flips
+// manuallyDisconnected before destroying to suppress both the
+// VoiceConnectionStatus.Disconnected handler above and the
+// VoiceStateUpdate-driven rejoin below.
+function leaveVoice() {
+    manuallyDisconnected = true;
+    if (reconnectTimer) {
+        clearTimeout(reconnectTimer);
+        reconnectTimer = null;
+    }
+    if (!connection) return false;
+    connection.destroy();
+    connection = null;
+    console.log('[voice] Disconnected manually.');
+    return true;
+}
+
+function isConnected() {
+    return connection !== null && connection.state.status !== VoiceConnectionStatus.Destroyed;
+}
+
 // Called from VoiceStateUpdate — if bot was moved out, rejoin
 function handleVoiceStateUpdate(oldState, newState, client) {
     if (oldState.member?.id !== client.user.id) return;
+    if (manuallyDisconnected) return;
     const wasInChannel  = Boolean(oldState.channelId);
     const isInChannel   = Boolean(newState.channelId);
     const movedOut      = wasInChannel && !isInChannel;
@@ -77,4 +108,24 @@ function handleVoiceStateUpdate(oldState, newState, client) {
     }
 }
 
-module.exports = { joinVoice, handleVoiceStateUpdate };
+// /connect (owner-only) — toggles the bot in/out of config.VOICE_CHANNEL_ID.
+async function handleConnect(interaction) {
+    if (interaction.user.id !== config.OWNER_ID) {
+        return safeReply(interaction, { content: '❌ No tienes permisos para usar este comando.', ephemeral: true });
+    }
+
+    const guild = interaction.guild;
+    if (!guild) {
+        return safeReply(interaction, { content: '❌ Este comando solo puede usarse dentro del servidor.', ephemeral: true });
+    }
+
+    if (isConnected()) {
+        leaveVoice();
+        return safeReply(interaction, { content: '🔌 Bot desconectado del canal de voz.', ephemeral: true });
+    }
+
+    joinVoice(guild);
+    return safeReply(interaction, { content: `🔊 Conectando al canal de voz <#${config.VOICE_CHANNEL_ID}>...`, ephemeral: true });
+}
+
+module.exports = { joinVoice, leaveVoice, isConnected, handleVoiceStateUpdate, handleConnect };

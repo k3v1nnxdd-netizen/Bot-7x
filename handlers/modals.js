@@ -11,6 +11,8 @@ const tickets                                              = require('../utils/t
 const { lookup, extractNumber, lookupByBudget, extractDecimal, MIN, MAX, MIN_PRICE } = require('../data/prices');
 const { getCoupon, isValid: isCouponValid, useCoupon } = require('../utils/coupons');
 const { refreshCouponEmbed } = require('./commands');
+const reviews                                               = require('../utils/reviews');
+const { finalizeReview }                                    = require('../utils/reviewFlow');
 const roblox                                               = require('../roblox');
 const { getJoinDate, getLastChecked, trackIfNew, updateLastChecked, daysSince } = require('../utils/groupTracker');
 const config                                               = require('../config');
@@ -557,6 +559,58 @@ async function handleVerifModal(interaction) {
     await safeEditReply(interaction, { embeds: [embed] });
 }
 
+// ── Review modal builder ──────────────────────────────────────────────────────
+
+function buildReviewModal(ticketChannelId) {
+    const modal = new ModalBuilder().setCustomId(`review_modal:${ticketChannelId}`).setTitle('Calificar atención del ticket');
+    modal.addComponents(
+        new ActionRowBuilder().addComponents(
+            new TextInputBuilder()
+                .setCustomId('review_score')
+                .setLabel('Número del 1 al 5 (5 = la mejor atención)')
+                .setStyle(TextInputStyle.Short)
+                .setMinLength(1)
+                .setMaxLength(1)
+                .setPlaceholder('Ej: 5')
+                .setRequired(true)
+        )
+    );
+    return modal;
+}
+
+// ── Review modal handler ──────────────────────────────────────────────────────
+
+async function handleReviewModal(interaction) {
+    if (interaction.replied || interaction.deferred) return;
+
+    const ticketChannelId = interaction.customId.slice('review_modal:'.length);
+    const raw   = interaction.fields.getTextInputValue('review_score').trim();
+    const score = Number(raw);
+
+    if (!Number.isInteger(score) || score < 1 || score > 5) {
+        return safeReply(interaction, { content: '❌ Escribe solo un número entero del 1 al 5.', ephemeral: true });
+    }
+
+    if (!await safeDeferReply(interaction, { ephemeral: true })) return;
+
+    const review = reviews.getReview(ticketChannelId);
+    if (!review) {
+        return safeEditReply(interaction, { content: '❌ Esta solicitud de reseña ya no es válida.' });
+    }
+    if (interaction.user.id !== review.buyerId) {
+        return safeEditReply(interaction, { content: '❌ Solo el comprador puede calificar esta compra.' });
+    }
+
+    const via = interaction.channel?.isDMBased?.() ? 'dm' : 'ticket';
+    const ok  = reviews.submitRating(ticketChannelId, interaction.user.id, score, via);
+    if (!ok) {
+        return safeEditReply(interaction, { content: '❌ Esta compra ya fue calificada anteriormente.' });
+    }
+
+    await safeEditReply(interaction, { content: '✅ ¡Gracias por tu calificación!' });
+    await finalizeReview(interaction.client, ticketChannelId, score);
+}
+
 // ── Router ────────────────────────────────────────────────────────────────────
 
 const HANDLERS = {
@@ -572,8 +626,9 @@ async function handleModal(interaction) {
     // Hard stop — same pattern as handleButton
     if (interaction.replied || interaction.deferred) return;
 
-    const isSeg = interaction.customId.startsWith('seg_');
-    const fn = isSeg ? handleSeguidoresModal : HANDLERS[interaction.customId];
+    const isSeg    = interaction.customId.startsWith('seg_');
+    const isReview = interaction.customId.startsWith('review_modal:');
+    const fn = isSeg ? handleSeguidoresModal : isReview ? handleReviewModal : HANDLERS[interaction.customId];
     if (!fn) return;
 
     try {
@@ -585,4 +640,4 @@ async function handleModal(interaction) {
     }
 }
 
-module.exports = { handleModal, buildComprarModal, buildOtraCosaModal, buildDuelsModal, buildCalcDineroModal, buildCalcRobuxModal, buildVerifModal };
+module.exports = { handleModal, buildComprarModal, buildOtraCosaModal, buildDuelsModal, buildCalcDineroModal, buildCalcRobuxModal, buildVerifModal, buildReviewModal };

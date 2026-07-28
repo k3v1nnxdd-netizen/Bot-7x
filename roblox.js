@@ -57,47 +57,11 @@ async function getHeadshot(userId) {
     return res.data?.data?.[0]?.imageUrl ?? null;
 }
 
-// Single lightweight check, no retry-on-not-found — callers own their own retry/backoff.
-async function checkUsernameAvailable(username) {
-    const res = await api.post(
-        'https://users.roblox.com/v1/usernames/users',
-        { usernames: [username], excludeBannedUsers: false },
-        { headers: { 'Content-Type': 'application/json' } }
-    );
-    const found = res.data?.data?.[0];
-    return !found;
-}
-
-// Checks many usernames in a single request — this endpoint accepts a batch,
-// so checking e.g. 15 at once costs the same one request as checking 1,
-// which is what lets the sniper go faster without hitting Roblox more often.
-async function checkUsernamesAvailable(usernames) {
-    const res = await api.post(
-        'https://users.roblox.com/v1/usernames/users',
-        { usernames, excludeBannedUsers: false },
-        { headers: { 'Content-Type': 'application/json' } }
-    );
-    const taken = new Set((res.data?.data ?? []).map(u => u.requestedUsername));
-    const result = {};
-    for (const name of usernames) result[name] = !taken.has(name);
-    return result;
-}
-
 async function isUserInGroup(userId, groupId) {
     const res = await retry(() =>
         api.get(`https://groups.roblox.com/v1/users/${userId}/groups/roles`)
     );
     return res.data?.data?.some(g => g.group?.id === Number(groupId)) ?? false;
-}
-
-// One page (100) of a group's member list.
-async function getGroupMembersPage(groupId, cursor = null) {
-    const query = cursor ? `&cursor=${encodeURIComponent(cursor)}` : '';
-    const res = await api.get(`https://groups.roblox.com/v1/groups/${groupId}/users?limit=100&sortOrder=Asc${query}`);
-    return {
-        members: (res.data?.data ?? []).map(m => ({ userId: m.user.userId, username: m.user.username })),
-        nextCursor: res.data?.nextPageCursor ?? null,
-    };
 }
 
 // Asset ids the user currently has equipped (their outfit).
@@ -127,33 +91,8 @@ async function postCatalogDetails(assetIds) {
     }
 }
 
-// Prices many assets in one request — returns Map<assetId, priceInRobux>.
-// catalog.roblox.com is rate-limited per CALL (documented at 10 req/60s via
-// its own x-ratelimit-limit header), not per item in the payload, and it
-// accepts large batches (100+ verified) — so callers should pass as many
-// assets per call as reasonable instead of calling this once per asset.
-// Live resale price is used for limiteds/collectibles when available,
-// otherwise the listed price; assets Roblox returns no data for (deleted,
-// moderated, etc.) default to 0.
-async function getAssetPrices(assetIds) {
-    const prices = new Map();
-    if (assetIds.length === 0) return prices;
-
-    const res = await postCatalogDetails(assetIds);
-    const items = res.data?.data ?? [];
-    for (const item of items) {
-        const value = item.lowestResalePrice > 0 ? item.lowestResalePrice : (item.price || 0);
-        prices.set(item.id, value);
-    }
-    for (const id of assetIds) {
-        if (!prices.has(id)) prices.set(id, 0);
-    }
-    return prices;
-}
-
-// Full item details for many assets in one request — shares the same
-// batched/CSRF-handled call as getAssetPrices, just keeps every field
-// instead of collapsing to a single price number. Returns
+// Full item details for many assets in one request, via the batched/
+// CSRF-handled catalog call. Returns
 // Map<assetId, {name, assetType, itemRestrictions, creatorName, creatorType,
 // creatorTargetId, hasResellers, price, lowestPrice, lowestResalePrice}>;
 // assets Roblox returns no data for (deleted, moderated, etc.) are simply
@@ -214,12 +153,8 @@ module.exports = {
     getFriendCount,
     getAvatarImage,
     getHeadshot,
-    checkUsernameAvailable,
-    checkUsernamesAvailable,
     isUserInGroup,
-    getGroupMembersPage,
     getWornAssetIds,
-    getAssetPrices,
     getAssetDetails,
     getAssetRAP,
     getCollectibleRAP,

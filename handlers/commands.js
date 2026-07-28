@@ -6,6 +6,9 @@ const roblox = require('../roblox');
 const config = require('../config');
 const { createCoupon, getCoupon, setMessageRef } = require('../utils/coupons');
 const { buildRefRow, sendPurchaseDM } = require('../utils/purchaseDm');
+const tickets = require('../utils/tickets');
+const reviews = require('../utils/reviews');
+const { buildReviewEmbed, buildReviewRow, sendReviewDM } = require('../utils/reviewFlow');
 const {
     buildTransferenciaEmbed, buildTransferenciaRow,
     buildOxxoEmbed, buildGiftCardEmbed,
@@ -111,6 +114,26 @@ async function handlePagoVerified(interaction) {
 
     if (mentionUser) {
         await sendPurchaseDM(interaction.client, mentionUser.id);
+    }
+
+    // ── Review request (ticket-scoped, so we need a buyer + an actual ticket) ──
+    const buyerId  = mentionUser?.id ?? tickets.getOwner(interaction.channel);
+    const isTicket = interaction.channel?.parentId === config.CATEGORIES.TICKETS;
+
+    if (isTicket && buyerId && !reviews.getReview(interaction.channelId)) {
+        reviews.createReviewRequest(interaction.channelId, buyerId);
+
+        try {
+            const ticketMsg = await interaction.channel.send({
+                embeds: [buildReviewEmbed(buyerId)],
+                components: [buildReviewRow(interaction.channelId)],
+            });
+            reviews.setTicketMessageRef(interaction.channelId, ticketMsg.channelId, ticketMsg.id);
+        } catch (err) {
+            console.warn('[pagoverified] Could not send ticket review prompt:', err.message);
+        }
+
+        await sendReviewDM(interaction.client, buyerId, interaction.channelId);
     }
 }
 

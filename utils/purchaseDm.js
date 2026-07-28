@@ -6,7 +6,7 @@ const config = require('../config');
 function buildRefRow() {
     return new ActionRowBuilder().addComponents(
         new ButtonBuilder()
-            .setLabel('Dejar Reseña')
+            .setLabel('Dejar Referencia')
             .setEmoji({ id: '1514369366878064650', name: 'star', animated: true })
             .setStyle(ButtonStyle.Link)
             .setURL(`https://discord.com/channels/${config.GUILD_ID}/${config.CHANNELS.REFERENCIAS}`),
@@ -24,7 +24,7 @@ async function sendPurchaseDM(client, userId) {
             .setTitle('<:truepurple:1501214679400190086> ¡Gracias por tu compra en 7x!')
             .setDescription(
                 `<@${userId}>, gracias por tu compra en **7x Community**. ¡Disfruta tu compra!\n\n` +
-                `Te agradecemos mucho si nos dejas una reseña de tu compra en el siguiente canal: <#${config.CHANNELS.REFERENCIAS}>`
+                `Te agradecemos mucho si nos dejas una referencia de tu compra en el siguiente canal: <#${config.CHANNELS.REFERENCIAS}>`
             )
             .setFooter({ text: '7x Community' })
             .setTimestamp();

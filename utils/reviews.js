@@ -37,6 +37,7 @@ function createReviewRequest(ticketChannelId, buyerId) {
         ratedAt: null,
         ticketMessageRef: null,
         dmMessageRef: null,
+        announceMessageRef: null,
         createdAt: new Date().toISOString(),
     };
     save(data);
@@ -54,6 +55,13 @@ function setDmMessageRef(ticketChannelId, channelId, messageId) {
     const data = load();
     if (!data[ticketChannelId]) return;
     data[ticketChannelId].dmMessageRef = { channelId, messageId };
+    save(data);
+}
+
+function setAnnounceMessageRef(ticketChannelId, channelId, messageId) {
+    const data = load();
+    if (!data[ticketChannelId]) return;
+    data[ticketChannelId].announceMessageRef = { channelId, messageId };
     save(data);
 }
 
@@ -78,5 +86,6 @@ module.exports = {
     createReviewRequest,
     setTicketMessageRef,
     setDmMessageRef,
+    setAnnounceMessageRef,
     submitRating,
 };

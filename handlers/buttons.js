@@ -12,6 +12,7 @@ const tickets            = require('../utils/tickets');
 const { buildComprarModal, buildOtraCosaModal, buildDuelsModal, buildCalcDineroModal, buildCalcRobuxModal, buildVerifModal, buildReviewModal } = require('./modals');
 const { buildRefRow, sendPurchaseDM } = require('../utils/purchaseDm');
 const reviews            = require('../utils/reviews');
+const { requestReview }  = require('../utils/reviewFlow');
 const { startSeguidoresTicket, handleSeguidoresButton } = require('./seguidoresFlow');
 const config             = require('../config');
 
@@ -220,6 +221,7 @@ async function onConfirmarPago(interaction) {
 
     if (ownerId) {
         await sendPurchaseDM(interaction.client, ownerId);
+        await requestReview(interaction.client, interaction.channel, channelId, ownerId);
     }
 
     try {

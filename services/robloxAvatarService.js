@@ -3,6 +3,7 @@
 const roblox = require('../roblox');
 const cache = require('./cache');
 const { limitedRequest, limitedCatalogRequest } = require('./robloxRequestLimiter');
+const { ASSET_TO_OVERRIDE } = require('../data/officialItemValues');
 
 // TShirt (2) and Shirt (11) — flat 2D clothing textures, not real
 // accessories with resale value. Excluded entirely, per spec.
@@ -128,10 +129,28 @@ async function buildAvatarValuationUncached(userId) {
         getWornAssets(userId),
     ]);
 
-    const detailsById = await getAssetDetailsCached(wornAssetIds);
+    // Detect known official bundles (Headless Horseman, Korblox, etc.) —
+    // matched via their equipped COMPONENT assets, since a bundle id is
+    // never itself a worn asset (see data/officialItemValues.js). Wearing
+    // multiple pieces of the same bundle still only counts its value once,
+    // and every matched component id is excluded from the normal per-item
+    // pass below (and never even sent to catalog.roblox.com for pricing) so
+    // it isn't also valued individually.
+    const matchedOverrides = new Map(); // override.id -> override
+    const overriddenAssetIds = new Set();
+    for (const assetId of wornAssetIds) {
+        const override = ASSET_TO_OVERRIDE.get(assetId);
+        if (override) {
+            matchedOverrides.set(override.id, override);
+            overriddenAssetIds.add(assetId);
+        }
+    }
+    const remainingAssetIds = wornAssetIds.filter(id => !overriddenAssetIds.has(id));
+
+    const detailsById = await getAssetDetailsCached(remainingAssetIds);
 
     const kept = [];
-    for (const assetId of wornAssetIds) {
+    for (const assetId of remainingAssetIds) {
         const details = detailsById.get(assetId);
         if (!details) continue; // deleted/moderated asset — ignore
         if (IGNORED_ASSET_TYPES.has(details.assetType)) continue; // 2D shirt/tshirt — ignore
@@ -191,6 +210,21 @@ async function buildAvatarValuationUncached(userId) {
             creator: details.creatorName ?? 'Desconocido',
         };
     });
+
+    // One synthetic entry per matched bundle override (curated value,
+    // trusted uncapped — see data/officialItemValues.js).
+    for (const override of matchedOverrides.values()) {
+        accessories.push({
+            assetId: override.id,
+            name: override.name,
+            type: 'Bundle',
+            isLimited: false,
+            isOfficial: true,
+            rap: null,
+            price: override.value,
+            creator: 'Roblox',
+        });
+    }
 
     const totalRAP = accessories.reduce((sum, a) => sum + (a.rap ?? 0), 0);
     const totalPrice = accessories.reduce((sum, a) => sum + (a.price ?? 0), 0);

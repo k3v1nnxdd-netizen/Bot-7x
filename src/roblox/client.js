@@ -1,6 +1,8 @@
 'use strict';
 
 const axios = require('axios');
+const https = require('https');
+const http = require('http');
 const {
     limitedUsernameLookupRequest, observeUsernameLookupLimit,
     limitedUserProfileRequest, observeUserProfileLimit,
@@ -12,15 +14,36 @@ const {
     limitedBundlesRequest, observeBundlesLimit,
     limitedLegacyRapRequest, observeLegacyRapLimit,
     limitedRapRequest, observeRapLimit,
-} = require('./services/robloxRequestLimiter');
+} = require('./rateLimiter');
 
-const api = axios.create({ timeout: 8000 });
+// THE "Roblox Gateway" from the architecture diagram: every single outbound
+// call to Roblox in this whole codebase goes through this module, and every
+// exported function here is routed through its own rate-limit bucket (see
+// rateLimiter.js) — nothing else in the project is allowed to import axios
+// and call Roblox directly (grepped clean — see the report).
+//
+// keepAlive:true reuses TCP+TLS connections across calls to the same Roblox
+// host instead of renegotiating a fresh handshake every time — under real
+// traffic (many small, frequent calls to a handful of Roblox hostnames),
+// this measurably cuts tail latency, since a TLS handshake to Roblox's edge
+// is typically 2-4x the cost of a request over an already-warm connection.
+// maxSockets is deliberately modest per host: the rate limiter's own global
+// concurrency gate (MAX_CONCURRENT=3 in rateLimiter.js) already caps how
+// many requests are ever in flight at once, so a large pool would just sit
+// idle — this only needs enough sockets to avoid queuing on the AGENT layer
+// before a request even reaches the rate limiter.
+const agentOptions = { keepAlive: true, keepAliveMsecs: 15_000, maxSockets: 20, maxFreeSockets: 10 };
+const api = axios.create({
+    timeout: 8000,
+    httpAgent: new http.Agent(agentOptions),
+    httpsAgent: new https.Agent(agentOptions),
+});
 
 // This module is the ONLY place that talks to Roblox's HTTP APIs — every
 // exported function here goes through its own rate-limit bucket (see
-// services/robloxRequestLimiter.js), so EVERY caller gets the same
+// src/roblox/rateLimiter.js), so EVERY caller gets the same
 // protection automatically, whether it's the cached /avatar valuation
-// pipeline (services/robloxAvatarService.js) or a one-off Discord command
+// pipeline (services/avatarService.js) or a one-off Discord command
 // (handlers/commands.js, handlers/modals.js) that used to call straight
 // into axios with no rate awareness at all — confirmed live: that second
 // path was hitting users.roblox.com/friends.roblox.com/thumbnails.roblox.com
@@ -99,7 +122,7 @@ async function isUserInGroup(userId, groupId) {
 
 // Asset ids the user currently has equipped (their outfit). THE route that
 // triggered this whole rate-limiter rework: documented at ~40 req/60s, but
-// observed live tightened to 6 req/3600s — see robloxRequestLimiter.js's
+// observed live tightened to 6 req/3600s — see rateLimiter.js's
 // avatar bucket and the report for what's believed to cause that.
 async function getWornAssetIds(userId) {
     const res = await limitedAvatarRequest(() => api.get(`https://avatar.roblox.com/v1/users/${userId}/avatar`));
@@ -157,11 +180,11 @@ async function postCatalogDetails(assetIds) {
 //
 // THE most rate-limited route in this whole file — tightened by Roblox to
 // as little as 1 req/60s in production. This is exactly why
-// services/assetStore.js exists: once ANY player's valuation has resolved
+// src/repositories/assetRepository.js exists: once ANY player's valuation has resolved
 // assetId X through this call, it's stored globally and permanently, so NO
 // other player — this session or a future one, even after a process
 // restart — ever needs to call this for that same id again. See
-// services/robloxAvatarService.js's getAssetDetailsCached/flushAssetBatch
+// services/valuationService.js's getAssetDetailsCached/flushAssetBatch
 // for the batching + in-flight dedup on top of that.
 async function getAssetDetails(assetIds) {
     const details = new Map();
@@ -199,7 +222,7 @@ async function getAssetDetails(assetIds) {
 // ignores bundleType/category filters), but resolving component -> bundle
 // on demand, per worn item, works perfectly and needs no pre-registration.
 // The RESULT (which bundle, if any) is permanently cached per component id
-// in services/assetStore.js, same rationale as getAssetDetails above.
+// in src/repositories/bundleRepository.js, same rationale as getAssetDetails above.
 async function getBundlesForComponentAsset(assetId) {
     const res = await limitedBundlesRequest(() => api.get(`https://catalog.roblox.com/v1/assets/${assetId}/bundles`));
     observeBundlesLimit(res.headers);
@@ -218,7 +241,7 @@ async function getBundlesForComponentAsset(assetId) {
 // items still work is not predictable from itemRestrictions/hasResellers
 // (Roblox's migration state, not ours), this is only used as a last-resort
 // fallback for the rare asset with no collectibleItemId at all — see
-// resolveRap in robloxAvatarService.js. Documented at 50 req/60s.
+// resolveRap in services/valuationService.js. Documented at 50 req/60s.
 async function getAssetRAP(assetId) {
     const res = await limitedLegacyRapRequest(() => api.get(`https://economy.roblox.com/v1/assets/${assetId}/resale-data`));
     observeLegacyRapLimit(res.headers);
@@ -235,9 +258,9 @@ async function getAssetRAP(assetId) {
 // per-item migration state is unpredictable. For a non-Limited item it
 // returns `recentAveragePrice: null` cleanly (confirmed live) rather than
 // erroring, so it's safe to call for anything with a collectibleItemId.
-// Rate limit observed live: 50 req/60s (see robloxRequestLimiter.js's
+// Rate limit observed live: 50 req/60s (see rateLimiter.js's
 // dedicated bucket for this route). This is intentionally NOT cached in
-// assetStore (permanent storage) — a Limited's trade price is genuinely
+// assetRepository (permanent storage) — a Limited's trade price is genuinely
 // dynamic and refreshed on its own short TTL regardless of how long the
 // asset's structural record has been known; see resolveRap.
 async function getCollectibleRAP(collectibleItemId) {

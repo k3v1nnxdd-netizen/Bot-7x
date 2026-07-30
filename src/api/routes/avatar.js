@@ -2,7 +2,7 @@
 
 const express = require('express');
 const router = express.Router();
-const { buildAvatarValuation } = require('../services/robloxAvatarService');
+const { buildAvatarValuation } = require('../../services/avatarService');
 
 router.get('/:userId', async (req, res) => {
     const userId = Number(req.params.userId);

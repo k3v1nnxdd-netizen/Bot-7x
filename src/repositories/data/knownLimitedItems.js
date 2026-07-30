@@ -3,7 +3,7 @@
 // Explicit registry of confirmed Limited item ids — forces RAP-based
 // (real-time resale value) valuation for these regardless of what
 // itemRestrictions/hasResellers happen to report, as a defensive guarantee
-// on top of the automatic detection in robloxAvatarService.js
+// on top of the automatic detection in services/valuationService.js
 // (isLimitedItem). Every id below was verified live against the catalog
 // when added, and — as of that verification — every single one was ALREADY
 // correctly auto-detected as Limited by the normal heuristic

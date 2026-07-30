@@ -2,7 +2,7 @@
 
 const { EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
 const { safeDeferReply, safeReply, safeEditReply, safeFollowUp } = require('../utils/safe');
-const roblox = require('../roblox');
+const roblox = require('../src/roblox/client');
 const config = require('../config');
 const { createCoupon, getCoupon, setMessageRef } = require('../utils/coupons');
 const { buildRefRow, sendPurchaseDM } = require('../utils/purchaseDm');

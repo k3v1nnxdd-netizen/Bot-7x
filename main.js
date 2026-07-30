@@ -21,7 +21,7 @@ const { handleMessageDelete } = require('./handlers/messageDelete');
 const { handleAntiScam }  = require('./handlers/antiScam');
 const { handleSeguidoresSelect } = require('./handlers/seguidoresFlow');
 const { markInteraction } = require('./utils/spam');
-const { startServer }     = require('./server');
+const { startServer }     = require('./src/api/server');
 
 // ── Client ────────────────────────────────────────────────────────────────────
 

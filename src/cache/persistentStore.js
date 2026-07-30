@@ -1,7 +1,7 @@
 'use strict';
 
 // Generic, dependency-free, debounced JSON key-value store with durable
-// writes — the persistence layer behind services/assetStore.js.
+// writes — the persistence layer behind src/repositories/*.
 //
 // Why a hand-rolled JSON file instead of a real database: the dataset this
 // backs (Roblox asset/bundle metadata) is small (thousands, not millions, of
@@ -18,19 +18,19 @@
 // approach (re-parsing the whole file on every single operation) would be
 // far too slow for a store touched by every worn asset of every valuation.
 //
-// Storage location: STORAGE_DIR env var, defaulting to ./storage — a
-// directory that holds ONLY generated runtime data, never source code
-// (unlike data/, which holds committed .js modules alongside
-// data/groupJoins.json — mixing a Railway Volume mount into that directory
-// would risk shadowing required source files). Mounting a Railway Volume at
-// STORAGE_DIR is what turns "survives a process restart" into "survives a
-// full redeploy" too; without one, this still correctly survives the
-// restart case (crash+respawn, `railway restart`, etc.) since the
-// container's local disk persists for the container's lifetime.
+// Storage location: STORAGE_DIR env var (Railway: a Volume mounted at
+// /app/storage — see src/config/index.js), defaulting to ./storage when
+// unset — a directory that holds ONLY generated runtime data, never source
+// code (unlike data/, which holds committed .js modules alongside
+// data/groupJoins.json — mounting a Volume there would risk shadowing
+// required source files). With the Volume mounted, this survives full
+// Railway redeploys, not just process restarts.
 const fs = require('fs');
+const fsp = fs.promises;
 const path = require('path');
+const config = require('../config');
 
-const STORAGE_DIR = process.env.STORAGE_DIR || path.join(__dirname, '..', 'storage');
+const STORAGE_DIR = config.storageDir;
 
 // How long to wait after the LAST write before flushing to disk — batches a
 // burst of writes (e.g. a catalog batch resolving 40 assets at once) into
@@ -54,13 +54,48 @@ function readJsonFile(filePath) {
     }
 }
 
-function writeJsonFileAtomic(filePath, data) {
+// A unique tmp filename PER WRITE ATTEMPT (not a fixed `${filePath}.tmp`) —
+// this is what makes it safe for the periodic ASYNC flush and the
+// synchronous SHUTDOWN flush to potentially race (see flushSync/flushAsync
+// below): two writes targeting the same fixed tmp name could interleave at
+// the OS level and corrupt it before the rename ever happens; two writes
+// each to their OWN uniquely-named tmp file can't collide — whichever
+// rename lands last simply wins, and both were serializing equivalent
+// up-to-date data anyway.
+function tmpPathFor(filePath) {
+    return `${filePath}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2)}.tmp`;
+}
+
+function writeJsonFileAtomicSync(filePath, data) {
     const dir = path.dirname(filePath);
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-    const tmpPath = `${filePath}.tmp`;
+    const tmpPath = tmpPathFor(filePath);
     fs.writeFileSync(tmpPath, JSON.stringify(data), 'utf8');
     fs.renameSync(tmpPath, filePath); // atomic on the same filesystem — never leaves a half-written file as the real one
 }
+
+async function writeJsonFileAtomicAsync(filePath, data) {
+    const dir = path.dirname(filePath);
+    await fsp.mkdir(dir, { recursive: true });
+    const tmpPath = tmpPathFor(filePath);
+    await fsp.writeFile(tmpPath, JSON.stringify(data), 'utf8');
+    await fsp.rename(tmpPath, filePath);
+}
+
+// One-time startup hygiene: a process that died between writeFile and
+// rename (SIGKILL, OOM) leaves an orphaned uniquely-named .tmp file behind.
+// Harmless (never read by anything), but cheap to sweep on boot rather than
+// accumulate forever across many restarts.
+function cleanupStaleTmpFiles() {
+    try {
+        for (const entry of fs.readdirSync(STORAGE_DIR)) {
+            if (entry.endsWith('.tmp')) {
+                try { fs.unlinkSync(path.join(STORAGE_DIR, entry)); } catch { /* best-effort */ }
+            }
+        }
+    } catch { /* STORAGE_DIR may not exist yet on a brand new deploy — fine */ }
+}
+cleanupStaleTmpFiles();
 
 // Creates one named store, backed by STORAGE_DIR/<name>.json. Every store is
 // independent (its own file, its own in-memory Map) — e.g. asset records and
@@ -76,19 +111,51 @@ function createPersistentStore(name) {
     let firstDirtyAt = null;
     let dirty = false;
 
-    function flush() {
+    // Used by the periodic debounce timer — NON-blocking. The event loop
+    // stays free to handle other requests while the write completes, unlike
+    // a synchronous write which would stall EVERY concurrent request for
+    // however long the write takes. Snapshots the map synchronously (cheap —
+    // just copying references, no I/O) before the `await`, so a `.set()`
+    // that happens WHILE this write is in flight doesn't get scrambled into
+    // the payload already being serialized — it just gets marked dirty again
+    // and picked up by the next debounced flush.
+    async function flushAsync() {
         if (!dirty) return;
         dirty = false;
         firstDirtyAt = null;
         if (flushTimer) { clearTimeout(flushTimer); flushTimer = null; }
+        const snapshot = Object.fromEntries(map);
         try {
-            writeJsonFileAtomic(filePath, Object.fromEntries(map));
+            await writeJsonFileAtomicAsync(filePath, snapshot);
             metrics.flushes++;
             metrics.lastFlushAt = Date.now();
             metrics.lastFlushError = null;
         } catch (err) {
             metrics.lastFlushError = err.message;
-            console.error(`[persistentStore:${name}] Flush failed (will retry on next write):`, err.message);
+            dirty = true; // failed — leave dirty so a future write's debounce (or the shutdown flush) retries it
+            console.error(`[persistentStore:${name}] Async flush failed (will retry):`, err.message);
+        }
+    }
+
+    // Used ONLY by the shutdown hook — MUST be synchronous: Node's 'exit'
+    // event does not wait for pending Promises, so an in-flight
+    // fs.promises write would simply be abandoned when the process actually
+    // terminates. This is the one place blocking the event loop briefly is
+    // correct and necessary — the process is shutting down anyway, nothing
+    // else needs the event loop after this.
+    function flushSync() {
+        if (!dirty) return;
+        dirty = false;
+        firstDirtyAt = null;
+        if (flushTimer) { clearTimeout(flushTimer); flushTimer = null; }
+        try {
+            writeJsonFileAtomicSync(filePath, Object.fromEntries(map));
+            metrics.flushes++;
+            metrics.lastFlushAt = Date.now();
+            metrics.lastFlushError = null;
+        } catch (err) {
+            metrics.lastFlushError = err.message;
+            console.error(`[persistentStore:${name}] Shutdown flush failed:`, err.message);
         }
     }
 
@@ -100,7 +167,7 @@ function createPersistentStore(name) {
         if (flushTimer) clearTimeout(flushTimer);
         const elapsedSinceFirstDirty = now - firstDirtyAt;
         const delay = Math.min(FLUSH_DEBOUNCE_MS, Math.max(0, MAX_FLUSH_DELAY_MS - elapsedSinceFirstDirty));
-        flushTimer = setTimeout(flush, delay);
+        flushTimer = setTimeout(() => { flushAsync().catch(() => {}); }, delay);
         flushTimer.unref?.(); // never keep the process alive just to flush this on a timer — shutdown hooks flush synchronously instead
     }
 
@@ -117,7 +184,7 @@ function createPersistentStore(name) {
             metrics.writes++;
             scheduleFlush();
         },
-        flush,
+        flush: flushSync, // exposed for tests/manual use — always the safe synchronous version
         get size() { return map.size; },
         getMetrics: () => ({ ...metrics, currentSize: map.size, dirty }),
     };
@@ -146,7 +213,8 @@ function flushAll() {
 //     any script/manager that calls process.exit() directly loses
 //     everything written since the last debounced flush. Only fully
 //     SYNCHRONOUS code is guaranteed to run inside an 'exit' handler —
-//     flush() only uses writeFileSync/renameSync, so this is safe.
+//     flushAll() only calls flushSync (writeFileSync/renameSync), so this
+//     is safe.
 //   - SIGINT/SIGTERM (Ctrl+C locally, `railway restart`/redeploy, a
 //     process manager's graceful stop) — Node's DEFAULT behavior for these
 //     signals is to exit immediately; adding a listener SUPPRESSES that

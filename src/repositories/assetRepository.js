@@ -9,22 +9,21 @@
 // EXACTLY ONCE, ever, and every other player who wears it afterward (this
 // process, or any future one, even after a restart) reads it back for free.
 //
-// Two independent stores, per services/persistentStore.js:
-//   - `assets`       — one record per assetId: name/type/creator/official
-//                       flag/known price/collectibleItemId/etc.
-//   - `bundleLookup`  — one record per COMPONENT assetId: which bundle (if
-//                       any) it belongs to (see ANIMATED_FACE_ASSET_TYPES in
-//                       robloxAvatarService.js).
+// See bundleRepository.js for the sibling store (component asset -> bundle
+// mapping) — split into its own file/store since the two are conceptually
+// distinct records (an asset's own catalog data vs. which bundle a
+// component belongs to) even though both back the same "static, permanent
+// Roblox catalog facts" idea.
 //
 // What does NOT live here: RAP and lowestResalePrice-as-a-live-market-signal
-// stay in the short-TTL ephemeral cache (services/cache.js) — those are
-// genuinely dynamic (a Limited's trade price moves daily) and are refreshed
-// on their own short cycle regardless of how long an asset's structural
-// record has been known. See resolveRap in robloxAvatarService.js.
-const { createPersistentStore } = require('./persistentStore');
+// stay in the short-TTL ephemeral cache (src/cache/memoryCache.js) — those
+// are genuinely dynamic (a Limited's trade price moves daily) and are
+// refreshed on their own short cycle regardless of how long an asset's
+// structural record has been known. See resolveRap in
+// src/services/valuationService.js.
+const { createPersistentStore } = require('../cache/persistentStore');
 
 const assets = createPersistentStore('assets');
-const bundleLookup = createPersistentStore('bundleLookup');
 
 // A NO_DATA record (Roblox's catalog batch call returned no entry at all for
 // this id — deleted/moderated asset) is stable but not eternal: bounded so a
@@ -41,8 +40,6 @@ const metrics = {
     assetMisses: 0,
     noDataHits: 0,
     noDataExpired: 0,
-    bundleLookupHits: 0,
-    bundleLookupMisses: 0,
 };
 
 function key(assetId) {
@@ -50,7 +47,7 @@ function key(assetId) {
 }
 
 // Returns the stored structural record for assetId, or undefined if never
-// seen (or its NO_DATA marker expired). Shape matches roblox.js's
+// seen (or its NO_DATA marker expired). Shape matches src/roblox/client.js's
 // getAssetDetails() output exactly (name, assetType, itemRestrictions,
 // creatorName, creatorType, creatorTargetId, hasResellers, price,
 // lowestPrice, lowestResalePrice, collectibleItemId, isOffSale) plus
@@ -107,33 +104,8 @@ function setNoData(assetId) {
     assets.set(key(assetId), { noData: true, noDataAt: Date.now() });
 }
 
-// Component asset id -> matched bundle ({id, name, collectibleItemId}), or
-// `null` meaning "confirmed: this component is NOT part of a genuine
-// official Limited bundle" (e.g. a default/generic MoodAnimation that isn't
-// tied to any real animated-face item) — both outcomes are worth
-// remembering permanently, since re-hitting catalog/assets/{id}/bundles for
-// an id we've already resolved either way is pure waste. `undefined` (vs
-// `null`) means "never checked".
-function getBundleForComponent(assetId) {
-    const record = bundleLookup.get(key(assetId));
-    if (record === undefined) {
-        metrics.bundleLookupMisses++;
-        return undefined;
-    }
-    metrics.bundleLookupHits++;
-    return record.match;
-}
-
-function setBundleForComponent(assetId, match) {
-    bundleLookup.set(key(assetId), { match, storedAt: Date.now() });
-}
-
 function getMetrics() {
-    return {
-        ...metrics,
-        assets: assets.getMetrics(),
-        bundleLookup: bundleLookup.getMetrics(),
-    };
+    return { ...metrics, store: assets.getMetrics() };
 }
 
 module.exports = {
@@ -141,7 +113,5 @@ module.exports = {
     setAssetRecord,
     setNoData,
     isNoData,
-    getBundleForComponent,
-    setBundleForComponent,
     getMetrics,
 };

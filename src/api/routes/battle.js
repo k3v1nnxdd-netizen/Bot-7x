@@ -2,25 +2,7 @@
 
 const express = require('express');
 const router = express.Router();
-const { buildAvatarValuation } = require('../services/robloxAvatarService');
-
-function toPlayerSummary(data) {
-    return {
-        userId: data.userId,
-        username: data.username,
-        score: data.totalValue,
-        rap: data.totalRAP,
-        outfitValue: data.totalValue,
-        limitedCount: data.limitedCount,
-        // Set when Roblox's avatar endpoint was rate-limited and this score
-        // is based on the last CONFIRMED outfit rather than a fresh read —
-        // see getWornAssetsWithStaleFallback in robloxAvatarService.js. A
-        // competitive result built on stale data should be visibly marked
-        // as such, not silently presented as current.
-        stale: data.outfitStale,
-        staleSince: data.outfitStaleSince,
-    };
-}
+const battleService = require('../../services/battleService');
 
 router.get('/:user1/:user2', async (req, res) => {
     const id1 = Number(req.params.user1);
@@ -37,23 +19,8 @@ router.get('/:user1/:user2', async (req, res) => {
     const fresh = req.query.fresh === '1' || req.query.fresh === 'true';
 
     try {
-        const [data1, data2] = await Promise.all([
-            buildAvatarValuation(id1, { fresh }),
-            buildAvatarValuation(id2, { fresh }),
-        ]);
-
-        const player1 = toPlayerSummary(data1);
-        const player2 = toPlayerSummary(data2);
-
-        let winner = null;
-        const tie = player1.score === player2.score;
-        if (!tie) {
-            winner = player1.score > player2.score
-                ? { userId: player1.userId, username: player1.username }
-                : { userId: player2.userId, username: player2.username };
-        }
-
-        res.json({ player1, player2, winner, tie });
+        const result = await battleService.runBattle(id1, id2, { fresh });
+        res.json(result);
     } catch (err) {
         if (err?.response?.status === 404) {
             return res.status(404).json({ error: 'Uno de los usuarios de Roblox no fue encontrado' });

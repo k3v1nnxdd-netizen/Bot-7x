@@ -205,7 +205,7 @@ function makeBucket(label, { startingMaxTokens, startingWindowMs = DEFAULT_WINDO
         if (newOpenUntil > circuitOpenUntil) circuitOpenUntil = newOpenUntil; // never shorten an already-open window
         circuitBreakerActivations++;
         console.warn(
-            `[robloxRequestLimiter] Circuit OPEN para "${label}" — Roblox indicó ~${Math.round(boundedWaitMs / 1000)}s de espera` +
+            `[rateLimiter] Circuit OPEN para "${label}" — Roblox indicó ~${Math.round(boundedWaitMs / 1000)}s de espera` +
             (waitMs > boundedWaitMs ? ` (limitado a ${CIRCUIT_MAX_OPEN_MS / 60_000}min por seguridad, header pedía ${Math.round(waitMs / 1000)}s)` : '') +
             `. Todas las requests a esta ruta fallarán rápido hasta ${new Date(circuitOpenUntil).toISOString()} en vez de reintentar.`
         );
@@ -234,7 +234,7 @@ function makeBucket(label, { startingMaxTokens, startingWindowMs = DEFAULT_WINDO
         if (!observed || observed.limit <= 0) return;
         if (observed.limit === maxTokens && observed.windowMs === windowMs) return;
         console.warn(
-            `[robloxRequestLimiter] Roblox cambió el límite de "${label}": ${maxTokens} req/${windowMs / 1000}s -> ${observed.limit} req/${observed.windowMs / 1000}s. Ajustando el limitador en caliente.`
+            `[rateLimiter] Roblox cambió el límite de "${label}": ${maxTokens} req/${windowMs / 1000}s -> ${observed.limit} req/${observed.windowMs / 1000}s. Ajustando el limitador en caliente.`
         );
         maxTokens = observed.limit;
         windowMs = observed.windowMs;
@@ -276,7 +276,7 @@ function makeBucket(label, { startingMaxTokens, startingWindowMs = DEFAULT_WINDO
                 const waitMs = computeWaitMs(err);
                 const backoff = waitMs !== null ? Math.min(waitMs, INLINE_RETRY_CEILING_MS) : computeExponentialBackoffMs(attempt);
                 console.warn(
-                    `[robloxRequestLimiter] Reintentando request a Roblox (${label})`,
+                    `[rateLimiter] Reintentando request a Roblox (${label})`,
                     {
                         attempt,
                         maxRetries: MAX_RETRIES,
@@ -322,7 +322,7 @@ const bundlesBucket = makeBucket('catalog assets/bundles', { startingMaxTokens: 
 const rapBucket = makeBucket('collectible RAP', { startingMaxTokens: 50 });
 // economy.roblox.com/v1/assets/{id}/resale-data — LEGACY RAP fallback, only
 // reached when an asset has no collectibleItemId at all (rare — see
-// resolveRap in robloxAvatarService.js). Documented at 50 req/60s.
+// resolveRap in services/valuationService.js). Documented at 50 req/60s.
 const legacyRapBucket = makeBucket('legacy RAP', { startingMaxTokens: 50 });
 // avatar.roblox.com/v1/users/{id}/avatar — worn items. THE route this
 // architecture pass was triggered by: documented at ~40 req/60s, but

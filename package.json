@@ -4,7 +4,8 @@
   "description": "Discord bot for 7x Community",
   "main": "main.js",
   "scripts": {
-    "start": "node main.js"
+    "start": "node main.js",
+    "test": "node src/tests/run.js"
   },
   "dependencies": {
     "@discordjs/voice": "^0.19.2",

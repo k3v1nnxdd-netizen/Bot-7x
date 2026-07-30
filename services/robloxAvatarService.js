@@ -11,6 +11,14 @@ const { COMPONENT_TO_LIMITED_BUNDLE } = require('../data/limitedBundles');
 // accessories with resale value. Excluded entirely, per spec.
 const IGNORED_ASSET_TYPES = new Set([2, 11]);
 
+// MoodAnimation (78) and DynamicHead (79) — the two component types every
+// animated-face bundle is built from. Never worn standalone, and their bare
+// per-asset catalog data carries no price at all (confirmed live) — so any
+// one of these NOT already matched via data/limitedBundles.js gets a live
+// reverse lookup (see getBundleForComponentCached) instead of silently
+// pricing at 0.
+const ANIMATED_FACE_ASSET_TYPES = new Set([78, 79]);
+
 // Caps a single non-Limited, non-official (i.e. third-party UGC) item's
 // contribution to the score, so one absurdly-priced fake/scam UGC listing
 // can't dominate the total. Official Roblox items and anything with a real
@@ -67,6 +75,10 @@ const TTL = {
     WORN_ASSETS: 5 * 60_000,
     ASSET_DETAILS: 30 * 60_000,
     RAP: 5 * 60_000,
+    // Which bundle a component asset belongs to is essentially permanent —
+    // Roblox doesn't reshuffle bundle membership — so this can be cached far
+    // longer than anything else here without going stale.
+    BUNDLE_LOOKUP: 6 * 60 * 60_000,
     // Caches the ENTIRE valuation per user, not just the sub-pieces above —
     // a cache hit here skips every Roblox call (including the catalog batch,
     // which is what's actually been 429ing), not just some of them. Matches
@@ -123,6 +135,14 @@ function getCollectibleRapCached(collectibleItemId) {
     return cache.getOrFetch(`collectible-rap:${collectibleItemId}`, TTL.RAP, () => limitedRequest(() => roblox.getCollectibleRAP(collectibleItemId)));
 }
 
+// Reverse lookup for a bundle component asset (see ANIMATED_FACE_ASSET_TYPES
+// above) — routed through limitedCatalogRequest since it's the same
+// catalog.roblox.com domain that's already been observed 429ing in
+// production for the items/details endpoint.
+function getBundlesForComponentCached(assetId) {
+    return cache.getOrFetch(`bundle-for-asset:${assetId}`, TTL.BUNDLE_LOOKUP, () => limitedCatalogRequest(() => roblox.getBundlesForComponentAsset(assetId)));
+}
+
 // The single source of truth for "what is this avatar worth" — used
 // directly by GET /avatar/:userId and reused (called twice) by
 // GET /battle/:user1/:user2, so the valuation rules only live in one place.
@@ -172,8 +192,49 @@ async function buildAvatarValuationUncached(userId) {
 
     const detailsById = await getAssetDetailsCached(remainingAssetIds);
 
+    // Live auto-detection for animated-face bundles NOT already in
+    // data/limitedBundles.js — see ANIMATED_FACE_ASSET_TYPES and
+    // getBundlesForComponentCached above. Confirmed live: a bare
+    // MoodAnimation/DynamicHead component carries no price data of its own
+    // (it would otherwise silently value at 0), but Roblox's
+    // catalog/v1/assets/{id}/bundles endpoint resolves it straight back to
+    // its parent bundle — including live resale data — with no
+    // pre-registration needed, so a brand-new animated face still gets
+    // priced correctly the very first time anyone wears it.
+    const discoveredBundleAssetIds = new Set();
+    await Promise.all(remainingAssetIds.map(async assetId => {
+        const details = detailsById.get(assetId);
+        if (!details || !ANIMATED_FACE_ASSET_TYPES.has(details.assetType)) return;
+
+        let bundles;
+        try {
+            bundles = await getBundlesForComponentCached(assetId);
+        } catch (err) {
+            console.warn(`[robloxAvatarService] Bundle reverse-lookup failed for asset ${assetId}:`, err.message);
+            return;
+        }
+
+        const bundle = bundles.find(b =>
+            b.creator?.id === 1 &&
+            b.collectibleItemDetail &&
+            (b.itemRestrictions?.includes('Limited') || b.itemRestrictions?.includes('LimitedUnique'))
+        );
+        if (!bundle) return; // not a genuine official Limited bundle — leave it to normal per-item pricing
+
+        discoveredBundleAssetIds.add(assetId);
+        if (!matchedLimitedBundles.has(bundle.id)) {
+            matchedLimitedBundles.set(bundle.id, {
+                id: bundle.id,
+                name: bundle.name,
+                collectibleItemId: bundle.collectibleItemDetail.collectibleItemId,
+            });
+            console.log(`[robloxAvatarService] Auto-detected uncurated animated face bundle "${bundle.name}" (id=${bundle.id}) via component asset ${assetId} — consider adding it to data/limitedBundles.js as a fast-path.`);
+        }
+    }));
+
     const kept = [];
     for (const assetId of remainingAssetIds) {
+        if (discoveredBundleAssetIds.has(assetId)) continue; // now represented as a synthetic Bundle entry instead
         const details = detailsById.get(assetId);
         if (!details) continue; // deleted/moderated asset — ignore
         if (IGNORED_ASSET_TYPES.has(details.assetType)) continue; // 2D shirt/tshirt — ignore

@@ -124,6 +124,20 @@ async function getAssetDetails(assetIds) {
     return details;
 }
 
+// Reverse lookup: given a bundle COMPONENT asset id (e.g. an animated
+// face's "-Head" or "-Mood" piece, assetType 79/78), returns the bundle(s)
+// it belongs to — full details included (creator, itemRestrictions,
+// collectibleItemDetail with live price/resale data). Confirmed live: this
+// lets a worn animated-face bundle be identified and priced correctly even
+// when it isn't in data/limitedBundles.js's curated list — Roblox exposes
+// no way to enumerate "all animated face bundles" up front (catalog search
+// ignores bundleType/category filters), but resolving component -> bundle
+// on demand, per worn item, works perfectly and needs no pre-registration.
+async function getBundlesForComponentAsset(assetId) {
+    const res = await api.get(`https://catalog.roblox.com/v1/assets/${assetId}/bundles`);
+    return res.data?.data ?? [];
+}
+
 // Recent Average Price for a single Limited asset (the actual trading value,
 // distinct from lowestResalePrice). Returns null if Roblox has no resale
 // data for it. Documented at 50 req/60s — only ever called for items already
@@ -156,6 +170,7 @@ module.exports = {
     isUserInGroup,
     getWornAssetIds,
     getAssetDetails,
+    getBundlesForComponentAsset,
     getAssetRAP,
     getCollectibleRAP,
 };

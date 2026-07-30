@@ -3,7 +3,7 @@
 const roblox = require('../roblox');
 const cache = require('./cache');
 const robloxRequestLimiter = require('./robloxRequestLimiter');
-const { limitedRequest, limitedCatalogRequest, limitedBundlesRequest } = robloxRequestLimiter;
+const { limitedRequest, limitedCatalogRequest, limitedBundlesRequest, limitedRapRequest } = robloxRequestLimiter;
 const { ASSET_TO_OVERRIDE } = require('../data/officialItemValues');
 const { KNOWN_LIMITED_IDS } = require('../data/knownLimitedItems');
 const { COMPONENT_TO_LIMITED_BUNDLE } = require('../data/limitedBundles');
@@ -23,9 +23,25 @@ const ANIMATED_FACE_ASSET_TYPES = new Set([78, 79]);
 // Caps a single non-Limited, non-official (i.e. third-party UGC) item's
 // contribution to the score, so one absurdly-priced fake/scam UGC listing
 // can't dominate the total. Official Roblox items and anything with a real
-// resale market (Limiteds) are exempt — see isOfficialRobloxItem/
-// isLimitedItem below and how they're used in buildAvatarValuationUncached.
+// MARKET-VERIFIED resale value (a Limited with a real RAP — see resolveRap)
+// are exempt — see isOfficialRobloxItem/isLimitedItem below and how they're
+// used in buildAvatarValuationUncached.
 const MAX_NON_LIMITED_ITEM_VALUE = 10_000;
+
+// Same idea, same value, but a DIFFERENT case: a non-official (third-party
+// UGC) Limited that Roblox has RAP data infrastructure for but returns
+// `recentAveragePrice: null` for — meaning it has literally zero completed
+// trades yet. Its only available number is then a reseller's current ASKING
+// price (lowestResalePrice), which — unlike RAP — is just a number someone
+// typed in, not verified by any real trade. For a Roblox-made item that's
+// still fine (Roblox controls issuance directly), but for third-party UGC
+// this is exactly the "manipulated price to fake value" scenario flagged as
+// a priority to guard against, so it gets capped the same way an
+// unverified UGC list price does. Kept as its own named constant (rather
+// than reusing MAX_NON_LIMITED_ITEM_VALUE inline) so each cap site documents
+// which specific risk it's guarding against. See the accessories.map() pass
+// in valuateWornAssets below.
+const MAX_UNVERIFIED_LIMITED_VALUE = 10_000;
 
 const ASSET_TYPE_NAMES = {
     8: 'Hat', 12: 'Pants', 17: 'Head', 18: 'Face', 19: 'Gear',
@@ -48,15 +64,34 @@ function isOfficialRobloxItem(details) {
     return details.creatorType === 'User' && details.creatorTargetId === 1;
 }
 
-// True Limited/LimitedUnique tag, OR hasResellers=true (a real, currently
-// active resale market — included defensively in case a future item has an
-// active market without carrying the classic tag), OR the asset id is in
-// the explicit KNOWN_LIMITED_IDS registry (data/knownLimitedItems.js) —
-// a manually-curated safety net for specific known-important Limiteds, in
-// case the automatic signals above ever miss one.
+// True Limited/LimitedUnique/Collectible tag, OR hasResellers=true (a real,
+// currently active resale market — included defensively in case a future
+// item has an active market without carrying any of those tags), OR the
+// asset id is in the explicit KNOWN_LIMITED_IDS registry
+// (data/knownLimitedItems.js) — a manually-curated safety net for specific
+// known-important Limiteds, in case the automatic signals above ever miss
+// one.
+//
+// 'Collectible' (confirmed live, 2026-07) is Roblox's newer tag for
+// UGC-minted limited-supply items — distinct from the classic
+// 'Limited'/'LimitedUnique' tags, and NOT implied by them. Catching it here
+// matters for fraud resistance specifically: catalog search turns up UGC
+// items named "Dominus Empyreus" / "Black Sparkle Time Fedora" (creator:
+// random Group, NOT Roblox) with `price` set to 618,033,988 and
+// 987,654,321 respectively — itemRestrictions: ['Collectible'],
+// hasResellers: false. Routing anything tagged 'Collectible' through the
+// Limited/RAP pricing path means that fake `price` field is never even
+// looked at (see valuateWornAssets — the Limited branch only trusts RAP and
+// lowestResalePrice, never the creator-set `price`); both of those fake
+// items have lowestResalePrice: 0 and no RAP data (zero real trades), so
+// they correctly value at 0 either way. A genuinely-trading UGC collectible
+// (e.g. "Golden Antlers", same fake-price pattern but hasResellers: true)
+// was already caught by the hasResellers check below, and correctly prices
+// off its real RAP (1,213 — confirmed live) instead of its fake price field.
 function isLimitedItem(details, assetId) {
     return details.itemRestrictions.includes('Limited')
         || details.itemRestrictions.includes('LimitedUnique')
+        || details.itemRestrictions.includes('Collectible')
         || details.hasResellers === true
         || KNOWN_LIMITED_IDS.has(assetId);
 }
@@ -241,16 +276,80 @@ async function getAssetDetailsCached(assetIds) {
     return result;
 }
 
-function getRapCached(assetId) {
+// PRIMARY RAP path — collectibleItemId-keyed, works uniformly for classic
+// AND modern Limiteds (see roblox.js's getCollectibleRAP). Routed through
+// its own proactive token bucket (limitedRapRequest, 50 req/60s observed)
+// rather than the generic concurrency gate, same rationale as the catalog
+// buckets above. Same TTL as the legacy path: real-time market value, not a
+// fixed price, so it still needs to stay fresh.
+function getCollectibleRapCached(collectibleItemId) {
+    return cache.getOrFetch(`collectible-rap:${collectibleItemId}`, TTL.RAP, () => limitedRapRequest(() => roblox.getCollectibleRAP(collectibleItemId)));
+}
+
+// LEGACY fallback path — plain assetId-keyed, only reached when an asset has
+// no collectibleItemId at all (see resolveRap below). Kept on the generic
+// concurrency gate rather than its own bucket: expected to be hit rarely
+// enough now that a dedicated bucket isn't worth the complexity.
+function getLegacyRapCached(assetId) {
     return cache.getOrFetch(`rap:${assetId}`, TTL.RAP, () => limitedRequest(() => roblox.getAssetRAP(assetId)));
 }
 
-// Same as getRapCached, but for the newer GUID-keyed collectible economy
-// (data/limitedBundles.js — the "animated face" Limiteds) via
-// getCollectibleRAP. Same TTL: this is real-time market value, not a fixed
-// price, so it still needs to stay fresh.
-function getCollectibleRapCached(collectibleItemId) {
-    return cache.getOrFetch(`collectible-rap:${collectibleItemId}`, TTL.RAP, () => limitedRequest(() => roblox.getCollectibleRAP(collectibleItemId)));
+// Remembers "RAP is not obtainable for this asset id via any path" so a
+// worn item that structurally can't be RAP-priced (e.g. the rare asset with
+// neither a collectibleItemId nor legacy economy support) doesn't retry —
+// and fail, and log a warning — on every single valuation. Longer than
+// TTL.RAP on purpose: this isn't "the price changed", it's "this id doesn't
+// support the endpoint", a much more stable fact — but still bounded (not
+// permanent), since Roblox's ongoing migration could add collectibleItemId
+// support to an id that lacks it today.
+const RAP_NEGATIVE_TTL = 30 * 60_000;
+
+// Only a genuinely STRUCTURAL rejection (400/404 — "this id/endpoint
+// combination will never work") is negative-cached. A transient error
+// (timeout, 5xx, network blip) must NOT poison the cache — the next request
+// deserves a fresh attempt, since nothing about the asset itself was
+// confirmed unsupported.
+function isStructuralRapFailure(err) {
+    const status = err?.response?.status;
+    return status === 400 || status === 404;
+}
+
+// The single entry point for "what is this Limited's RAP" — used for both
+// normal worn Limited items and matched Limited bundles (see
+// valuateWornAssets below). Prefers collectibleItemId (the path that
+// actually works today for ~every asset, confirmed live — see roblox.js);
+// only falls back to the legacy per-assetId economy endpoint when there's no
+// collectibleItemId to use at all. Returns null (not 0) when Roblox has no
+// RAP data — callers decide how to treat "no data" themselves, since that
+// means something different for an official item vs third-party UGC (see
+// the accessories.map() pass in valuateWornAssets).
+async function resolveRap(assetId, collectibleItemId) {
+    const negKey = `no-rap:${assetId}`;
+    if (cache.get(negKey) === true) return null;
+
+    if (collectibleItemId) {
+        try {
+            return await getCollectibleRapCached(collectibleItemId);
+        } catch (err) {
+            if (!isStructuralRapFailure(err)) {
+                console.warn(`[robloxAvatarService] Collectible RAP lookup failed for asset ${assetId} (transient, will retry next time):`, err.message);
+                return null;
+            }
+            console.warn(`[robloxAvatarService] Collectible RAP lookup structurally unsupported for asset ${assetId}, trying legacy endpoint:`, err.message);
+        }
+    }
+
+    try {
+        return await getLegacyRapCached(assetId);
+    } catch (err) {
+        if (isStructuralRapFailure(err)) {
+            cache.set(negKey, true, RAP_NEGATIVE_TTL);
+            console.warn(`[robloxAvatarService] RAP unsupported for asset ${assetId} via any path — caching negative result for ${RAP_NEGATIVE_TTL / 60_000}min:`, err.message);
+        } else {
+            console.warn(`[robloxAvatarService] Legacy RAP lookup failed for asset ${assetId} (transient, will retry next time):`, err.message);
+        }
+        return null;
+    }
 }
 
 // Reverse lookup for a bundle component asset (see ANIMATED_FACE_ASSET_TYPES
@@ -281,6 +380,24 @@ async function buildAvatarValuationUncached(userId) {
         getWornAssets(userId),
     ]);
 
+    const valuation = await valuateWornAssets(wornAssetIds);
+
+    return {
+        userId,
+        username: basicInfo.username,
+        displayName: basicInfo.displayName,
+        avatarThumbnail,
+        ...valuation,
+    };
+}
+
+// The single source of truth for "what is this SET OF WORN ASSETS worth" —
+// split out from buildAvatarValuationUncached so it can be exercised
+// directly (real batching/dedup/cache/bundle-detection/RAP/pricing rules,
+// zero mocking) against an arbitrary asset id list, not just a real user's
+// live avatar. Used by both buildAvatarValuationUncached above and by
+// scripts/tests that need to validate specific asset ids end-to-end.
+async function valuateWornAssets(wornAssetIds) {
     // Detect known bundles — matched via their equipped COMPONENT assets,
     // since a bundle id is never itself a worn asset. Two kinds:
     //  - Official fixed-value bundles (Headless Horseman, Korblox, etc. —
@@ -367,49 +484,75 @@ async function buildAvatarValuationUncached(userId) {
 
     await Promise.all([
         ...kept.filter(k => k.isLimited).map(async k => {
-            try {
-                k.rap = await getRapCached(k.assetId);
-            } catch (err) {
-                // A failed RAP lookup shouldn't collapse a known-valuable Limited
-                // to 0 — fall back to whatever resale price the catalog call
-                // already gave us (still far more accurate than zeroing it out).
-                console.warn(`[robloxAvatarService] RAP lookup failed for asset ${k.assetId}, falling back to lowestResalePrice:`, err.message);
-                k.rap = k.details.lowestResalePrice || 0;
-            }
+            k.rap = await resolveRap(k.assetId, k.details.collectibleItemId);
         }),
         ...[...matchedLimitedBundles.values()].map(async bundle => {
-            try {
-                bundle.rap = await getCollectibleRapCached(bundle.collectibleItemId);
-            } catch (err) {
-                console.warn(`[robloxAvatarService] Collectible RAP lookup failed for bundle ${bundle.id} (${bundle.name}):`, err.message);
-                bundle.rap = 0;
-            }
+            // Bundles have no plain assetId of their own — bundle.id (a
+            // synthetic catalog bundle id, never itself a worn asset) is
+            // used purely as this call's negative-cache key namespace.
+            bundle.rap = await resolveRap(bundle.id, bundle.collectibleItemId);
         }),
     ]);
 
-    // Three distinct rules, per item:
-    //  - Limited (official or UGC): market-verified via RAP — real trading
-    //    activity, not something a creator can just set, so it's trusted
-    //    uncapped regardless of who made it.
-    //  - Official non-Limited (creatorTargetId 1): trusted Roblox data, used
-    //    uncapped even when Offsale/no-longer-purchasable — Korblox
-    //    Deathspeaker, for example, is Offsale with itemRestrictions:[] and
-    //    hasResellers:false, but still carries a real historical price (475)
-    //    that a null/0-only fallback chain would otherwise miss entirely.
-    //  - Third-party UGC, non-Limited: the one case actually worth
-    //    distrusting — capped, since nothing here stops a creator from
-    //    listing a reskinned freebie at an absurd price with zero market
-    //    backing to justify it.
+    // Per-item valuation. Every branch is documented because getting this
+    // wrong in either direction is the whole point of this system: undercount
+    // and the "fronteo" score is useless; overcount and it's trivially
+    // gameable with fake/manipulated listings.
+    //
+    //  - Limited, with a real RAP (recentAveragePrice from actual completed
+    //    trades — Roblox computes this server-side, no single account can
+    //    set it): trusted uncapped regardless of who made it. This is the
+    //    industry-standard "true value" signal for a Limited.
+    //  - Limited, with NO RAP (Roblox has zero completed trades for it —
+    //    returns null, confirmed live, rather than erroring): the only
+    //    number left is lowestResalePrice, a reseller's current ASKING
+    //    price — not verified by any actual trade.
+    //      - Official Roblox Limited: still trusted (Roblox controls
+    //        issuance directly; not third-party-manipulable the way a
+    //        listing price is).
+    //      - Third-party UGC Limited: capped (MAX_UNVERIFIED_LIMITED_VALUE)
+    //        — exactly the "asking price manipulated to fake value"
+    //        scenario, since nothing here confirms anyone actually paid it.
+    //  - Official non-Limited (creatorTargetId 1): trusted Roblox catalog
+    //    price, uncapped, even when Offsale/no-longer-purchasable — Korblox
+    //    Deathspeaker's components, for example, are Offsale with
+    //    itemRestrictions:[] and hasResellers:false, but still carry a real
+    //    historical `price` that a resale-only fallback chain would
+    //    otherwise miss entirely. Confirmed live against assets
+    //    553870650/833772219/99550579072279: Roblox keeps `price` populated
+    //    at its last real value after an official item goes Offsale, so no
+    //    manual registry is needed to recover it — whatever asset id shows
+    //    up worn gets this treatment automatically.
+    //  - Third-party UGC, non-Limited: the item most worth distrusting —
+    //    capped (MAX_NON_LIMITED_ITEM_VALUE), since nothing stops a creator
+    //    from listing a reskinned freebie at an absurd price with zero
+    //    market backing.
     const accessories = kept.map(({ assetId, details, isLimited, isOfficial, rap }) => {
         let price = null;
         let rapValue = null;
+        let valuationMethod;
 
         if (isLimited) {
-            rapValue = rap ?? 0;
+            if (rap != null) {
+                rapValue = rap;
+                valuationMethod = 'rap';
+            } else {
+                const askingPrice = details.lowestResalePrice ?? 0;
+                if (isOfficial) {
+                    rapValue = askingPrice;
+                    valuationMethod = askingPrice > 0 ? 'lowest_resale_fallback' : 'no_market_data';
+                } else {
+                    rapValue = Math.min(askingPrice, MAX_UNVERIFIED_LIMITED_VALUE);
+                    valuationMethod = askingPrice > 0 ? 'unverified_limited_capped' : 'no_market_data';
+                }
+            }
         } else if (isOfficial) {
-            price = details.lowestResalePrice || details.price || details.lowestPrice || 0;
+            price = details.price ?? details.lowestPrice ?? details.lowestResalePrice ?? 0;
+            valuationMethod = 'official_catalog_price';
         } else {
-            price = Math.min(details.price || details.lowestResalePrice || 0, MAX_NON_LIMITED_ITEM_VALUE);
+            const rawPrice = details.price ?? details.lowestResalePrice ?? 0;
+            price = Math.min(rawPrice, MAX_NON_LIMITED_ITEM_VALUE);
+            valuationMethod = rawPrice > MAX_NON_LIMITED_ITEM_VALUE ? 'ugc_price_capped' : 'ugc_price';
         }
 
         return {
@@ -421,6 +564,19 @@ async function buildAvatarValuationUncached(userId) {
             rap: rapValue,
             price,
             creator: details.creatorName ?? 'Desconocido',
+            // Transparency fields, additive only — rap/price above keep their
+            // original meaning/shape for existing consumers of this API.
+            // originalPrice: Roblox's own catalog list price (last known, if Offsale).
+            // lowestResalePrice: current cheapest active resale listing, if any.
+            // saleStatus: whether the item is currently purchasable from Roblox.
+            // valuationMethod: which rule actually produced estimatedValue — see
+            //   the big comment above this map() for what each method name means.
+            // estimatedValue: the one number actually counted toward totalValue.
+            originalPrice: details.price ?? null,
+            lowestResalePrice: details.lowestResalePrice ?? null,
+            saleStatus: details.isOffSale ? 'OffSale' : 'OnSale',
+            valuationMethod,
+            estimatedValue: rapValue ?? price ?? 0,
         };
     });
 
@@ -436,6 +592,11 @@ async function buildAvatarValuationUncached(userId) {
             rap: null,
             price: override.value,
             creator: 'Roblox',
+            originalPrice: override.value,
+            lowestResalePrice: null,
+            saleStatus: 'OffSale',
+            valuationMethod: 'bundle_override_fixed_price',
+            estimatedValue: override.value,
         });
     }
 
@@ -443,15 +604,21 @@ async function buildAvatarValuationUncached(userId) {
     // the collectible economy, same shape as a normal Limited item (see
     // data/limitedBundles.js).
     for (const bundle of matchedLimitedBundles.values()) {
+        const rapValue = bundle.rap ?? 0;
         accessories.push({
             assetId: bundle.id,
             name: bundle.name,
             type: 'Bundle',
             isLimited: true,
             isOfficial: true,
-            rap: bundle.rap ?? 0,
+            rap: rapValue,
             price: null,
             creator: 'Roblox',
+            originalPrice: null,
+            lowestResalePrice: null,
+            saleStatus: 'OffSale',
+            valuationMethod: bundle.rap != null ? 'bundle_rap' : 'no_market_data',
+            estimatedValue: rapValue,
         });
     }
 
@@ -460,10 +627,6 @@ async function buildAvatarValuationUncached(userId) {
     const limitedCount = accessories.filter(a => a.isLimited).length;
 
     return {
-        userId,
-        username: basicInfo.username,
-        displayName: basicInfo.displayName,
-        avatarThumbnail,
         accessories,
         totalValue: totalRAP + totalPrice,
         totalRAP,
@@ -471,4 +634,4 @@ async function buildAvatarValuationUncached(userId) {
     };
 }
 
-module.exports = { buildAvatarValuation, getMetrics };
+module.exports = { buildAvatarValuation, valuateWornAssets, getMetrics };

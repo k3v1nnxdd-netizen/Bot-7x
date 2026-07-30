@@ -82,9 +82,24 @@ function computeBackoffMs(err, attempt) {
     return Math.min(exp + jitter, MAX_BACKOFF_MS);
 }
 
-// Wraps a single Roblox call with concurrency limiting + 429 retry/backoff.
-// Non-429 errors are not retried here — they propagate immediately, same as
-// before this change, so callers' existing error handling still applies.
+// 429 (rate limited) is always retryable. A response-less error (axios sets
+// `err.response` only once the server actually answered — a timeout,
+// ECONNRESET, DNS failure, or an aborted stream leaves it undefined) is a
+// genuine transient network failure, not Roblox telling us something about
+// the request itself, so it's retried too. Any OTHER status (400, 403, 404,
+// 5xx, ...) is a real answer from Roblox and is NOT retried here — callers'
+// own error handling decides what it means. Confirmed live: under
+// concurrent load against apis.roblox.com, "stream has been aborted" was
+// observed with no `err.response` at all — before this, that request would
+// fail outright on the very first attempt instead of getting the same
+// retry/backoff treatment a 429 gets.
+function isRetryableError(err) {
+    return err?.response?.status === 429 || !err?.response;
+}
+
+// Wraps a single Roblox call with concurrency limiting + retry/backoff on
+// 429s and transient network errors (see isRetryableError). Any other error
+// propagates immediately, so callers' existing error handling still applies.
 async function limitedRequest(fn) {
     return schedule(async () => {
         let attempt = 0;
@@ -92,11 +107,11 @@ async function limitedRequest(fn) {
             try {
                 return await fn();
             } catch (err) {
-                if (err?.response?.status !== 429 || attempt >= MAX_RETRIES) throw err;
+                if (!isRetryableError(err) || attempt >= MAX_RETRIES) throw err;
                 attempt++;
                 const backoff = computeBackoffMs(err, attempt);
                 console.warn(
-    `[robloxRequestLimiter] 429 de Roblox`,
+    `[robloxRequestLimiter] Reintentando request a Roblox`,
     {
         attempt,
         maxRetries: MAX_RETRIES,
@@ -104,6 +119,7 @@ async function limitedRequest(fn) {
         url: err.config?.url,
         method: err.config?.method,
         status: err.response?.status,
+        errorCode: err.code,
         headers: err.response?.headers,
     }
 );
@@ -155,8 +171,10 @@ function makeCatalogBucket(label, startingMaxTokens) {
         tokens = Math.min(tokens, maxTokens);
     }
 
-    // Same 429 retry/backoff behavior as limitedRequest, just paced by this
-    // route's own token bucket instead of the generic concurrency gate.
+    // Same retry/backoff behavior as limitedRequest (429s AND transient
+    // response-less network errors — see isRetryableError there), just
+    // paced by this route's own token bucket instead of the generic
+    // concurrency gate.
     async function run(fn) {
         let attempt = 0;
         for (;;) {
@@ -166,12 +184,12 @@ function makeCatalogBucket(label, startingMaxTokens) {
                 return await fn();
             } catch (err) {
                 if (err?.response?.headers) observeLimit(err.response.headers);
-                if (err?.response?.status !== 429 || attempt >= MAX_RETRIES) throw err;
-                total429s++;
+                if (!isRetryableError(err) || attempt >= MAX_RETRIES) throw err;
+                if (err?.response?.status === 429) total429s++;
                 attempt++;
                 const backoff = computeBackoffMs(err, attempt);
                 console.warn(
-                    `[robloxRequestLimiter] 429 de Roblox (${label})`,
+                    `[robloxRequestLimiter] Reintentando request a Roblox (${label})`,
                     {
                         attempt,
                         maxRetries: MAX_RETRIES,
@@ -180,6 +198,7 @@ function makeCatalogBucket(label, startingMaxTokens) {
                         url: err.config?.url,
                         method: err.config?.method,
                         status: err.response?.status,
+                        errorCode: err.code,
                         headers: err.response?.headers,
                     }
                 );
@@ -203,11 +222,19 @@ const itemsDetailsBucket = makeCatalogBucket('catalog items/details', 10);
 // for auto-detection. Never observed 429ing yet, kept independent so it
 // can't starve (or be starved by) the route above.
 const bundlesBucket = makeCatalogBucket('catalog assets/bundles', 10);
+// apis.roblox.com/marketplace-sales/v1/item/{collectibleItemId}/resale-data
+// — the PRIMARY RAP source now (see roblox.js's getCollectibleRAP), called
+// for every Limited item's valuation, not just animated-face bundles like
+// before. Observed live limit: 50 req/60s. Its own dedicated bucket so a
+// burst of Limited valuations can't starve (or be starved by) the unrelated
+// catalog items/details bucket above, which is already the tightest one.
+const rapBucket = makeCatalogBucket('collectible RAP', 50);
 
 function getMetrics() {
     return {
         itemsDetails: itemsDetailsBucket.getMetrics(),
         bundles: bundlesBucket.getMetrics(),
+        rap: rapBucket.getMetrics(),
     };
 }
 
@@ -215,6 +242,7 @@ module.exports = {
     limitedRequest,
     limitedCatalogRequest: itemsDetailsBucket.run,
     limitedBundlesRequest: bundlesBucket.run,
+    limitedRapRequest: rapBucket.run,
     getMetrics,
     __test: {
         parseMinHeaderValue,

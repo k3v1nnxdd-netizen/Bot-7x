@@ -94,13 +94,29 @@ async function postCatalogDetails(assetIds) {
 // Full item details for many assets in one request, via the batched/
 // CSRF-handled catalog call. Returns
 // Map<assetId, {name, assetType, itemRestrictions, creatorName, creatorType,
-// creatorTargetId, hasResellers, price, lowestPrice, lowestResalePrice}>;
-// assets Roblox returns no data for (deleted, moderated, etc.) are simply
-// absent — callers treat "no entry" as "skip". creatorType/creatorTargetId
-// are what let a caller reliably tell an official Roblox item (creatorType
-// "User", creatorTargetId 1) apart from third-party UGC — catalog search
-// confirms plenty of UGC items reuse famous official names verbatim, so name
-// matching alone is not a safe way to detect "official".
+// creatorTargetId, hasResellers, price, lowestPrice, lowestResalePrice,
+// collectibleItemId, isOffSale}>; assets Roblox returns no data for
+// (deleted, moderated, etc.) are simply absent — callers treat "no entry" as
+// "skip". creatorType/creatorTargetId are what let a caller reliably tell an
+// official Roblox item (creatorType "User", creatorTargetId 1) apart from
+// third-party UGC — catalog search confirms plenty of UGC items reuse famous
+// official names verbatim, so name matching alone is not a safe way to
+// detect "official".
+//
+// collectibleItemId (a GUID) is the key to real-time resale/RAP data — see
+// getCollectibleRAP below. Confirmed live (2026-07): Roblox has migrated
+// essentially the ENTIRE catalog, not just modern "collectible" Limiteds, to
+// expose this field — plain off-sale non-Limited hats and decades-old
+// classic Limiteds alike all carry one now. This matters because the
+// legacy economy.roblox.com/v1/assets/{id}/resale-data endpoint (keyed by
+// plain assetId) has been observed returning 400 "The asset id is invalid"
+// for a growing, unpredictable subset of classic Limiteds mid-migration —
+// while the collectibleItemId-keyed endpoint works uniformly for all of
+// them. isOffSale distinguishes "still purchasable at `price`" from
+// "discontinued, `price` is the last known list price" for the API
+// response's transparency fields — it does NOT gate whether `price` is
+// trusted (Roblox keeps it populated either way, confirmed live against
+// assets 553870650/833772219/99550579072279).
 async function getAssetDetails(assetIds) {
     const details = new Map();
     if (assetIds.length === 0) return details;
@@ -119,6 +135,8 @@ async function getAssetDetails(assetIds) {
             price: item.price,
             lowestPrice: item.lowestPrice,
             lowestResalePrice: item.lowestResalePrice,
+            collectibleItemId: item.collectibleItemId ?? null,
+            isOffSale: item.isOffSale === true,
         });
     }
     return details;
@@ -138,23 +156,36 @@ async function getBundlesForComponentAsset(assetId) {
     return res.data?.data ?? [];
 }
 
-// Recent Average Price for a single Limited asset (the actual trading value,
-// distinct from lowestResalePrice). Returns null if Roblox has no resale
-// data for it. Documented at 50 req/60s — only ever called for items already
-// confirmed Limited, so this is never a practical concern per-request.
+// LEGACY fallback only — see getCollectibleRAP below, which is now the
+// PRIMARY RAP source for essentially every Limited (classic or modern).
+// Recent Average Price for a single Limited asset, keyed by plain assetId,
+// via the old per-asset economy. Returns null if Roblox has no resale data
+// for it. Confirmed live (2026-07): this endpoint now 400s ("The asset id is
+// invalid") for a growing, unpredictable subset of classic Limiteds as
+// Roblox migrates them to the unified collectible economy — e.g. Pinstripe
+// Fedora (14463095) and Bunny Ears (1080949) both 400 here today, while
+// Valkyrie Helm and Dominus Praefectus still happen to work. Since which
+// items still work is not predictable from itemRestrictions/hasResellers
+// (Roblox's migration state, not ours), this is only used as a last-resort
+// fallback for the rare asset with no collectibleItemId at all — see
+// resolveRap in robloxAvatarService.js. Documented at 50 req/60s.
 async function getAssetRAP(assetId) {
     const res = await api.get(`https://economy.roblox.com/v1/assets/${assetId}/resale-data`);
     return res.data?.recentAveragePrice ?? null;
 }
 
-// Same idea as getAssetRAP, but for Roblox's newer GUID-keyed collectible
-// economy (e.g. the newer "animated face" Limiteds — Snowflake Eyes, Beast
-// Mode, etc.) — the classic economy.roblox.com/v1/assets/{id}/resale-data
-// endpoint rejects their asset ids outright ("The asset id is invalid"),
-// since they're not tracked in the legacy per-asset economy at all. This
-// endpoint takes the item's `collectibleItemId` (a GUID, present on the
-// catalog item's own details) instead, and returns the same
-// `recentAveragePrice` field.
+// PRIMARY RAP source for both classic Limiteds (Pinstripe Fedora, Valkyrie
+// Helm, ...) and Roblox's newer GUID-keyed collectible Limiteds (the
+// "animated face" bundles — Snowflake Eyes, Beast Mode, etc.). Confirmed
+// live (2026-07): virtually every catalog item — Limited or not, decades-old
+// or brand new — now carries a `collectibleItemId` (see getAssetDetails
+// above), and this endpoint resolves real recentAveragePrice/volume data for
+// all of them uniformly, unlike the legacy per-assetId endpoint above whose
+// per-item migration state is unpredictable. For a non-Limited item it
+// returns `recentAveragePrice: null` cleanly (confirmed live) rather than
+// erroring, so it's safe to call for anything with a collectibleItemId.
+// Rate limit observed live: 50 req/60s (see robloxRequestLimiter.js's
+// dedicated bucket for this route).
 async function getCollectibleRAP(collectibleItemId) {
     const res = await api.get(`https://apis.roblox.com/marketplace-sales/v1/item/${collectibleItemId}/resale-data`);
     return res.data?.recentAveragePrice ?? null;

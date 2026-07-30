@@ -23,6 +23,14 @@ router.get('/:userId', async (req, res) => {
         if (err?.response?.status === 404) {
             return res.status(404).json({ error: 'Usuario de Roblox no encontrado' });
         }
+        // Only reachable when Roblox is confirmed rate-limited AND there was
+        // no last-known-good outfit to fall back on for this user (a brand
+        // new userId this process has never seen) — see
+        // getWornAssetsWithStaleFallback. 503 + retryAt lets the game
+        // distinguish "try again shortly" from a real failure.
+        if (err?.circuitOpen) {
+            return res.status(503).json({ error: 'Roblox está temporalmente limitado, intenta de nuevo en unos segundos', retryAt: new Date(err.retryAt).toISOString() });
+        }
         console.error('[api] /avatar error:', err.message);
         res.status(502).json({ error: 'Error al consultar la API de Roblox' });
     }

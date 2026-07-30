@@ -12,6 +12,13 @@ function toPlayerSummary(data) {
         rap: data.totalRAP,
         outfitValue: data.totalValue,
         limitedCount: data.limitedCount,
+        // Set when Roblox's avatar endpoint was rate-limited and this score
+        // is based on the last CONFIRMED outfit rather than a fresh read —
+        // see getWornAssetsWithStaleFallback in robloxAvatarService.js. A
+        // competitive result built on stale data should be visibly marked
+        // as such, not silently presented as current.
+        stale: data.outfitStale,
+        staleSince: data.outfitStaleSince,
     };
 }
 
@@ -50,6 +57,9 @@ router.get('/:user1/:user2', async (req, res) => {
     } catch (err) {
         if (err?.response?.status === 404) {
             return res.status(404).json({ error: 'Uno de los usuarios de Roblox no fue encontrado' });
+        }
+        if (err?.circuitOpen) {
+            return res.status(503).json({ error: 'Roblox está temporalmente limitado, intenta de nuevo en unos segundos', retryAt: new Date(err.retryAt).toISOString() });
         }
         console.error('[api] /battle error:', err.message);
         res.status(502).json({ error: 'Error al consultar la API de Roblox' });

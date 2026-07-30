@@ -3,3 +3,9 @@ node_modules/
 scratch-test-*.js
 data/groupJoins.json
 data/groupJoins.json.tmp
+
+# Generated at runtime by services/persistentStore.js (assetStore.js) — the
+# global, persistent per-assetId Roblox catalog cache. Never source code;
+# safe to be absent/empty on first boot. For persistence across Railway
+# REDEPLOYS (not just process restarts), mount a Railway Volume here.
+storage/

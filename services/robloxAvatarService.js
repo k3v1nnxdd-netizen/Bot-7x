@@ -2,8 +2,9 @@
 
 const roblox = require('../roblox');
 const cache = require('./cache');
+const assetStore = require('./assetStore');
 const robloxRequestLimiter = require('./robloxRequestLimiter');
-const { limitedRequest, limitedCatalogRequest, limitedBundlesRequest, limitedRapRequest } = robloxRequestLimiter;
+const { CircuitOpenError } = robloxRequestLimiter;
 const { ASSET_TO_OVERRIDE } = require('../data/officialItemValues');
 const { KNOWN_LIMITED_IDS } = require('../data/knownLimitedItems');
 const { COMPONENT_TO_LIMITED_BUNDLE } = require('../data/limitedBundles');
@@ -25,7 +26,7 @@ const ANIMATED_FACE_ASSET_TYPES = new Set([78, 79]);
 // can't dominate the total. Official Roblox items and anything with a real
 // MARKET-VERIFIED resale value (a Limited with a real RAP — see resolveRap)
 // are exempt — see isOfficialRobloxItem/isLimitedItem below and how they're
-// used in buildAvatarValuationUncached.
+// used in valuateWornAssets.
 const MAX_NON_LIMITED_ITEM_VALUE = 10_000;
 
 // Same idea, same value, but a DIFFERENT case: a non-official (third-party
@@ -96,7 +97,11 @@ function isLimitedItem(details, assetId) {
         || KNOWN_LIMITED_IDS.has(assetId);
 }
 
-// Cache TTLs.
+// Cache TTLs — only for genuinely DYNAMIC, per-user or per-market data.
+// Structural per-asset data (name/creator/official price/bundle mapping)
+// is NOT here anymore — it lives in services/assetStore.js, permanently
+// and persistently, since it doesn't change per-player or over time the way
+// everything below does. See assetStore.js's module docstring.
 //
 // WORN_ASSETS/FULL_VALUATION were previously 5 minutes each, which caused a
 // real bug: a player who changes outfit in Roblox and immediately checks
@@ -106,94 +111,117 @@ function isLimitedItem(details, assetId) {
 // keep the inflated cached score). That 5-min figure came from conflating
 // two DIFFERENT Roblox resources: avatar.roblox.com/v1/users/{id}/avatar —
 // confirmed live to send `cache-control: no-cache`, i.e. Roblox itself never
-// serves a stale worn-items list, it's cheap (documented 40 req/60s, no bulk
-// alternative), and it changes the instant a player re-equips something —
-// versus catalog.roblox.com/v1/catalog/items/details, the genuinely scarce
-// resource (tightened live to as little as 1 req/60s). Those are already
-// fully decoupled: item PRICING is cached by ASSET id (ASSET_DETAILS, below)
-// and shared across every player wearing that item, completely independent
-// of any single player's own outfit-check frequency. So shortening
-// WORN_ASSETS/FULL_VALUATION does NOT increase load on the scarce resource
-// at all — it only increases calls to the cheap, always-fresh avatar
-// endpoint, which is exactly what needs to happen for a "did they change
-// clothes" check to actually be trustworthy. 20s keeps real burst protection
-// (repeated UI refreshes, two /battle calls landing on the same player close
-// together) while keeping staleness low enough to not matter in practice.
-// Callers that need a hard freshness guarantee regardless (e.g. right before
-// recording a competitive /battle result) can force a live re-check via
-// buildAvatarValuation(userId, { fresh: true }) — see below.
+// serves a stale worn-items list — versus catalog.roblox.com/v1/catalog/
+// items/details, the genuinely scarce resource (tightened live to as little
+// as 1 req/60s). Those are already fully decoupled: item PRICING is stored
+// by ASSET id (assetStore) and shared across every player wearing that item,
+// completely independent of any single player's own outfit-check frequency.
+// So shortening WORN_ASSETS/FULL_VALUATION does NOT increase load on the
+// scarce resource at all. Callers that need a hard freshness guarantee
+// regardless (e.g. right before recording a competitive /battle result) can
+// force a live re-check via buildAvatarValuation(userId, { fresh: true }) —
+// see below — WITHOUT ever touching assetStore (structural data is never
+// invalidated by `fresh`, on purpose — see that function's docstring).
 //
 // THUMBNAIL (the rendered avatar image) is also confirmed `cache-control:
 // no-cache` on Roblox's side, but a full re-render after an outfit change
 // has its own inherent server-side lag on Roblox's end regardless of how
 // fast we re-check — so it's less urgent than the VALUE being right, and
-// kept a bit longer (60s, still 10x shorter than the old 10min) purely to
-// cut request volume for something that isn't the actual bug being fixed.
-//
-// ASSET_DETAILS ("accesorios" — name/type/price/creator) is intentionally
-// kept long: that data barely ever changes, and a longer TTL means FEWER
-// requests to Roblox, not more. 4h keeps a request queued behind catalog's
-// 1-token bucket the rare exception instead of the norm, at the cost of
-// item price/name changes taking up to 4h to show up (an acceptable trade —
-// official item prices essentially never change post-release).
+// kept a bit longer (60s) purely to cut request volume for something that
+// isn't the actual bug being fixed.
 const TTL = {
     USER_INFO: 30 * 60_000,
     THUMBNAIL: 60_000,
     WORN_ASSETS: 20_000,
-    ASSET_DETAILS: 4 * 60 * 60_000,
     RAP: 5 * 60_000,
-    // Which bundle a component asset belongs to is essentially permanent —
-    // Roblox doesn't reshuffle bundle membership — so this can be cached far
-    // longer than anything else here without going stale.
-    BUNDLE_LOOKUP: 6 * 60 * 60_000,
-    // Caches the ENTIRE valuation per user, not just the sub-pieces above —
-    // a cache hit here skips every Roblox call, not just some of them.
-    // Matches WORN_ASSETS since that's already the outfit-freshness ceiling;
-    // there's no point re-deriving the same result from unchanged worn items
-    // sooner than that.
     FULL_VALUATION: 20_000,
 };
 
-// Lightweight in-memory counters — no external dependency, just enough to
-// answer "is batching/dedup actually working" from the logs or a quick
-// script under concurrent load, without guessing from timing alone.
+// Lightweight in-memory counters — enough to answer "is batching/dedup/
+// persistence actually working" from the logs or a script under concurrent
+// load, without guessing from timing alone. assetStore/robloxRequestLimiter
+// contribute their own sub-metrics — see getMetrics().
 const metrics = {
-    assetDetailCacheHits: 0,          // resolved from cache.js, no fetch needed at all
-    assetDetailDeduped: 0,            // joined an already-scheduled/in-flight fetch for that id
-    assetDetailFetchesScheduled: 0,   // genuinely new ids scheduled into a batch
-    assetDetailBatchesSent: 0,        // real POST calls actually sent to catalog.roblox.com
+    assetDetailPersistentHits: 0,    // resolved from assetStore, no Roblox call needed at all
+    assetDetailDeduped: 0,           // joined an already-scheduled/in-flight fetch for that id
+    assetDetailFetchesScheduled: 0,  // genuinely new ids scheduled into a batch
+    assetDetailBatchesSent: 0,       // real POST calls actually sent to catalog.roblox.com
+    bundleLookupDeduped: 0,          // joined an already in-flight bundle reverse-lookup
+    staleWornAssetFallbacks: 0,      // times a rate-limited avatar check served a last-known-good outfit instead of failing
 };
 
 function getMetrics() {
-    return { ...metrics, requestLimiter: robloxRequestLimiter.getMetrics() };
+    return { ...metrics, assetStore: assetStore.getMetrics(), requestLimiter: robloxRequestLimiter.getMetrics() };
 }
 
-async function getUserBasicInfo(userId) {
-    return cache.getOrFetch(`user:${userId}`, TTL.USER_INFO, () => limitedRequest(async () => {
+function getUserBasicInfo(userId) {
+    return cache.getOrFetch(`user:${userId}`, TTL.USER_INFO, async () => {
         const profile = await roblox.getUserProfile(userId);
         return { username: profile.name, displayName: profile.displayName };
-    }));
+    });
 }
 
 function getAvatarThumbnail(userId) {
-    return cache.getOrFetch(`thumb:${userId}`, TTL.THUMBNAIL, () => limitedRequest(() => roblox.getAvatarImage(userId)));
+    return cache.getOrFetch(`thumb:${userId}`, TTL.THUMBNAIL, () => roblox.getAvatarImage(userId));
 }
 
-function getWornAssets(userId) {
-    return cache.getOrFetch(`worn:${userId}`, TTL.WORN_ASSETS, () => limitedRequest(() => roblox.getWornAssetIds(userId)));
+// Last known-good worn-items list per userId, kept independent of the short
+// TTL cache above — this is what makes the stale-fallback below possible.
+// Only ever updated on a genuinely successful live fetch (see
+// getWornAssetsWithStaleFallback), never on a stale-served response, so it
+// always reflects "the last time we ACTUALLY confirmed this from Roblox".
+// Unbounded by userId count is fine at this project's realistic scale (a
+// Discord community, not millions of MAU) — bounded by age instead via the
+// periodic sweep below, consistent with cache.js's own cleanup pattern.
+const lastKnownWornAssets = new Map(); // userId -> { assetIds, fetchedAt }
+const LAST_KNOWN_MAX_AGE_MS = 24 * 60 * 60_000;
+
+setInterval(() => {
+    const cutoff = Date.now() - LAST_KNOWN_MAX_AGE_MS;
+    for (const [userId, entry] of lastKnownWornAssets) {
+        if (entry.fetchedAt < cutoff) lastKnownWornAssets.delete(userId);
+    }
+}, 60 * 60_000).unref();
+
+// Fetches the user's currently-worn asset ids, with a narrow, explicit
+// stale-data fallback: if Roblox's avatar endpoint is CONFIRMED rate-limited
+// right now (the bucket's circuit is open — see robloxRequestLimiter.js —
+// or Roblox answered with a 429 even after retries) AND we have a
+// previously-confirmed-live outfit for this exact user, serve THAT instead
+// of failing the whole valuation, clearly flagged as stale so callers (and
+// ultimately /battle, which cares most) know not to treat it as guaranteed
+// current. Deliberately narrow: any OTHER error (user not found, deleted
+// account, genuine network failure with no prior data) still propagates —
+// masking those with old data would be actively wrong, not just imprecise.
+async function getWornAssetsWithStaleFallback(userId) {
+    try {
+        const assetIds = await cache.getOrFetch(`worn:${userId}`, TTL.WORN_ASSETS, () => roblox.getWornAssetIds(userId));
+        lastKnownWornAssets.set(userId, { assetIds, fetchedAt: Date.now() });
+        return { assetIds, stale: false, staleSince: null };
+    } catch (err) {
+        const isRateLimited = err instanceof CircuitOpenError || err?.response?.status === 429;
+        const last = lastKnownWornAssets.get(userId);
+        if (isRateLimited && last) {
+            metrics.staleWornAssetFallbacks++;
+            console.warn(
+                `[robloxAvatarService] avatar.roblox.com rate-limited for user ${userId} — sirviendo el último outfit confirmado (${new Date(last.fetchedAt).toISOString()}) marcado como stale, en vez de fallar la valoración.`
+            );
+            return { assetIds: last.assetIds, stale: true, staleSince: last.fetchedAt };
+        }
+        throw err;
+    }
 }
 
 // ── Batched + deduplicated asset-details fetch ─────────────────────────────
 // catalog.roblox.com/v1/catalog/items/details has been observed throttled by
-// Roblox down to as little as 1 request/60s (see robloxRequestLimiter.js) —
-// under concurrent /avatar traffic, every avoidable call directly costs
-// everyone behind it another 60s of queued latency. Every OTHER Roblox
-// lookup in this file gets cache-first + in-flight dedup for free via
-// cache.getOrFetch, but that helper is one-key-in-one-value-out and can't
-// express "many ids batched into one call" — so this is a small dedicated
-// loader doing the same job for the one path that needs real batching:
-//   1. Cache-first — an id already cached (including a cached "confirmed no
-//      data" result, see NO_DATA below) is never re-fetched.
+// Roblox down to as little as 1 request/60s — under concurrent /avatar
+// traffic, every avoidable call directly costs everyone behind it another
+// 60s of queued latency. This is the one path that needs real batching
+// ACROSS different concurrent callers, on top of assetStore's permanent,
+// cross-PROCESS-RESTART cache:
+//   1. Persistent-store-first — an id already known (including a stored
+//      "confirmed no data" result) is NEVER re-fetched, this run or any
+//      future one, even after a restart. See services/assetStore.js.
 //   2. In-flight dedup — if id X is already scheduled or mid-fetch (this
 //      batch or a still-retrying previous one), a new caller asking for X
 //      joins that exact same Promise instead of scheduling a duplicate.
@@ -201,10 +229,10 @@ function getWornAssets(userId) {
 //      /avatar calls within a short window are folded into ONE POST,
 //      instead of one POST per caller.
 
-// Distinguishes "confirmed: Roblox has no data for this id" (deleted/
-// moderated asset) from "not yet fetched" — cache.get() returns undefined
-// for both a miss AND an expired entry, so a real cacheable value is needed
-// to remember "no data" and stop re-fetching it on every single request.
+// Distinguishes "confirmed: Roblox has no data for this id" from "not yet
+// fetched" for the in-flight promise machinery below — assetStore has its
+// own equivalent (isNoData) for the persisted record shape; this symbol is
+// purely an implementation detail of fetchAssetDetail/flushAssetBatch.
 const NO_DATA = Symbol('no-data');
 
 // Roblox's own per-call limit for this endpoint isn't documented; this just
@@ -237,14 +265,20 @@ async function flushAssetBatch() {
     for (let i = 0; i < ids.length; i += MAX_BATCH_SIZE) {
         const chunk = ids.slice(i, i + MAX_BATCH_SIZE);
         try {
-            // catalog.roblox.com specifically — routed through its own
-            // proactive, self-adjusting token bucket, not the generic gate.
+            // roblox.js already rate-limits/circuit-breaks this route
+            // internally (catalog items/details bucket) — no wrapping
+            // needed here anymore.
             metrics.assetDetailBatchesSent++;
-            const fresh = await limitedCatalogRequest(() => roblox.getAssetDetails(chunk));
+            const fresh = await roblox.getAssetDetails(chunk);
             for (const id of chunk) {
-                const details = fresh.get(id) ?? NO_DATA;
-                cache.set(`asset:${id}`, details, TTL.ASSET_DETAILS);
-                pendingAssetFetches.get(id)?.resolve(details);
+                const details = fresh.get(id);
+                if (details) {
+                    assetStore.setAssetRecord(id, details);
+                    pendingAssetFetches.get(id)?.resolve(details);
+                } else {
+                    assetStore.setNoData(id);
+                    pendingAssetFetches.get(id)?.resolve(NO_DATA);
+                }
                 pendingAssetFetches.delete(id);
             }
         } catch (err) {
@@ -252,7 +286,10 @@ async function flushAssetBatch() {
             // unrelated id from a different chunk/wave — each id's own
             // waiter is rejected individually; getAssetDetailsCached below
             // treats a per-id failure as "no data" for that id alone rather
-            // than collapsing the whole valuation.
+            // than collapsing the whole valuation. Deliberately NOT
+            // persisted as NO_DATA — a fetch failure (429, network error,
+            // circuit open) says nothing about whether Roblox actually has
+            // data for this id, unlike a successful call that just omits it.
             for (const id of chunk) {
                 pendingAssetFetches.get(id)?.reject(err);
                 pendingAssetFetches.delete(id);
@@ -281,13 +318,13 @@ function fetchAssetDetail(assetId) {
 
 async function getAssetDetailsCached(assetIds) {
     const result = new Map();
-    const uniqueIds = [...new Set(assetIds)]; // dedupe before touching cache or scheduling anything
+    const uniqueIds = [...new Set(assetIds)]; // dedupe before touching the store or scheduling anything
 
     await Promise.all(uniqueIds.map(async id => {
-        const cached = cache.get(`asset:${id}`);
-        if (cached !== undefined) {
-            metrics.assetDetailCacheHits++;
-            if (cached !== NO_DATA) result.set(id, cached);
+        const stored = assetStore.getAssetRecord(id);
+        if (stored !== undefined) {
+            metrics.assetDetailPersistentHits++;
+            if (!assetStore.isNoData(stored)) result.set(id, stored);
             return;
         }
         try {
@@ -302,21 +339,18 @@ async function getAssetDetailsCached(assetIds) {
 }
 
 // PRIMARY RAP path — collectibleItemId-keyed, works uniformly for classic
-// AND modern Limiteds (see roblox.js's getCollectibleRAP). Routed through
-// its own proactive token bucket (limitedRapRequest, 50 req/60s observed)
-// rather than the generic concurrency gate, same rationale as the catalog
-// buckets above. Same TTL as the legacy path: real-time market value, not a
-// fixed price, so it still needs to stay fresh.
+// AND modern Limiteds (see roblox.js's getCollectibleRAP). Ephemeral,
+// short-TTL: this is real-time market value, not a fixed price, so unlike
+// assetStore's structural records it MUST be refreshed regularly rather
+// than trusted forever.
 function getCollectibleRapCached(collectibleItemId) {
-    return cache.getOrFetch(`collectible-rap:${collectibleItemId}`, TTL.RAP, () => limitedRapRequest(() => roblox.getCollectibleRAP(collectibleItemId)));
+    return cache.getOrFetch(`collectible-rap:${collectibleItemId}`, TTL.RAP, () => roblox.getCollectibleRAP(collectibleItemId));
 }
 
 // LEGACY fallback path — plain assetId-keyed, only reached when an asset has
-// no collectibleItemId at all (see resolveRap below). Kept on the generic
-// concurrency gate rather than its own bucket: expected to be hit rarely
-// enough now that a dedicated bucket isn't worth the complexity.
+// no collectibleItemId at all (see resolveRap below).
 function getLegacyRapCached(assetId) {
-    return cache.getOrFetch(`rap:${assetId}`, TTL.RAP, () => limitedRequest(() => roblox.getAssetRAP(assetId)));
+    return cache.getOrFetch(`rap:${assetId}`, TTL.RAP, () => roblox.getAssetRAP(assetId));
 }
 
 // Remembers "RAP is not obtainable for this asset id via any path" so a
@@ -326,14 +360,16 @@ function getLegacyRapCached(assetId) {
 // TTL.RAP on purpose: this isn't "the price changed", it's "this id doesn't
 // support the endpoint", a much more stable fact — but still bounded (not
 // permanent), since Roblox's ongoing migration could add collectibleItemId
-// support to an id that lacks it today.
+// support to an id that lacks it today. Deliberately ephemeral (cache.js),
+// NOT in assetStore: unlike genuinely structural facts, this could
+// legitimately change as Roblox's migration progresses.
 const RAP_NEGATIVE_TTL = 30 * 60_000;
 
 // Only a genuinely STRUCTURAL rejection (400/404 — "this id/endpoint
 // combination will never work") is negative-cached. A transient error
-// (timeout, 5xx, network blip) must NOT poison the cache — the next request
-// deserves a fresh attempt, since nothing about the asset itself was
-// confirmed unsupported.
+// (timeout, 5xx, network blip, or the bucket's circuit being open) must NOT
+// poison the cache — the next request deserves a fresh attempt, since
+// nothing about the asset itself was confirmed unsupported.
 function isStructuralRapFailure(err) {
     const status = err?.response?.status;
     return status === 400 || status === 404;
@@ -378,12 +414,41 @@ async function resolveRap(assetId, collectibleItemId) {
 }
 
 // Reverse lookup for a bundle component asset (see ANIMATED_FACE_ASSET_TYPES
-// above) — routed through its own independent bucket (limitedBundlesRequest)
-// rather than sharing limitedCatalogRequest's, since that one has been
-// observed tightened by Roblox to as little as 1 request/60s; sharing it
-// would let this unrelated route starve (or be starved by) that bottleneck.
-function getBundlesForComponentCached(assetId) {
-    return cache.getOrFetch(`bundle-for-asset:${assetId}`, TTL.BUNDLE_LOOKUP, () => limitedBundlesRequest(() => roblox.getBundlesForComponentAsset(assetId)));
+// above): given a component id, resolves + PERMANENTLY remembers (via
+// assetStore) which genuine official Limited bundle it belongs to, if any —
+// `null` is a valid, persisted answer meaning "confirmed not part of one".
+// In-flight dedup (pendingBundleLookups) covers the gap assetStore itself
+// doesn't (it's a synchronous Map, not a cache.getOrFetch-style
+// promise-sharing helper) — without it, N concurrent players wearing the
+// same brand-new animated face would trigger N identical reverse-lookups.
+const pendingBundleLookups = new Map(); // assetId -> Promise<match | null>
+
+async function getBundleForComponentCached(assetId) {
+    const stored = assetStore.getBundleForComponent(assetId);
+    if (stored !== undefined) return stored;
+
+    if (pendingBundleLookups.has(assetId)) {
+        metrics.bundleLookupDeduped++;
+        return pendingBundleLookups.get(assetId);
+    }
+
+    const promise = (async () => {
+        try {
+            const bundles = await roblox.getBundlesForComponentAsset(assetId);
+            const found = bundles.find(b =>
+                b.creator?.id === 1 &&
+                b.collectibleItemDetail &&
+                (b.itemRestrictions?.includes('Limited') || b.itemRestrictions?.includes('LimitedUnique'))
+            );
+            const match = found ? { id: found.id, name: found.name, collectibleItemId: found.collectibleItemDetail.collectibleItemId } : null;
+            assetStore.setBundleForComponent(assetId, match);
+            return match;
+        } finally {
+            pendingBundleLookups.delete(assetId);
+        }
+    })();
+    pendingBundleLookups.set(assetId, promise);
+    return promise;
 }
 
 // The single source of truth for "what is this avatar worth" — used
@@ -393,16 +458,24 @@ function getBundlesForComponentCached(assetId) {
 // result (so a user queried again soon skips every Roblox call, not just
 // some), and in-flight dedup for free (two concurrent requests for the same
 // userId — e.g. that user showing up in two different /battle calls at
-// once — join the same in-flight computation instead of running it twice).
+// once, or several concurrent `fresh` battle-result requests for the same
+// userId — join the same in-flight computation instead of running it
+// twice: cache.invalidate only clears the completed-value slot, never an
+// ALREADY in-flight promise, so a burst of simultaneous callers all land on
+// the same single recomputation regardless of how many separately called
+// `fresh: true`).
 //
-// `fresh: true` forces a guaranteed-live recheck, bypassing TTL.FULL_VALUATION
-// and TTL.WORN_ASSETS entirely for this call — for callers where a stale
-// (even 20s-stale) outfit snapshot is unacceptable, e.g. right before
-// recording a competitive /battle result, where a 20s cache window would
-// otherwise be a real (if narrow) window to game the score by briefly
-// wearing something expensive. Normal /avatar traffic should NOT pass this —
-// it turns off burst protection for that one call, and the default 20s
-// window is already short enough that nobody will notice it.
+// `fresh: true` forces a guaranteed-live recheck of the OUTFIT specifically
+// — it invalidates `valuation:${userId}` and `worn:${userId}` ONLY.
+// Deliberately does NOT touch assetStore (structural per-asset data:
+// names/prices/bundle mappings) or the RAP cache — those describe the
+// ASSET, not the PLAYER, so "this player wants a fresh check" has no
+// bearing on whether item 833772219 is still named "Amethyst Antlers" or
+// still costs 2500. Re-fetching known items' catalog data on every
+// fresh=1 would reintroduce exactly the catalog/items/details load this
+// whole pass exists to eliminate, for zero benefit — a player changing
+// clothes can only ever change WHICH known (or newly-discovered) assetIds
+// they're wearing, never what those assetIds mean.
 function buildAvatarValuation(userId, { fresh = false } = {}) {
     const key = `valuation:${userId}`;
     if (fresh) {
@@ -413,13 +486,13 @@ function buildAvatarValuation(userId, { fresh = false } = {}) {
 }
 
 async function buildAvatarValuationUncached(userId) {
-    const [basicInfo, avatarThumbnail, wornAssetIds] = await Promise.all([
+    const [basicInfo, avatarThumbnail, wornResult] = await Promise.all([
         getUserBasicInfo(userId),
         getAvatarThumbnail(userId),
-        getWornAssets(userId),
+        getWornAssetsWithStaleFallback(userId),
     ]);
 
-    const valuation = await valuateWornAssets(wornAssetIds);
+    const valuation = await valuateWornAssets(wornResult.assetIds);
 
     return {
         userId,
@@ -427,15 +500,20 @@ async function buildAvatarValuationUncached(userId) {
         displayName: basicInfo.displayName,
         avatarThumbnail,
         ...valuation,
+        // Set only when the avatar endpoint was confirmed rate-limited and
+        // this outfit is a last-known-good fallback rather than a fresh
+        // read — see getWornAssetsWithStaleFallback.
+        outfitStale: wornResult.stale,
+        outfitStaleSince: wornResult.stale ? new Date(wornResult.staleSince).toISOString() : null,
     };
 }
 
 // The single source of truth for "what is this SET OF WORN ASSETS worth" —
 // split out from buildAvatarValuationUncached so it can be exercised
-// directly (real batching/dedup/cache/bundle-detection/RAP/pricing rules,
-// zero mocking) against an arbitrary asset id list, not just a real user's
-// live avatar. Used by both buildAvatarValuationUncached above and by
-// scripts/tests that need to validate specific asset ids end-to-end.
+// directly (real batching/dedup/persistent-store/bundle-detection/RAP/
+// pricing rules, zero mocking) against an arbitrary asset id list, not just
+// a real user's live avatar. Used by both buildAvatarValuationUncached above
+// and by scripts/tests that need to validate specific asset ids end-to-end.
 async function valuateWornAssets(wornAssetIds) {
     // Detect known bundles — matched via their equipped COMPONENT assets,
     // since a bundle id is never itself a worn asset. Two kinds:
@@ -469,41 +547,32 @@ async function valuateWornAssets(wornAssetIds) {
 
     // Live auto-detection for animated-face bundles NOT already in
     // data/limitedBundles.js — see ANIMATED_FACE_ASSET_TYPES and
-    // getBundlesForComponentCached above. Confirmed live: a bare
+    // getBundleForComponentCached above. Confirmed live: a bare
     // MoodAnimation/DynamicHead component carries no price data of its own
     // (it would otherwise silently value at 0), but Roblox's
     // catalog/v1/assets/{id}/bundles endpoint resolves it straight back to
     // its parent bundle — including live resale data — with no
     // pre-registration needed, so a brand-new animated face still gets
-    // priced correctly the very first time anyone wears it.
+    // priced correctly the very first time anyone wears it (and every
+    // subsequent time, for any player, is a persistent-store hit).
     const discoveredBundleAssetIds = new Set();
     await Promise.all(remainingAssetIds.map(async assetId => {
         const details = detailsById.get(assetId);
         if (!details || !ANIMATED_FACE_ASSET_TYPES.has(details.assetType)) return;
 
-        let bundles;
+        let match;
         try {
-            bundles = await getBundlesForComponentCached(assetId);
+            match = await getBundleForComponentCached(assetId);
         } catch (err) {
             console.warn(`[robloxAvatarService] Bundle reverse-lookup failed for asset ${assetId}:`, err.message);
             return;
         }
-
-        const bundle = bundles.find(b =>
-            b.creator?.id === 1 &&
-            b.collectibleItemDetail &&
-            (b.itemRestrictions?.includes('Limited') || b.itemRestrictions?.includes('LimitedUnique'))
-        );
-        if (!bundle) return; // not a genuine official Limited bundle — leave it to normal per-item pricing
+        if (!match) return; // confirmed (possibly on a previous run, from assetStore): not a genuine official Limited bundle
 
         discoveredBundleAssetIds.add(assetId);
-        if (!matchedLimitedBundles.has(bundle.id)) {
-            matchedLimitedBundles.set(bundle.id, {
-                id: bundle.id,
-                name: bundle.name,
-                collectibleItemId: bundle.collectibleItemDetail.collectibleItemId,
-            });
-            console.log(`[robloxAvatarService] Auto-detected uncurated animated face bundle "${bundle.name}" (id=${bundle.id}) via component asset ${assetId} — consider adding it to data/limitedBundles.js as a fast-path.`);
+        if (!matchedLimitedBundles.has(match.id)) {
+            matchedLimitedBundles.set(match.id, { id: match.id, name: match.name, collectibleItemId: match.collectibleItemId });
+            console.log(`[robloxAvatarService] Auto-detected uncurated animated face bundle "${match.name}" (id=${match.id}) via component asset ${assetId} — consider adding it to data/limitedBundles.js as a fast-path.`);
         }
     }));
 

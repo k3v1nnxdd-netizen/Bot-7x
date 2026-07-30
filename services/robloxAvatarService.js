@@ -96,24 +96,50 @@ function isLimitedItem(details, assetId) {
         || KNOWN_LIMITED_IDS.has(assetId);
 }
 
-// Cache TTLs. avatar (worn items) and RAP are both 5 minutes, as requested —
-// worn items used to be 30s, which was the single biggest source of 429s
-// against avatar.roblox.com (its documented limit is only 40 req/60s with
-// no bulk alternative), so 5 min cuts that traffic by ~10x. ASSET_DETAILS
-// ("accesorios" — name/type/price/creator) is intentionally kept long rather
-// than lowered: that data barely ever changes, and a longer TTL means FEWER
-// requests to Roblox, not more. Raised from 30 min to 4h after catalog
-// items/details got tightened live to as little as 1 request/60s (see
-// robloxRequestLimiter.js) — at that rate, a 30-min TTL alone still forces
-// far too many re-fetches of the SAME popular items across different
-// players; 4h keeps a request queued behind the 1-token bucket the rare
-// exception instead of the norm, at the cost of item price/name changes
-// taking up to 4h to show up (an acceptable trade — official item prices
-// essentially never change post-release).
+// Cache TTLs.
+//
+// WORN_ASSETS/FULL_VALUATION were previously 5 minutes each, which caused a
+// real bug: a player who changes outfit in Roblox and immediately checks
+// their value here would see their OLD outfit for up to 5 minutes — bad for
+// any use case, actively exploitable for a "fronteo"/flex-battle game (wear
+// something expensive just long enough to get it cached, then swap back and
+// keep the inflated cached score). That 5-min figure came from conflating
+// two DIFFERENT Roblox resources: avatar.roblox.com/v1/users/{id}/avatar —
+// confirmed live to send `cache-control: no-cache`, i.e. Roblox itself never
+// serves a stale worn-items list, it's cheap (documented 40 req/60s, no bulk
+// alternative), and it changes the instant a player re-equips something —
+// versus catalog.roblox.com/v1/catalog/items/details, the genuinely scarce
+// resource (tightened live to as little as 1 req/60s). Those are already
+// fully decoupled: item PRICING is cached by ASSET id (ASSET_DETAILS, below)
+// and shared across every player wearing that item, completely independent
+// of any single player's own outfit-check frequency. So shortening
+// WORN_ASSETS/FULL_VALUATION does NOT increase load on the scarce resource
+// at all — it only increases calls to the cheap, always-fresh avatar
+// endpoint, which is exactly what needs to happen for a "did they change
+// clothes" check to actually be trustworthy. 20s keeps real burst protection
+// (repeated UI refreshes, two /battle calls landing on the same player close
+// together) while keeping staleness low enough to not matter in practice.
+// Callers that need a hard freshness guarantee regardless (e.g. right before
+// recording a competitive /battle result) can force a live re-check via
+// buildAvatarValuation(userId, { fresh: true }) — see below.
+//
+// THUMBNAIL (the rendered avatar image) is also confirmed `cache-control:
+// no-cache` on Roblox's side, but a full re-render after an outfit change
+// has its own inherent server-side lag on Roblox's end regardless of how
+// fast we re-check — so it's less urgent than the VALUE being right, and
+// kept a bit longer (60s, still 10x shorter than the old 10min) purely to
+// cut request volume for something that isn't the actual bug being fixed.
+//
+// ASSET_DETAILS ("accesorios" — name/type/price/creator) is intentionally
+// kept long: that data barely ever changes, and a longer TTL means FEWER
+// requests to Roblox, not more. 4h keeps a request queued behind catalog's
+// 1-token bucket the rare exception instead of the norm, at the cost of
+// item price/name changes taking up to 4h to show up (an acceptable trade —
+// official item prices essentially never change post-release).
 const TTL = {
     USER_INFO: 30 * 60_000,
-    THUMBNAIL: 10 * 60_000,
-    WORN_ASSETS: 5 * 60_000,
+    THUMBNAIL: 60_000,
+    WORN_ASSETS: 20_000,
     ASSET_DETAILS: 4 * 60 * 60_000,
     RAP: 5 * 60_000,
     // Which bundle a component asset belongs to is essentially permanent —
@@ -121,12 +147,11 @@ const TTL = {
     // longer than anything else here without going stale.
     BUNDLE_LOOKUP: 6 * 60 * 60_000,
     // Caches the ENTIRE valuation per user, not just the sub-pieces above —
-    // a cache hit here skips every Roblox call (including the catalog batch,
-    // which is what's actually been 429ing), not just some of them. Matches
-    // WORN_ASSETS since that's already the outfit-freshness ceiling; there's
-    // no point re-deriving the same result from unchanged worn items sooner
-    // than that.
-    FULL_VALUATION: 5 * 60_000,
+    // a cache hit here skips every Roblox call, not just some of them.
+    // Matches WORN_ASSETS since that's already the outfit-freshness ceiling;
+    // there's no point re-deriving the same result from unchanged worn items
+    // sooner than that.
+    FULL_VALUATION: 20_000,
 };
 
 // Lightweight in-memory counters — no external dependency, just enough to
@@ -369,8 +394,22 @@ function getBundlesForComponentCached(assetId) {
 // some), and in-flight dedup for free (two concurrent requests for the same
 // userId — e.g. that user showing up in two different /battle calls at
 // once — join the same in-flight computation instead of running it twice).
-function buildAvatarValuation(userId) {
-    return cache.getOrFetch(`valuation:${userId}`, TTL.FULL_VALUATION, () => buildAvatarValuationUncached(userId));
+//
+// `fresh: true` forces a guaranteed-live recheck, bypassing TTL.FULL_VALUATION
+// and TTL.WORN_ASSETS entirely for this call — for callers where a stale
+// (even 20s-stale) outfit snapshot is unacceptable, e.g. right before
+// recording a competitive /battle result, where a 20s cache window would
+// otherwise be a real (if narrow) window to game the score by briefly
+// wearing something expensive. Normal /avatar traffic should NOT pass this —
+// it turns off burst protection for that one call, and the default 20s
+// window is already short enough that nobody will notice it.
+function buildAvatarValuation(userId, { fresh = false } = {}) {
+    const key = `valuation:${userId}`;
+    if (fresh) {
+        cache.invalidate(key);
+        cache.invalidate(`worn:${userId}`);
+    }
+    return cache.getOrFetch(key, TTL.FULL_VALUATION, () => buildAvatarValuationUncached(userId));
 }
 
 async function buildAvatarValuationUncached(userId) {

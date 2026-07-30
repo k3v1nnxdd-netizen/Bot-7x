@@ -19,6 +19,16 @@ function set(key, value, ttlMs) {
     store.set(key, { value, expiresAt: Date.now() + ttlMs });
 }
 
+// Drops a cached value (if any) so the NEXT getOrFetch for this key is
+// guaranteed to be a real fetch, regardless of remaining TTL — used to force
+// a genuinely live read on demand (see buildAvatarValuation's `fresh`
+// option) instead of waiting out the normal TTL window. Deliberately does
+// NOT touch `inFlight`: if a fetch for this key is already in progress, that
+// fetch is already as fresh as it's going to get, so joining it is correct.
+function invalidate(key) {
+    store.delete(key);
+}
+
 // Requests already in flight for a given key, keyed the same as `store`.
 // If two callers ask for the same uncached key at the same time (e.g. two
 // Roblox game servers requesting the same player within milliseconds of
@@ -56,4 +66,4 @@ setInterval(() => {
     }
 }, 10 * 60_000).unref();
 
-module.exports = { get, set, getOrFetch };
+module.exports = { get, set, getOrFetch, invalidate };

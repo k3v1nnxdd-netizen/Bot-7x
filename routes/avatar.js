@@ -10,8 +10,14 @@ router.get('/:userId', async (req, res) => {
         return res.status(400).json({ error: 'userId inválido' });
     }
 
+    // ?fresh=1 bypasses the (short) outfit cache for a guaranteed-live read —
+    // see buildAvatarValuation's `fresh` option for why this exists and when
+    // to actually use it (not on every request — the default cache window is
+    // already short enough not to matter for normal traffic).
+    const fresh = req.query.fresh === '1' || req.query.fresh === 'true';
+
     try {
-        const data = await buildAvatarValuation(userId);
+        const data = await buildAvatarValuation(userId, { fresh });
         res.json(data);
     } catch (err) {
         if (err?.response?.status === 404) {

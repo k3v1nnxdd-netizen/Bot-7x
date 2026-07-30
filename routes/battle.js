@@ -22,10 +22,17 @@ router.get('/:user1/:user2', async (req, res) => {
         return res.status(400).json({ error: 'userId inválido' });
     }
 
+    // ?fresh=1 forces a guaranteed-live read for BOTH players — worth
+    // defaulting battle callers toward this: a battle result is a one-shot,
+    // consequential comparison (unlike casually re-checking /avatar), so the
+    // narrow window where a cached-but-just-changed outfit could favor
+    // whoever's snapshot is currently cached matters more here.
+    const fresh = req.query.fresh === '1' || req.query.fresh === 'true';
+
     try {
         const [data1, data2] = await Promise.all([
-            buildAvatarValuation(id1),
-            buildAvatarValuation(id2),
+            buildAvatarValuation(id1, { fresh }),
+            buildAvatarValuation(id2, { fresh }),
         ]);
 
         const player1 = toPlayerSummary(data1);

@@ -113,80 +113,112 @@ async function limitedRequest(fn) {
     });
 }
 
-// Proactive rate limiter specifically for
-// catalog.roblox.com/v1/catalog/items/details — the endpoint actually
-// observed 429ing in production. Originally documented at 10 requests/60s,
-// but Roblox tightened it WITHOUT WARNING to 1 request/60s for this IP
-// (observed live: x-ratelimit-limit went from "10, 10;w=60, 70000" to
-// "1, 1;w=60, 70000"), which a hardcoded 10-token bucket would just keep
-// violating forever. This bucket's capacity now SELF-ADJUSTS from Roblox's
-// own header on every 429 instead of trusting a number that can go stale —
-// see observeCatalogLimit. It still runs independently of the generic
-// 3-concurrent gate above, so unrelated calls (user info, thumbnails, worn
-// items) never wait behind it or vice versa.
-let catalogMaxTokens = 10; // starting assumption only — corrected live from real responses
+// Proactive rate limiter factory for individual catalog.roblox.com routes.
+// Originally this was a single shared bucket for the whole catalog domain,
+// but Roblox rate-limits per ROUTE, not per domain (confirmed live: only
+// /v1/catalog/items/details has ever reported the crushed-down "1, 1;w=60,
+// 70000" limit) — sharing one bucket meant an unrelated route (e.g. the
+// bundle reverse-lookup added for animated-face auto-detection) would
+// needlessly steal the single token/60s that items/details is already
+// starved for, and vice versa. Each route now gets its own independent,
+// self-adjusting bucket instead.
 const CATALOG_WINDOW_MS = 60_000;
 
-let catalogTokens = catalogMaxTokens;
-let catalogLastRefill = Date.now();
+function makeCatalogBucket(label, startingMaxTokens) {
+    let maxTokens = startingMaxTokens; // starting assumption only — corrected live from real responses
+    let tokens = maxTokens;
+    let lastRefill = Date.now();
+    let totalCalls = 0; // real HTTP attempts actually sent (retries count individually)
+    let total429s = 0;
 
-async function takeCatalogToken() {
-    for (;;) {
-        const now = Date.now();
-        const elapsed = now - catalogLastRefill;
-        if (elapsed > 0) {
-            catalogTokens = Math.min(catalogMaxTokens, catalogTokens + (elapsed / CATALOG_WINDOW_MS) * catalogMaxTokens);
-            catalogLastRefill = now;
-        }
-        if (catalogTokens >= 1) { catalogTokens -= 1; return; }
-        await sleep(100);
-    }
-}
-
-// Reads the real capacity Roblox just reported and adopts it immediately —
-// this is what keeps the bucket correct even after Roblox changes the limit
-// on its own, instead of requiring a code change + redeploy every time.
-function observeCatalogLimit(headers) {
-    const observed = parseMinHeaderValue(headers?.['x-ratelimit-limit']);
-    if (observed === null || observed <= 0 || observed === catalogMaxTokens) return;
-    console.warn(`[robloxRequestLimiter] Roblox cambió el límite de catalog: ${catalogMaxTokens} -> ${observed} req/${CATALOG_WINDOW_MS / 1000}s. Ajustando el limitador en caliente.`);
-    catalogMaxTokens = observed;
-    catalogTokens = Math.min(catalogTokens, catalogMaxTokens);
-}
-
-// Same 429 retry/backoff behavior as limitedRequest, just paced by the
-// catalog-specific token bucket instead of the generic concurrency gate.
-async function limitedCatalogRequest(fn) {
-    let attempt = 0;
-    for (;;) {
-        await takeCatalogToken();
-        try {
-            return await fn();
-        } catch (err) {
-            if (err?.response?.headers) observeCatalogLimit(err.response.headers);
-            if (err?.response?.status !== 429 || attempt >= MAX_RETRIES) throw err;
-            attempt++;
-            const backoff = computeBackoffMs(err, attempt);
-            console.warn(
-                `[robloxRequestLimiter] 429 de Roblox (catalog)`,
-                {
-                    attempt,
-                    maxRetries: MAX_RETRIES,
-                    backoffMs: Math.round(backoff),
-                    catalogMaxTokens,
-                    url: err.config?.url,
-                    method: err.config?.method,
-                    status: err.response?.status,
-                    headers: err.response?.headers,
-                }
-            );
-            await sleep(backoff);
+    async function takeToken() {
+        for (;;) {
+            const now = Date.now();
+            const elapsed = now - lastRefill;
+            if (elapsed > 0) {
+                tokens = Math.min(maxTokens, tokens + (elapsed / CATALOG_WINDOW_MS) * maxTokens);
+                lastRefill = now;
+            }
+            if (tokens >= 1) { tokens -= 1; return; }
+            await sleep(100);
         }
     }
+
+    // Reads the real capacity Roblox just reported and adopts it immediately —
+    // this is what keeps the bucket correct even after Roblox changes the
+    // limit on its own, instead of requiring a code change + redeploy.
+    function observeLimit(headers) {
+        const observed = parseMinHeaderValue(headers?.['x-ratelimit-limit']);
+        if (observed === null || observed <= 0 || observed === maxTokens) return;
+        console.warn(`[robloxRequestLimiter] Roblox cambió el límite de ${label}: ${maxTokens} -> ${observed} req/${CATALOG_WINDOW_MS / 1000}s. Ajustando el limitador en caliente.`);
+        maxTokens = observed;
+        tokens = Math.min(tokens, maxTokens);
+    }
+
+    // Same 429 retry/backoff behavior as limitedRequest, just paced by this
+    // route's own token bucket instead of the generic concurrency gate.
+    async function run(fn) {
+        let attempt = 0;
+        for (;;) {
+            await takeToken();
+            totalCalls++;
+            try {
+                return await fn();
+            } catch (err) {
+                if (err?.response?.headers) observeLimit(err.response.headers);
+                if (err?.response?.status !== 429 || attempt >= MAX_RETRIES) throw err;
+                total429s++;
+                attempt++;
+                const backoff = computeBackoffMs(err, attempt);
+                console.warn(
+                    `[robloxRequestLimiter] 429 de Roblox (${label})`,
+                    {
+                        attempt,
+                        maxRetries: MAX_RETRIES,
+                        backoffMs: Math.round(backoff),
+                        maxTokens,
+                        url: err.config?.url,
+                        method: err.config?.method,
+                        status: err.response?.status,
+                        headers: err.response?.headers,
+                    }
+                );
+                await sleep(backoff);
+            }
+        }
+    }
+
+    return {
+        run,
+        observeLimit,
+        getMaxTokens: () => maxTokens,
+        getMetrics: () => ({ label, maxTokens, totalCalls, total429s }),
+    };
+}
+
+// /v1/catalog/items/details — the route actually observed 429ing in
+// production, tightened by Roblox to as little as 1 req/60s.
+const itemsDetailsBucket = makeCatalogBucket('catalog items/details', 10);
+// /v1/assets/{id}/bundles — the animated-face reverse-lookup route added
+// for auto-detection. Never observed 429ing yet, kept independent so it
+// can't starve (or be starved by) the route above.
+const bundlesBucket = makeCatalogBucket('catalog assets/bundles', 10);
+
+function getMetrics() {
+    return {
+        itemsDetails: itemsDetailsBucket.getMetrics(),
+        bundles: bundlesBucket.getMetrics(),
+    };
 }
 
 module.exports = {
     limitedRequest,
-    limitedCatalogRequest,
-    __test: { parseMinHeaderValue, observeCatalogLimit, getCatalogMaxTokens: () => catalogMaxTokens },
+    limitedCatalogRequest: itemsDetailsBucket.run,
+    limitedBundlesRequest: bundlesBucket.run,
+    getMetrics,
+    __test: {
+        parseMinHeaderValue,
+        observeCatalogLimit: itemsDetailsBucket.observeLimit,
+        getCatalogMaxTokens: itemsDetailsBucket.getMaxTokens,
+    },
 };

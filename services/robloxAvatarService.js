@@ -2,7 +2,8 @@
 
 const roblox = require('../roblox');
 const cache = require('./cache');
-const { limitedRequest, limitedCatalogRequest } = require('./robloxRequestLimiter');
+const robloxRequestLimiter = require('./robloxRequestLimiter');
+const { limitedRequest, limitedCatalogRequest, limitedBundlesRequest } = robloxRequestLimiter;
 const { ASSET_TO_OVERRIDE } = require('../data/officialItemValues');
 const { KNOWN_LIMITED_IDS } = require('../data/knownLimitedItems');
 const { COMPONENT_TO_LIMITED_BUNDLE } = require('../data/limitedBundles');
@@ -64,16 +65,21 @@ function isLimitedItem(details, assetId) {
 // worn items used to be 30s, which was the single biggest source of 429s
 // against avatar.roblox.com (its documented limit is only 40 req/60s with
 // no bulk alternative), so 5 min cuts that traffic by ~10x. ASSET_DETAILS
-// ("accesorios" — name/type/price/creator) is intentionally kept at 30 min
-// rather than lowered to 5 min: that data barely ever changes, and a longer
-// TTL means FEWER requests to Roblox, not more — shortening it to 5 min
-// would work against the actual goal here. Flagging this in case a strict
-// 5-minute cache is wanted anyway.
+// ("accesorios" — name/type/price/creator) is intentionally kept long rather
+// than lowered: that data barely ever changes, and a longer TTL means FEWER
+// requests to Roblox, not more. Raised from 30 min to 4h after catalog
+// items/details got tightened live to as little as 1 request/60s (see
+// robloxRequestLimiter.js) — at that rate, a 30-min TTL alone still forces
+// far too many re-fetches of the SAME popular items across different
+// players; 4h keeps a request queued behind the 1-token bucket the rare
+// exception instead of the norm, at the cost of item price/name changes
+// taking up to 4h to show up (an acceptable trade — official item prices
+// essentially never change post-release).
 const TTL = {
     USER_INFO: 30 * 60_000,
     THUMBNAIL: 10 * 60_000,
     WORN_ASSETS: 5 * 60_000,
-    ASSET_DETAILS: 30 * 60_000,
+    ASSET_DETAILS: 4 * 60 * 60_000,
     RAP: 5 * 60_000,
     // Which bundle a component asset belongs to is essentially permanent —
     // Roblox doesn't reshuffle bundle membership — so this can be cached far
@@ -87,6 +93,20 @@ const TTL = {
     // than that.
     FULL_VALUATION: 5 * 60_000,
 };
+
+// Lightweight in-memory counters — no external dependency, just enough to
+// answer "is batching/dedup actually working" from the logs or a quick
+// script under concurrent load, without guessing from timing alone.
+const metrics = {
+    assetDetailCacheHits: 0,          // resolved from cache.js, no fetch needed at all
+    assetDetailDeduped: 0,            // joined an already-scheduled/in-flight fetch for that id
+    assetDetailFetchesScheduled: 0,   // genuinely new ids scheduled into a batch
+    assetDetailBatchesSent: 0,        // real POST calls actually sent to catalog.roblox.com
+};
+
+function getMetrics() {
+    return { ...metrics, requestLimiter: robloxRequestLimiter.getMetrics() };
+}
 
 async function getUserBasicInfo(userId) {
     return cache.getOrFetch(`user:${userId}`, TTL.USER_INFO, () => limitedRequest(async () => {
@@ -103,23 +123,121 @@ function getWornAssets(userId) {
     return cache.getOrFetch(`worn:${userId}`, TTL.WORN_ASSETS, () => limitedRequest(() => roblox.getWornAssetIds(userId)));
 }
 
-async function getAssetDetailsCached(assetIds) {
-    const result = new Map();
-    const uncached = [];
-    for (const id of assetIds) {
-        const cached = cache.get(`asset:${id}`);
-        if (cached !== undefined) result.set(id, cached);
-        else uncached.push(id);
-    }
-    if (uncached.length) {
-        // catalog.roblox.com specifically — routed through its own
-        // proactive token bucket (10 req/60s), not the generic gate.
-        const fresh = await limitedCatalogRequest(() => roblox.getAssetDetails(uncached));
-        for (const [id, details] of fresh) {
-            cache.set(`asset:${id}`, details, TTL.ASSET_DETAILS);
-            result.set(id, details);
+// ── Batched + deduplicated asset-details fetch ─────────────────────────────
+// catalog.roblox.com/v1/catalog/items/details has been observed throttled by
+// Roblox down to as little as 1 request/60s (see robloxRequestLimiter.js) —
+// under concurrent /avatar traffic, every avoidable call directly costs
+// everyone behind it another 60s of queued latency. Every OTHER Roblox
+// lookup in this file gets cache-first + in-flight dedup for free via
+// cache.getOrFetch, but that helper is one-key-in-one-value-out and can't
+// express "many ids batched into one call" — so this is a small dedicated
+// loader doing the same job for the one path that needs real batching:
+//   1. Cache-first — an id already cached (including a cached "confirmed no
+//      data" result, see NO_DATA below) is never re-fetched.
+//   2. In-flight dedup — if id X is already scheduled or mid-fetch (this
+//      batch or a still-retrying previous one), a new caller asking for X
+//      joins that exact same Promise instead of scheduling a duplicate.
+//   3. Cross-request batching — ids requested by DIFFERENT concurrent
+//      /avatar calls within a short window are folded into ONE POST,
+//      instead of one POST per caller.
+
+// Distinguishes "confirmed: Roblox has no data for this id" (deleted/
+// moderated asset) from "not yet fetched" — cache.get() returns undefined
+// for both a miss AND an expired entry, so a real cacheable value is needed
+// to remember "no data" and stop re-fetching it on every single request.
+const NO_DATA = Symbol('no-data');
+
+// Roblox's own per-call limit for this endpoint isn't documented; this just
+// keeps any one POST body bounded even if an unusually large concurrent
+// burst coalesces into one window, splitting into sequential (still
+// rate-limited, still deduped) calls instead of ever sending one unbounded
+// request.
+const MAX_BATCH_SIZE = 100;
+// Small enough to be an imperceptible latency add on top of the several
+// other network hops a valuation already makes; large enough to reliably
+// catch concurrent /avatar requests, which in practice arrive staggered by
+// whatever their own upstream calls took rather than in the exact same tick.
+const BATCH_COALESCE_MS = 100;
+
+const pendingAssetFetches = new Map(); // assetId -> { promise, resolve, reject }
+let scheduledAssetIds = new Set();
+let assetBatchTimer = null;
+
+function scheduleAssetBatchFlush() {
+    if (assetBatchTimer) return;
+    assetBatchTimer = setTimeout(flushAssetBatch, BATCH_COALESCE_MS);
+}
+
+async function flushAssetBatch() {
+    assetBatchTimer = null;
+    if (scheduledAssetIds.size === 0) return;
+    const ids = [...scheduledAssetIds];
+    scheduledAssetIds = new Set();
+
+    for (let i = 0; i < ids.length; i += MAX_BATCH_SIZE) {
+        const chunk = ids.slice(i, i + MAX_BATCH_SIZE);
+        try {
+            // catalog.roblox.com specifically — routed through its own
+            // proactive, self-adjusting token bucket, not the generic gate.
+            metrics.assetDetailBatchesSent++;
+            const fresh = await limitedCatalogRequest(() => roblox.getAssetDetails(chunk));
+            for (const id of chunk) {
+                const details = fresh.get(id) ?? NO_DATA;
+                cache.set(`asset:${id}`, details, TTL.ASSET_DETAILS);
+                pendingAssetFetches.get(id)?.resolve(details);
+                pendingAssetFetches.delete(id);
+            }
+        } catch (err) {
+            // One failed chunk must not fail every OTHER caller sharing an
+            // unrelated id from a different chunk/wave — each id's own
+            // waiter is rejected individually; getAssetDetailsCached below
+            // treats a per-id failure as "no data" for that id alone rather
+            // than collapsing the whole valuation.
+            for (const id of chunk) {
+                pendingAssetFetches.get(id)?.reject(err);
+                pendingAssetFetches.delete(id);
+            }
         }
     }
+}
+
+// Promise<details | NO_DATA> for one asset id — joins an already-scheduled
+// or in-flight fetch for that same id instead of scheduling a duplicate.
+function fetchAssetDetail(assetId) {
+    const existing = pendingAssetFetches.get(assetId);
+    if (existing) {
+        metrics.assetDetailDeduped++;
+        return existing.promise;
+    }
+
+    let resolve, reject;
+    const promise = new Promise((res, rej) => { resolve = res; reject = rej; });
+    pendingAssetFetches.set(assetId, { promise, resolve, reject });
+    scheduledAssetIds.add(assetId);
+    metrics.assetDetailFetchesScheduled++;
+    scheduleAssetBatchFlush();
+    return promise;
+}
+
+async function getAssetDetailsCached(assetIds) {
+    const result = new Map();
+    const uniqueIds = [...new Set(assetIds)]; // dedupe before touching cache or scheduling anything
+
+    await Promise.all(uniqueIds.map(async id => {
+        const cached = cache.get(`asset:${id}`);
+        if (cached !== undefined) {
+            metrics.assetDetailCacheHits++;
+            if (cached !== NO_DATA) result.set(id, cached);
+            return;
+        }
+        try {
+            const details = await fetchAssetDetail(id);
+            if (details !== NO_DATA) result.set(id, details);
+        } catch (err) {
+            console.warn(`[robloxAvatarService] Asset detail fetch failed for ${id}:`, err.message);
+        }
+    }));
+
     return result;
 }
 
@@ -136,11 +254,12 @@ function getCollectibleRapCached(collectibleItemId) {
 }
 
 // Reverse lookup for a bundle component asset (see ANIMATED_FACE_ASSET_TYPES
-// above) — routed through limitedCatalogRequest since it's the same
-// catalog.roblox.com domain that's already been observed 429ing in
-// production for the items/details endpoint.
+// above) — routed through its own independent bucket (limitedBundlesRequest)
+// rather than sharing limitedCatalogRequest's, since that one has been
+// observed tightened by Roblox to as little as 1 request/60s; sharing it
+// would let this unrelated route starve (or be starved by) that bottleneck.
 function getBundlesForComponentCached(assetId) {
-    return cache.getOrFetch(`bundle-for-asset:${assetId}`, TTL.BUNDLE_LOOKUP, () => limitedCatalogRequest(() => roblox.getBundlesForComponentAsset(assetId)));
+    return cache.getOrFetch(`bundle-for-asset:${assetId}`, TTL.BUNDLE_LOOKUP, () => limitedBundlesRequest(() => roblox.getBundlesForComponentAsset(assetId)));
 }
 
 // The single source of truth for "what is this avatar worth" — used
@@ -352,4 +471,4 @@ async function buildAvatarValuationUncached(userId) {
     };
 }
 
-module.exports = { buildAvatarValuation };
+module.exports = { buildAvatarValuation, getMetrics };

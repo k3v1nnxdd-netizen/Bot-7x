@@ -245,6 +245,12 @@ async function buildAvatarValuationUncached(userId, { fresh = false } = {}) {
         // read — see getWornAssetsWithStaleFallback.
         outfitStale: wornResult.stale,
         outfitStaleSince: wornResult.stale ? new Date(wornResult.staleSince).toISOString() : null,
+        // Where the worn-items list came from — 'roblox' here, since this
+        // path always goes through avatar.roblox.com (cache/SWR/fallback
+        // notwithstanding). See buildAvatarValuationFromAssetIds below for
+        // the 'client' counterpart (game-server-supplied assetIds, used by
+        // POST /battle to skip this endpoint entirely).
+        outfitSource: 'roblox',
         // The instant THIS valuation was actually computed — a "snapshot"
         // marker so a consumer (especially /battle) can tell two results
         // apart in time, and so a battle recorded from this result can be
@@ -256,4 +262,52 @@ async function buildAvatarValuationUncached(userId, { fresh = false } = {}) {
     };
 }
 
-module.exports = { buildAvatarValuation, getMetrics };
+// The zero-avatar.roblox.com-call path: the caller (a Roblox server script,
+// via POST /battle) already knows exactly what a player is currently
+// wearing — trusting that (after strict validation upstream — see
+// src/security/validateBattlePayload.js) and going straight to
+// valuationService.valuateWornAssets skips the single most rate-limited
+// Roblox endpoint entirely for the request that matters most: two players
+// who are BOTH already in the same live server, where re-confirming their
+// outfit via Roblox's HTTP API adds latency and rate-limit pressure for
+// information the game already has firsthand.
+//
+// Still reuses everything valuationService/the asset repositories already
+// provide: an assetId this process (or a previous one, via the persistent
+// store) has already resolved is NEVER re-fetched just because it arrived
+// via this path instead of a live avatar check — the repositories are keyed
+// by assetId, not by how the id reached the valuation pipeline. Only
+// genuinely unknown assetIds trigger a real catalog.roblox.com call; RAP
+// still follows its own independent short TTL, exactly as for every other
+// path. Bundle/Limited/UGC/ignored-type rules are UNCHANGED — this calls
+// the exact same valuateWornAssets used everywhere else.
+//
+// getUserBasicInfo/getAvatarThumbnail are intentionally still fetched —
+// those hit users.roblox.com/thumbnails.roblox.com, NOT the endpoint this
+// exists to avoid, and the response still needs a username to display.
+async function buildAvatarValuationFromAssetIds(userId, assetIds) {
+    const [basicInfo, avatarThumbnail] = await Promise.all([
+        getUserBasicInfo(userId),
+        getAvatarThumbnail(userId),
+    ]);
+
+    const valuation = await valuationService.valuateWornAssets(assetIds);
+
+    return {
+        userId,
+        username: basicInfo.username,
+        displayName: basicInfo.displayName,
+        avatarThumbnail,
+        ...valuation,
+        // Never "stale" in the rate-limit-fallback sense — this data came
+        // directly from the caller this instant, by definition as current
+        // as it gets (its accuracy is the CALLER's responsibility, enforced
+        // at the validation boundary, not something this layer judges).
+        outfitStale: false,
+        outfitStaleSince: null,
+        outfitSource: 'client',
+        snapshotAt: new Date().toISOString(),
+    };
+}
+
+module.exports = { buildAvatarValuation, buildAvatarValuationFromAssetIds, getMetrics };

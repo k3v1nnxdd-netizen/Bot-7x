@@ -369,9 +369,23 @@ async function getBundleForComponentCached(assetId) {
 // The single source of truth for "what is this SET OF WORN ASSETS worth" —
 // exercised directly (real batching/dedup/persistent-store/bundle-
 // detection/RAP/pricing rules, zero mocking) against an arbitrary asset id
-// list by both avatarService.js (a real user's live avatar) and by
-// src/tests/ (specific asset ids end-to-end).
+// list by both avatarService.js (a real user's live avatar, or — via
+// buildAvatarValuationFromAssetIds — a Roblox server script's own report of
+// a player's current outfit for POST /battle) and by src/tests/ (specific
+// asset ids end-to-end).
 async function valuateWornAssets(wornAssetIds) {
+    // Deduped up front — avatar.roblox.com's own response never contains a
+    // duplicate (a player can't equip the same accessory slot twice), so
+    // this was always a no-op for that path. It stops being a no-op now
+    // that assetIds can also arrive directly in an HTTP request body (POST
+    // /battle): without this, a duplicate id in `wornAssetIds` would make
+    // the `kept`-building loop below push the SAME asset into `accessories`
+    // twice, double-counting its price/RAP in the total. The bundle-override
+    // matching above this comment was already immune (Map keyed by the
+    // bundle's own id, not the component's), but the per-item loop iterated
+    // `remainingAssetIds` directly, so this is the one place that needed it.
+    wornAssetIds = [...new Set(wornAssetIds)];
+
     // Detect known bundles — matched via their equipped COMPONENT assets,
     // since a bundle id is never itself a worn asset. Two kinds:
     //  - Official fixed-value bundles (Headless Horseman, Korblox, etc. —

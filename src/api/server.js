@@ -23,7 +23,11 @@ function startServer(client) {
     // every caller combined (defeating the point of it).
     app.set('trust proxy', true);
 
-    app.use(express.json());
+    // 32kb comfortably covers POST /battle's real shape (2 players x up to
+    // 100 assetIds each — a few KB at most) while bounding a broken/abusive
+    // caller from sending an oversized body instead of relying on Express's
+    // much larger 100kb default.
+    app.use(express.json({ limit: '32kb' }));
     app.locals.discordClient = client;
 
     // /health stays PUBLIC, unmetered, unrated — Railway's healthcheck pings
@@ -39,6 +43,23 @@ function startServer(client) {
     app.use('/avatar', requestRateLimit, requireApiKey, latencyMiddleware('avatar'), avatarRoute);
     app.use('/battle', requestRateLimit, requireApiKey, latencyMiddleware('battle'), battleRoute);
     app.use('/metrics', requestRateLimit, requireApiKey, metricsRoute);
+
+    // Body-parser (express.json() above) errors — malformed JSON, body over
+    // the 32kb limit — arrive here as an error instead of reaching any route
+    // handler. Formatted as JSON like every other response this API sends,
+    // instead of Express's default HTML error page. Must be registered
+    // AFTER every route (Express convention: a 4-arg middleware is only
+    // ever invoked as an error handler).
+    app.use((err, req, res, next) => {
+        if (err?.type === 'entity.too.large' || err?.status === 413) {
+            return res.status(413).json({ error: 'El body de la petición excede el tamaño máximo permitido' });
+        }
+        if (err?.type === 'entity.parse.failed' || err instanceof SyntaxError) {
+            return res.status(400).json({ error: 'JSON inválido en el body de la petición' });
+        }
+        console.error('[api] Unhandled error:', err);
+        res.status(500).json({ error: 'Error interno del servidor' });
+    });
 
     const server = app.listen(config.port, () => {
         console.log(`[api] Servidor Express escuchando en el puerto ${config.port}`);

@@ -285,13 +285,30 @@ async function buildAvatarValuationUncached(userId, { fresh = false } = {}) {
 // getUserBasicInfo/getAvatarThumbnail are intentionally still fetched —
 // those hit users.roblox.com/thumbnails.roblox.com, NOT the endpoint this
 // exists to avoid, and the response still needs a username to display.
+//
+// valuateWornAssets is started in this SAME Promise.all, not awaited
+// afterward — this is what makes the cross-player catalog batching in
+// valuationService.js actually apply to POST /battle. battleService.
+// runBattleFromPayload calls this once per player via Promise.all, so both
+// players' calls begin executing synchronously back to back (standard JS:
+// calling an async function runs it synchronously up to its first await).
+// Previously this function awaited basicInfo/thumbnail FIRST, so player2's
+// call to valuateWornAssets only started after player1's own
+// users.roblox.com/thumbnails.roblox.com round-trip had already finished —
+// an unpredictable real-network gap, almost always well past
+// valuationService's 100ms batch-coalesce window. That let one battle's two
+// players land in two SEPARATE catalog.roblox.com/v1/catalog/items/details
+// batches instead of one, which is what a scarce (1 req/60s in production)
+// endpoint can least afford. Starting valuateWornAssets here instead means
+// both players' unknown asset ids get registered into valuationService's
+// shared pending/scheduled batch in the very same synchronous tick,
+// regardless of how long the profile/thumbnail calls end up taking.
 async function buildAvatarValuationFromAssetIds(userId, assetIds) {
-    const [basicInfo, avatarThumbnail] = await Promise.all([
+    const [basicInfo, avatarThumbnail, valuation] = await Promise.all([
         getUserBasicInfo(userId),
         getAvatarThumbnail(userId),
+        valuationService.valuateWornAssets(assetIds),
     ]);
-
-    const valuation = await valuationService.valuateWornAssets(assetIds);
 
     return {
         userId,

@@ -196,7 +196,7 @@ const DEFAULT_WINDOW_MS = 60_000;
 //      by CIRCUIT_MAX_OPEN_MS). Shared across every caller in this process —
 //      opening it once protects everyone, instead of each of N concurrent
 //      requests independently discovering the same 429 the hard way.
-function makeBucket(label, { startingMaxTokens, startingWindowMs = DEFAULT_WINDOW_MS } = {}) {
+function makeBucket(label, { startingMaxTokens, startingWindowMs = DEFAULT_WINDOW_MS, zeroRetryOn429 = false } = {}) {
     let maxTokens = startingMaxTokens; // starting assumption only — corrected live from real responses
     let tokens = maxTokens;
     let windowMs = startingWindowMs;
@@ -297,8 +297,15 @@ function makeBucket(label, { startingMaxTokens, startingWindowMs = DEFAULT_WINDO
 
         if (remaining <= 0 && !isCircuitOpen()) {
             const resetSeconds = parseMaxHeaderValue(headers?.['x-ratelimit-reset']);
-            if (resetSeconds !== null && resetSeconds * 1000 >= INLINE_RETRY_CEILING_MS) {
-                openCircuit(resetSeconds * 1000, 'x-ratelimit-remaining=0 detectado proactivamente', headers);
+            const resetMs = resetSeconds !== null && resetSeconds > 0 ? resetSeconds * 1000 : null;
+            // zeroRetryOn429 routes (catalog items/details — observed as
+            // scarce as 1 req/60s in production) can't afford to spend even
+            // ONE more request just to confirm a guaranteed 429, so this
+            // opens on ANY known reset once remaining=0 — not gated by
+            // INLINE_RETRY_CEILING_MS like the general case below, since
+            // that route never does an inline retry anyway (see run()).
+            if (resetMs !== null && (zeroRetryOn429 || resetMs >= INLINE_RETRY_CEILING_MS)) {
+                openCircuit(resetMs, 'x-ratelimit-remaining=0 detectado proactivamente', headers);
             }
         }
     }
@@ -330,11 +337,29 @@ function makeBucket(label, { startingMaxTokens, startingWindowMs = DEFAULT_WINDO
                 // needs the real numbers, not a derived summary.
                 if (status === 429) {
                     console.warn(`[rateLimiter] 429 de Roblox en "${label}"`, { headers: headerSnapshot(err.response.headers) });
+                    const waitMs = computeWaitMs(err);
+
+                    if (zeroRetryOn429) {
+                        // This route is scarce enough (observed as low as 1
+                        // req/60s in production) that a 429 must NEVER be
+                        // retried, even if Roblox's own indicated wait looks
+                        // short — Retry-After has been observed elsewhere in
+                        // this file to under-report the real reset, and every
+                        // retry attempt here is itself another request this
+                        // route can't spare. Open the circuit (falling back
+                        // to the bucket's own known window if Roblox gave no
+                        // usable wait at all) and fail fast — every other
+                        // battle sharing this bucket stops hitting the route
+                        // immediately too, instead of each independently
+                        // discovering the same 429 via its own retries.
+                        if (!isCircuitOpen()) openCircuit(waitMs ?? windowMs, `429 status=${status} (zero-retry route)`, err.response.headers);
+                        throw new CircuitOpenError(label, circuitOpenUntil);
+                    }
+
                     // observeLimit() above may have ALREADY opened the circuit
                     // proactively (same headers, remaining=0 branch) — don't
                     // double-open/double-count if so, but a 429 with a long
                     // wait always means the circuit ends up open either way.
-                    const waitMs = computeWaitMs(err);
                     if (!isCircuitOpen() && waitMs !== null && waitMs >= INLINE_RETRY_CEILING_MS) {
                         openCircuit(waitMs, `429 status=${status}`, err.response.headers);
                     }
@@ -391,8 +416,11 @@ function makeBucket(label, { startingMaxTokens, startingWindowMs = DEFAULT_WINDO
 }
 
 // /v1/catalog/items/details — the route most observed 429ing in production,
-// tightened by Roblox to as little as 1 req/60s.
-const catalogBucket = makeBucket('catalog items/details', { startingMaxTokens: 10 });
+// tightened by Roblox to as little as 1 req/60s. zeroRetryOn429: at this
+// scarcity, even ONE retry can cost the next 60s of every OTHER battle
+// waiting on this same bucket — a 429 here always means "stop immediately
+// and let the circuit breaker protect everyone else", never "try again".
+const catalogBucket = makeBucket('catalog items/details', { startingMaxTokens: 10, zeroRetryOn429: true });
 // /v1/assets/{id}/bundles — the animated-face reverse-lookup route added for
 // auto-detection.
 const bundlesBucket = makeBucket('catalog assets/bundles', { startingMaxTokens: 10 });

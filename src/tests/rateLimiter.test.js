@@ -211,5 +211,55 @@ module.exports = async function run() {
         assert(bucket.getMetrics().total400s === 1, 'total400s metric incremented');
     }
 
+    // --- zeroRetryOn429 (catalog items/details' actual config): a 429 with
+    // a SHORT indicated wait (well under INLINE_RETRY_CEILING_MS, the kind
+    // every OTHER bucket would retry inline) must still get ZERO retries and
+    // open the circuit immediately — this is the direct fix for the
+    // reported 29.8s battle (4 inline retries against a route Roblox had
+    // throttled to 1 req/60s). ---
+    {
+        const bucket = makeBucket('test-zero-retry-short-wait', { startingMaxTokens: 10, zeroRetryOn429: true });
+        let calls = 0;
+        const fn = async () => { calls++; throw make429Error({ limitHeader: '1, 1;w=60', remaining: '0', reset: 5, retryAfter: 2 }); };
+        const t0 = Date.now();
+        let caught = null;
+        try { await bucket.run(fn); } catch (err) { caught = err; }
+
+        assert(calls === 1, 'zeroRetryOn429 + short wait: exactly ONE real call — no inline retry despite a 5s wait');
+        assert(caught?.circuitOpen === true, 'zeroRetryOn429 + short wait: circuit opened immediately instead of retrying');
+        assert(Date.now() - t0 < 500, 'zeroRetryOn429 + short wait: failed fast, no inline sleep at all');
+
+        const m = bucket.getMetrics();
+        assert(m.circuitOpen === true, 'zeroRetryOn429: bucket reports circuitOpen=true after a single 429');
+        assert(m.circuitBreakerActivations === 1, 'zeroRetryOn429: circuit opened exactly once');
+
+        // While open: every other battle sharing this bucket fails fast, no
+        // real calls sent to Roblox — this is "10 batallas con circuit OPEN
+        // = 0 llamadas a esa ruta" for the rate-limiter layer itself.
+        let callsWhileOpen = 0;
+        const fnWhileOpen = async () => { callsWhileOpen++; return { headers: {} }; };
+        const results = await Promise.allSettled(Array.from({ length: 10 }, () => bucket.run(fnWhileOpen)));
+        assert(results.every(r => r.status === 'rejected' && r.reason?.circuitOpen === true), 'zeroRetryOn429: 10 concurrent requests while open all fail fast with CircuitOpenError');
+        assert(callsWhileOpen === 0, 'zeroRetryOn429: zero real calls made by the 10 requests while the circuit is open');
+    }
+
+    // --- zeroRetryOn429 with NO usable wait header at all: still opens the
+    // circuit (falling back to the bucket's own known window) instead of
+    // falling through to a blind exponential-backoff retry. ---
+    {
+        const bucket = makeBucket('test-zero-retry-no-header', { startingMaxTokens: 1, startingWindowMs: 60_000, zeroRetryOn429: true });
+        let calls = 0;
+        const fn = async () => {
+            calls++;
+            const e = new Error('Too Many Requests');
+            e.response = { status: 429, headers: {}, data: {} }; // no rate-limit headers at all
+            throw e;
+        };
+        let caught = null;
+        try { await bucket.run(fn); } catch (err) { caught = err; }
+        assert(calls === 1, 'zeroRetryOn429 + no headers: exactly one real call, no retry');
+        assert(caught?.circuitOpen === true, 'zeroRetryOn429 + no headers: still opened the circuit (fallback to bucket window) instead of retrying blindly');
+    }
+
     return finish();
 };

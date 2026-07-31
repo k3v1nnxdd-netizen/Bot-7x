@@ -9,6 +9,7 @@ const metricsRoute = require('./routes/metrics');
 const { requireApiKey } = require('../security/auth');
 const { requestRateLimit } = require('../security/requestRateLimit');
 const { latencyMiddleware } = require('../observability/metrics');
+const { requestLogger } = require('../observability/requestLogger');
 
 // `client` is accepted (and stashed on `app.locals`) so future routes that
 // need to act on the Discord bot (e.g. award a role after a Roblox purchase)
@@ -35,13 +36,16 @@ function startServer(client) {
     // rate limit or a missing API key.
     app.use('/health', healthRoute);
 
-    // Every other route, in order: our OWN spam guard first (cheap,
-    // in-memory, rejects a flood before it reaches auth or touches
-    // Roblox-facing logic at all) -> the shared-secret API key check ->
-    // latency instrumentation (measures real authenticated business-logic
-    // time, not instant 401/429 rejections) -> the actual route.
-    app.use('/avatar', requestRateLimit, requireApiKey, latencyMiddleware('avatar'), avatarRoute);
-    app.use('/battle', requestRateLimit, requireApiKey, latencyMiddleware('battle'), battleRoute);
+    // Every other route, in order: TEMPORARY diagnostic request logging
+    // first (logs every attempt, including ones about to get rejected below
+    // — see src/observability/requestLogger.js for why and how to disable
+    // it) -> our OWN spam guard (cheap, in-memory, rejects a flood before it
+    // reaches auth or touches Roblox-facing logic at all) -> the
+    // shared-secret API key check -> latency instrumentation (measures real
+    // authenticated business-logic time, not instant 401/429 rejections) ->
+    // the actual route.
+    app.use('/avatar', requestLogger, requestRateLimit, requireApiKey, latencyMiddleware('avatar'), avatarRoute);
+    app.use('/battle', requestLogger, requestRateLimit, requireApiKey, latencyMiddleware('battle'), battleRoute);
     app.use('/metrics', requestRateLimit, requireApiKey, metricsRoute);
 
     // Body-parser (express.json() above) errors — malformed JSON, body over

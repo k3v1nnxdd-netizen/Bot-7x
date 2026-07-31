@@ -4,6 +4,7 @@ const express = require('express');
 const router = express.Router();
 const battleService = require('../../services/battleService');
 const { validateBattlePayload, ValidationError } = require('../../security/validateBattlePayload');
+const { logRequestContext } = require('../../observability/requestLogger');
 
 // Shared between both routes below: maps a failure from the valuation
 // pipeline to an HTTP response. Not reachable for ValidationError (that's
@@ -42,6 +43,14 @@ router.post('/', async (req, res) => {
         throw err;
     }
 
+    // TEMPORARY — see requestLogger.js. Logs asset COUNTS, never the raw
+    // arrays (could legitimately be up to 100 per player).
+    logRequestContext('POST /battle', {
+        player1: { userId: payload.player1.userId, assetIdCount: payload.player1.assetIds?.length ?? 'omitted (fallback to Roblox)' },
+        player2: { userId: payload.player2.userId, assetIdCount: payload.player2.assetIds?.length ?? 'omitted (fallback to Roblox)' },
+        fresh: payload.fresh,
+    });
+
     try {
         const result = await battleService.runBattleFromPayload(payload, { fresh: payload.fresh });
         res.json(result);
@@ -67,6 +76,8 @@ router.get('/:user1/:user2', async (req, res) => {
     // narrow window where a cached-but-just-changed outfit could favor
     // whoever's snapshot is currently cached matters more here.
     const fresh = req.query.fresh === '1' || req.query.fresh === 'true';
+
+    logRequestContext('GET /battle', { id1, id2, fresh }); // TEMPORARY — see requestLogger.js
 
     try {
         const result = await battleService.runBattle(id1, id2, { fresh });

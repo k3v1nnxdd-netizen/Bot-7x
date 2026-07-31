@@ -3,6 +3,7 @@
 const express = require('express');
 const router = express.Router();
 const { buildAvatarValuation } = require('../../services/avatarService');
+const { logRequestContext } = require('../../observability/requestLogger');
 
 router.get('/:userId', async (req, res) => {
     const userId = Number(req.params.userId);
@@ -15,6 +16,8 @@ router.get('/:userId', async (req, res) => {
     // to actually use it (not on every request — the default cache window is
     // already short enough not to matter for normal traffic).
     const fresh = req.query.fresh === '1' || req.query.fresh === 'true';
+
+    logRequestContext('GET /avatar', { userId, fresh }); // TEMPORARY — see requestLogger.js
 
     try {
         const data = await buildAvatarValuation(userId, { fresh });

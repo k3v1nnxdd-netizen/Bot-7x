@@ -15,6 +15,7 @@ const {
     limitedLegacyRapRequest, observeLegacyRapLimit,
     limitedRapRequest, observeRapLimit,
 } = require('./rateLimiter');
+const { logRequestContext } = require('../observability/requestLogger'); // TEMPORARY — see that file
 
 // THE "Roblox Gateway" from the architecture diagram: every single outbound
 // call to Roblox in this whole codebase goes through this module, and every
@@ -125,6 +126,12 @@ async function isUserInGroup(userId, groupId) {
 // observed live tightened to 6 req/3600s — see rateLimiter.js's
 // avatar bucket and the report for what's believed to cause that.
 async function getWornAssetIds(userId) {
+    // TEMPORARY — see src/observability/requestLogger.js. Logged BEFORE the
+    // rate-limited call (not after) so it appears even if the circuit is
+    // open and this never actually reaches Roblox — that's equally useful
+    // diagnostic signal ("something tried to check this userId's outfit
+    // while the breaker was open").
+    logRequestContext('ROBLOX-CALL avatar worn-items', { userId });
     const res = await limitedAvatarRequest(() => api.get(`https://avatar.roblox.com/v1/users/${userId}/avatar`));
     observeAvatarLimit(res.headers);
     return (res.data?.assets ?? []).map(a => a.id);
@@ -190,6 +197,13 @@ async function getAssetDetails(assetIds) {
     const details = new Map();
     if (assetIds.length === 0) return details;
 
+    // TEMPORARY — see src/observability/requestLogger.js. This is the
+    // BATCHED call (see valuationService.js's flushAssetBatch) — assetIds
+    // here can already combine unknown ids from several different
+    // concurrent /avatar or /battle requests, so this count is "how many
+    // ids needed a real catalog lookup in this one batch", not "how many
+    // one request asked for".
+    logRequestContext('ROBLOX-CALL catalog items/details', { count: assetIds.length, sample: assetIds.slice(0, 5) });
     const res = await limitedCatalogRequest(() => postCatalogDetails(assetIds));
     observeCatalogLimit(res.headers);
     const items = res.data?.data ?? [];

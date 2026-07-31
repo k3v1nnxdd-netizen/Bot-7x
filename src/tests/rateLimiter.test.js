@@ -118,6 +118,20 @@ module.exports = async function run() {
         assert(!bucket.getMetrics().circuitOpen, 'network error did NOT open the circuit');
     }
 
+    // --- 5xx (Roblox's own servers) is retried, same as a network error ---
+    {
+        const bucket = makeBucket('test-5xx', { startingMaxTokens: 40 });
+        let calls = 0;
+        const fn = async () => {
+            calls++;
+            if (calls === 1) { const e = new Error('Bad Gateway'); e.response = { status: 502, headers: {}, data: {} }; throw e; }
+            return { headers: {} };
+        };
+        await bucket.run(fn);
+        assert(calls === 2, '5xx retried once and succeeded');
+        assert(!bucket.getMetrics().circuitOpen, '5xx does NOT open the circuit — it is not a rate-limit signal');
+    }
+
     // --- 400 is NOT retried, propagates immediately ---
     {
         const bucket = makeBucket('test-400', { startingMaxTokens: 40 });

@@ -72,6 +72,18 @@ class CircuitOpenError extends Error {
 // real window isn't 60s: a "6 tokens per 3600s" bucket refilled on a
 // hardcoded 60s assumption would think it gets a fresh token every 10s, then
 // hit a real 429 wall almost immediately.
+//
+// Re-verified live (2026-07-30) rather than assumed: avatar.roblox.com is
+// currently back to reporting "40, 40;w=60, 70000" (x-ratelimit-remaining:
+// "39, 70000", x-ratelimit-reset: "49, 0") — the tighter "6, 6;w=3600,
+// 70000" seen previously was a real, distinct policy this same route was
+// put under at some point, not a fixed/permanent limit and not a
+// misreading on our part. Both formats parse correctly with the logic
+// below (see src/tests/rateLimiter.test.js, which asserts both). The
+// takeaway operationally: don't hardcode an assumption about what "the"
+// avatar.roblox.com limit is anywhere — this bucket has to keep reading it
+// from whatever Roblox actually sends on every response, because it has
+// already been observed to change.
 function parseLimitSegments(headerValue) {
     if (!headerValue) return [];
     return String(headerValue)
@@ -199,7 +211,25 @@ function makeBucket(label, { startingMaxTokens, startingWindowMs = DEFAULT_WINDO
         return circuitOpenUntil > Date.now();
     }
 
-    function openCircuit(waitMs) {
+    // Raw diagnostic snapshot of the 4 headers that actually drive (or could
+// help diagnose) rate-limit decisions — logged verbatim, no interpretation,
+// specifically so a policy change on a route like avatar.roblox.com can be
+// read directly off the logs instead of reverse-engineered from derived
+// numbers. x-ratelimit-remaining isn't used for any DECISION here (this
+// bucket tracks its OWN consumption locally via `tokens`, which is more
+// reliable than Roblox's server-reported remaining count — that count can
+// reflect other traffic on the same Roblox-side quota, not just ours — but
+// it's genuine diagnostic signal worth always having in the log line).
+function headerSnapshot(headers) {
+    return {
+        'x-ratelimit-limit': headers?.['x-ratelimit-limit'],
+        'x-ratelimit-remaining': headers?.['x-ratelimit-remaining'],
+        'x-ratelimit-reset': headers?.['x-ratelimit-reset'],
+        'retry-after': headers?.['retry-after'],
+    };
+}
+
+function openCircuit(waitMs, status, headers) {
         const boundedWaitMs = Math.min(waitMs, CIRCUIT_MAX_OPEN_MS);
         const newOpenUntil = Date.now() + boundedWaitMs;
         if (newOpenUntil > circuitOpenUntil) circuitOpenUntil = newOpenUntil; // never shorten an already-open window
@@ -207,7 +237,8 @@ function makeBucket(label, { startingMaxTokens, startingWindowMs = DEFAULT_WINDO
         console.warn(
             `[rateLimiter] Circuit OPEN para "${label}" — Roblox indicó ~${Math.round(boundedWaitMs / 1000)}s de espera` +
             (waitMs > boundedWaitMs ? ` (limitado a ${CIRCUIT_MAX_OPEN_MS / 60_000}min por seguridad, header pedía ${Math.round(waitMs / 1000)}s)` : '') +
-            `. Todas las requests a esta ruta fallarán rápido hasta ${new Date(circuitOpenUntil).toISOString()} en vez de reintentar.`
+            `. Todas las requests a esta ruta fallarán rápido hasta ${new Date(circuitOpenUntil).toISOString()} en vez de reintentar.`,
+            { status, headers: headerSnapshot(headers) }
         );
     }
 
@@ -260,16 +291,29 @@ function makeBucket(label, { startingMaxTokens, startingWindowMs = DEFAULT_WINDO
                 if (status === 429) metrics.total429s++;
                 if (status === 400) metrics.total400s++;
 
+                // Every 429 gets logged with the raw headers, regardless of
+                // which path it takes next (inline retry vs circuit-open) —
+                // "429 y situaciones relevantes" is exactly what this is:
+                // low-frequency by construction (only fires on an actual
+                // 429), and the one moment a policy investigation actually
+                // needs the real numbers, not a derived summary.
                 if (status === 429) {
+                    console.warn(`[rateLimiter] 429 de Roblox en "${label}"`, { headers: headerSnapshot(err.response.headers) });
                     const waitMs = computeWaitMs(err);
                     if (waitMs !== null && waitMs >= INLINE_RETRY_CEILING_MS) {
-                        openCircuit(waitMs);
+                        openCircuit(waitMs, status, err.response.headers);
                         throw new CircuitOpenError(label, circuitOpenUntil);
                     }
                 }
 
+                // 5xx (Roblox's own servers, not a rate-limit signal) is
+                // worth a bounded inline retry same as a network error — a
+                // transient 502/503 is common and usually clears within a
+                // retry or two; unlike 429 it never opens the circuit, since
+                // it says nothing about OUR consumption of this route.
                 const isNetworkError = !err?.response;
-                const isRetryable = status === 429 || isNetworkError;
+                const isServerError = status >= 500 && status < 600;
+                const isRetryable = status === 429 || isNetworkError || isServerError;
                 if (!isRetryable || attempt >= MAX_RETRIES) throw err;
 
                 attempt++;
@@ -287,6 +331,7 @@ function makeBucket(label, { startingMaxTokens, startingWindowMs = DEFAULT_WINDO
                         method: err.config?.method,
                         status,
                         errorCode: err.code,
+                        headers: headerSnapshot(err?.response?.headers),
                     }
                 );
                 await sleep(backoff);

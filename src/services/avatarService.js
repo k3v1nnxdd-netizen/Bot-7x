@@ -46,12 +46,22 @@ const valuationService = require('./valuationService');
 const TTL = {
     USER_INFO: 30 * 60_000,
     THUMBNAIL: 60_000,
-    WORN_ASSETS: 20_000,
-    FULL_VALUATION: 20_000,
+    // 20s -> 45s: a player doing several VS battles back to back was still
+    // re-hitting avatar.roblox.com more often than needed. 45s sits in the
+    // middle of the requested 30-60s range — long enough that a hot streak
+    // of battles for the same popular player costs at most one real avatar
+    // check per 45s (the rest are cache hits or, once past TTL, served
+    // instantly via stale-while-revalidate — see getWornAssetsWithStaleFallback),
+    // short enough that an outfit change is still reflected well within the
+    // timeframe a player would notice.
+    WORN_ASSETS: 45_000,
+    FULL_VALUATION: 45_000,
 };
 
 const metrics = {
-    staleWornAssetFallbacks: 0, // times a rate-limited avatar check served a last-known-good outfit instead of failing
+    staleWornAssetFallbacks: 0, // times Roblox was confirmed struggling and we served a last-known-good outfit instead of failing the valuation
+    swrServed: 0,               // times an expired-but-recent outfit was served INSTANTLY while a background refresh ran, instead of blocking the request
+    swrBackgroundRefreshFailed: 0, // background refreshes that themselves failed (harmless — just means the NEXT request tries again)
 };
 
 function getMetrics() {
@@ -70,9 +80,9 @@ function getAvatarThumbnail(userId) {
 }
 
 // Last known-good worn-items list per userId, kept independent of the short
-// TTL cache above — this is what makes the stale-fallback below possible.
-// Only ever updated on a genuinely successful live fetch (see
-// getWornAssetsWithStaleFallback), never on a stale-served response, so it
+// TTL cache above — this is what makes both the error-fallback AND the
+// stale-while-revalidate path below possible. Only ever updated on a
+// genuinely successful live fetch, never on a stale-served response, so it
 // always reflects "the last time we ACTUALLY confirmed this from Roblox".
 // Unbounded by userId count is fine at this project's realistic scale (a
 // Discord community, not millions of MAU) — bounded by age instead via the
@@ -87,28 +97,89 @@ setInterval(() => {
     }
 }, 60 * 60_000).unref();
 
-// Fetches the user's currently-worn asset ids, with a narrow, explicit
-// stale-data fallback: if Roblox's avatar endpoint is CONFIRMED rate-limited
-// right now (the bucket's circuit is open — see src/roblox/rateLimiter.js —
-// or Roblox answered with a 429 even after retries) AND we have a
-// previously-confirmed-live outfit for this exact user, serve THAT instead
-// of failing the whole valuation, clearly flagged as stale so callers (and
-// ultimately /battle, which cares most) know not to treat it as guaranteed
-// current. Deliberately narrow: any OTHER error (user not found, deleted
-// account, genuine network failure with no prior data) still propagates —
-// masking those with old data would be actively wrong, not just imprecise.
-async function getWornAssetsWithStaleFallback(userId) {
+// How long PAST the normal TTL an expired outfit is still safe to serve
+// INSTANTLY (no blocking on Roblox at all) while a fresh copy is fetched in
+// the background — this is what lets a hot streak of VS battles for the
+// same popular player never wait on avatar.roblox.com, not even for the one
+// real request every ~45s that keeps the cache warm. Bounded deliberately:
+// long enough to fully absorb the "cache just expired" moment with zero
+// caller-visible latency; short enough that if background refreshes ever
+// stopped succeeding outright (a genuine sustained Roblox outage), data
+// doesn't silently drift for hours — past this window a request falls back
+// to the blocking path instead (still with its OWN error-fallback safety
+// net below, just no longer instant).
+const STALE_WHILE_REVALIDATE_MS = 5 * 60_000;
+
+// A failure is worth falling back to last-known-good data for when it says
+// "Roblox couldn't be reached / is rate-limiting us right now" — NOT when it
+// says something definitive about the request itself (404 user not found,
+// 400 bad request), where masking the real answer with old data would be
+// actively wrong, not just imprecise:
+//   - CircuitOpenError / 429: the exact scenario this whole thing exists for.
+//   - 5xx: Roblox's own servers erroring — not our fault, not the user's.
+//   - no `err.response` at all (timeout, ECONNRESET, DNS failure, ...):
+//     genuine "couldn't reach Roblox", indistinguishable from the caller's
+//     perspective from a rate-limit-induced failure.
+function isFallbackEligibleError(err) {
+    if (err instanceof CircuitOpenError) return true;
+    const status = err?.response?.status;
+    if (status === 429) return true;
+    if (status >= 500 && status < 600) return true;
+    if (!err?.response) return true;
+    return false;
+}
+
+// Single-flight background refresh: reuses cache.getOrFetch's OWN in-flight
+// dedup (same key, same mechanism the blocking path uses) rather than
+// inventing a second one — if N concurrent requests all trigger this for
+// the same userId, only the FIRST actually schedules a fetch; the rest
+// transparently join it. Deliberately fire-and-forget from the caller's
+// perspective (not awaited) — that's what makes stale-while-revalidate not
+// block anything; its own success/failure is handled right here.
+function triggerBackgroundRevalidate(userId) {
+    cache.getOrFetch(`worn:${userId}`, TTL.WORN_ASSETS, () => roblox.getWornAssetIds(userId))
+        .then(assetIds => { lastKnownWornAssets.set(userId, { assetIds, fetchedAt: Date.now() }); })
+        .catch(err => {
+            metrics.swrBackgroundRefreshFailed++;
+            console.warn(`[avatarService] Background outfit revalidation failed for user ${userId} (still serving the last known outfit meanwhile):`, err.message);
+        });
+}
+
+// Fetches the user's currently-worn asset ids. Three tiers, in order:
+//   1. Fresh cache hit (within TTL) — instant, no Roblox call.
+//   2. Expired but within the stale-while-revalidate window — ALSO instant:
+//      serves the last confirmed outfit immediately and kicks off a
+//      deduplicated background refresh, so the cache is warm again for the
+//      NEXT request without this one ever waiting on Roblox. Skipped
+//      entirely when `allowSwr` is false (see `fresh` below) — a caller
+//      that explicitly asked for a guaranteed-live read must actually get
+//      one, not a recent-but-not-current snapshot.
+//   3. Genuine miss (nothing usable cached) — blocks on a real fetch,
+//      falling back to whatever last-known-good data exists (regardless of
+//      its age) ONLY if that fetch fails with a fallback-eligible error —
+//      see isFallbackEligibleError. This is the last line of defense: it's
+//      what keeps a VS battle working through a sustained Roblox outage for
+//      a player who hasn't been seen in the last `STALE_WHILE_REVALIDATE_MS`.
+async function getWornAssetsWithStaleFallback(userId, { allowSwr = true } = {}) {
+    const cached = cache.get(`worn:${userId}`);
+    if (cached !== undefined) return { assetIds: cached, stale: false, staleSince: null };
+
+    const last = lastKnownWornAssets.get(userId);
+    if (allowSwr && last && Date.now() - last.fetchedAt < TTL.WORN_ASSETS + STALE_WHILE_REVALIDATE_MS) {
+        metrics.swrServed++;
+        triggerBackgroundRevalidate(userId);
+        return { assetIds: last.assetIds, stale: false, staleSince: null };
+    }
+
     try {
         const assetIds = await cache.getOrFetch(`worn:${userId}`, TTL.WORN_ASSETS, () => roblox.getWornAssetIds(userId));
         lastKnownWornAssets.set(userId, { assetIds, fetchedAt: Date.now() });
         return { assetIds, stale: false, staleSince: null };
     } catch (err) {
-        const isRateLimited = err instanceof CircuitOpenError || err?.response?.status === 429;
-        const last = lastKnownWornAssets.get(userId);
-        if (isRateLimited && last) {
+        if (isFallbackEligibleError(err) && last) {
             metrics.staleWornAssetFallbacks++;
             console.warn(
-                `[avatarService] avatar.roblox.com rate-limited for user ${userId} — sirviendo el último outfit confirmado (${new Date(last.fetchedAt).toISOString()}) marcado como stale, en vez de fallar la valoración.`
+                `[avatarService] avatar.roblox.com no disponible para user ${userId} (${err?.response?.status ?? err?.code ?? err.name}) — sirviendo el último outfit confirmado (${new Date(last.fetchedAt).toISOString()}) marcado como stale, en vez de fallar la valoración.`
             );
             return { assetIds: last.assetIds, stale: true, staleSince: last.fetchedAt };
         }
@@ -147,14 +218,18 @@ function buildAvatarValuation(userId, { fresh = false } = {}) {
         cache.invalidate(key);
         cache.invalidate(`worn:${userId}`);
     }
-    return cache.getOrFetch(key, TTL.FULL_VALUATION, () => buildAvatarValuationUncached(userId));
+    return cache.getOrFetch(key, TTL.FULL_VALUATION, () => buildAvatarValuationUncached(userId, { fresh }));
 }
 
-async function buildAvatarValuationUncached(userId) {
+async function buildAvatarValuationUncached(userId, { fresh = false } = {}) {
     const [basicInfo, avatarThumbnail, wornResult] = await Promise.all([
         getUserBasicInfo(userId),
         getAvatarThumbnail(userId),
-        getWornAssetsWithStaleFallback(userId),
+        // `fresh` disables stale-while-revalidate specifically — a caller
+        // that invalidated the cache and asked for a live read must get one
+        // (or the documented error-fallback, if Roblox is truly
+        // unreachable), never a merely-recent SWR snapshot.
+        getWornAssetsWithStaleFallback(userId, { allowSwr: !fresh }),
     ]);
 
     const valuation = await valuationService.valuateWornAssets(wornResult.assetIds);

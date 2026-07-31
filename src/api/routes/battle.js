@@ -5,6 +5,7 @@ const router = express.Router();
 const battleService = require('../../services/battleService');
 const { validateBattlePayload, ValidationError } = require('../../security/validateBattlePayload');
 const { logRequestContext } = require('../../observability/requestLogger');
+const { makeLegacyGoneHandler } = require('../legacyGone');
 
 // Shared between both routes below: maps a failure from the valuation
 // pipeline to an HTTP response. Not reachable for ValidationError (that's
@@ -59,32 +60,13 @@ router.post('/', async (req, res) => {
     }
 });
 
-// OLD path — kept for backward compatibility and as the full fallback when
-// a caller has no assetIds to supply at all: both players' outfits are
-// fetched live from (or served cached/stale-while-revalidate from) Roblox's
-// avatar.roblox.com, exactly as before this feature existed.
-router.get('/:user1/:user2', async (req, res) => {
-    const id1 = Number(req.params.user1);
-    const id2 = Number(req.params.user2);
-    if (!Number.isInteger(id1) || id1 <= 0 || !Number.isInteger(id2) || id2 <= 0) {
-        return res.status(400).json({ error: 'userId inválido' });
-    }
-
-    // ?fresh=1 forces a guaranteed-live read for BOTH players — worth
-    // defaulting battle callers toward this: a battle result is a one-shot,
-    // consequential comparison (unlike casually re-checking /avatar), so the
-    // narrow window where a cached-but-just-changed outfit could favor
-    // whoever's snapshot is currently cached matters more here.
-    const fresh = req.query.fresh === '1' || req.query.fresh === 'true';
-
-    logRequestContext('GET /battle', { id1, id2, fresh }); // TEMPORARY — see requestLogger.js
-
-    try {
-        const result = await battleService.runBattle(id1, id2, { fresh });
-        res.json(result);
-    } catch (err) {
-        respondWithError(res, err, 'GET /battle');
-    }
-});
+// RETIRED (see src/api/legacyGone.js): public Roblox servers were confirmed
+// still calling this, each triggering a real avatar.roblox.com worn-items
+// check for BOTH players — exactly the load POST /battle above exists to
+// eliminate. Responds 410 immediately — never calls battleService.runBattle,
+// never touches Roblox. battleService.runBattle itself is untouched and
+// still exported (kept for now — not what this change is scoped to remove),
+// simply no longer reachable from any HTTP route.
+router.get('/:user1/:user2', makeLegacyGoneHandler('POST /battle'));
 
 module.exports = router;

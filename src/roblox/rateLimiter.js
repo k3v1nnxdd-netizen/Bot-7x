@@ -211,34 +211,29 @@ function makeBucket(label, { startingMaxTokens, startingWindowMs = DEFAULT_WINDO
         return circuitOpenUntil > Date.now();
     }
 
-    // Raw diagnostic snapshot of the 4 headers that actually drive (or could
-// help diagnose) rate-limit decisions — logged verbatim, no interpretation,
-// specifically so a policy change on a route like avatar.roblox.com can be
-// read directly off the logs instead of reverse-engineered from derived
-// numbers. x-ratelimit-remaining isn't used for any DECISION here (this
-// bucket tracks its OWN consumption locally via `tokens`, which is more
-// reliable than Roblox's server-reported remaining count — that count can
-// reflect other traffic on the same Roblox-side quota, not just ours — but
-// it's genuine diagnostic signal worth always having in the log line).
-function headerSnapshot(headers) {
-    return {
-        'x-ratelimit-limit': headers?.['x-ratelimit-limit'],
-        'x-ratelimit-remaining': headers?.['x-ratelimit-remaining'],
-        'x-ratelimit-reset': headers?.['x-ratelimit-reset'],
-        'retry-after': headers?.['retry-after'],
-    };
-}
+    // Raw diagnostic snapshot of the 4 headers that actually drive rate-limit
+    // decisions — logged verbatim, no interpretation, specifically so a
+    // policy change on a route like avatar.roblox.com can be read directly
+    // off the logs instead of reverse-engineered from derived numbers.
+    function headerSnapshot(headers) {
+        return {
+            'x-ratelimit-limit': headers?.['x-ratelimit-limit'],
+            'x-ratelimit-remaining': headers?.['x-ratelimit-remaining'],
+            'x-ratelimit-reset': headers?.['x-ratelimit-reset'],
+            'retry-after': headers?.['retry-after'],
+        };
+    }
 
-function openCircuit(waitMs, status, headers) {
+    function openCircuit(waitMs, reason, headers) {
         const boundedWaitMs = Math.min(waitMs, CIRCUIT_MAX_OPEN_MS);
         const newOpenUntil = Date.now() + boundedWaitMs;
         if (newOpenUntil > circuitOpenUntil) circuitOpenUntil = newOpenUntil; // never shorten an already-open window
         circuitBreakerActivations++;
         console.warn(
-            `[rateLimiter] Circuit OPEN para "${label}" — Roblox indicó ~${Math.round(boundedWaitMs / 1000)}s de espera` +
+            `[rateLimiter] Circuit OPEN para "${label}" (${reason}) — Roblox indicó ~${Math.round(boundedWaitMs / 1000)}s de espera` +
             (waitMs > boundedWaitMs ? ` (limitado a ${CIRCUIT_MAX_OPEN_MS / 60_000}min por seguridad, header pedía ${Math.round(waitMs / 1000)}s)` : '') +
             `. Todas las requests a esta ruta fallarán rápido hasta ${new Date(circuitOpenUntil).toISOString()} en vez de reintentar.`,
-            { status, headers: headerSnapshot(headers) }
+            { headers: headerSnapshot(headers) }
         );
     }
 
@@ -260,16 +255,52 @@ function openCircuit(waitMs, status, headers) {
     // immediately. Called by roblox.js on EVERY response (success or
     // error) — that's what lets this bucket notice a tightened limit before
     // it ever causes a 429, not just after.
+    //
+    // Also SYNCS our local token count against x-ratelimit-remaining, and
+    // can open the circuit proactively — both were previously unused for
+    // any decision (remaining was logged only). Two concrete gaps that
+    // closes:
+    //   1. This bucket's `tokens` is normally paced from OUR OWN request
+    //      history alone. That's correct in isolation, but if the REAL
+    //      Roblox-side quota is also being drawn down by something this
+    //      process doesn't see (another instance of this same service,
+    //      Railway's shared egress IP being used by other tenants, a
+    //      different integration on the same account) our local estimate
+    //      can be OPTIMISTIC relative to reality — we'd think we have
+    //      headroom Roblox has already given to someone else, and only
+    //      find out via an actual 429. Clamping `tokens` DOWN (never up)
+    //      to whatever Roblox's strictest reported `remaining` says closes
+    //      that gap regardless of why the drift happened.
+    //   2. Roblox reports remaining/reset on SUCCESSFUL responses too, not
+    //      just 429s. If remaining has already hit 0 with a long reset
+    //      still to go, the NEXT request is now guaranteed to 429 — there's
+    //      no reason to wait for that guaranteed failure just to learn
+    //      what this response already told us. Opening the circuit right
+    //      here (still gated by the same INLINE_RETRY_CEILING_MS threshold
+    //      used everywhere else, so a normal near-the-end-of-a-fast-window
+    //      remaining:0 with a 1-2s reset does NOT trigger this) saves that
+    //      one avoidable request per exhaustion event.
     function observeLimit(headers) {
         const observed = parseStrictestLimit(headers?.['x-ratelimit-limit'], windowMs);
-        if (!observed || observed.limit <= 0) return;
-        if (observed.limit === maxTokens && observed.windowMs === windowMs) return;
-        console.warn(
-            `[rateLimiter] Roblox cambió el límite de "${label}": ${maxTokens} req/${windowMs / 1000}s -> ${observed.limit} req/${observed.windowMs / 1000}s. Ajustando el limitador en caliente.`
-        );
-        maxTokens = observed.limit;
-        windowMs = observed.windowMs;
-        tokens = Math.min(tokens, maxTokens);
+        if (observed && observed.limit > 0 && (observed.limit !== maxTokens || observed.windowMs !== windowMs)) {
+            console.warn(
+                `[rateLimiter] Roblox cambió el límite de "${label}": ${maxTokens} req/${windowMs / 1000}s -> ${observed.limit} req/${observed.windowMs / 1000}s. Ajustando el limitador en caliente.`
+            );
+            maxTokens = observed.limit;
+            windowMs = observed.windowMs;
+            tokens = Math.min(tokens, maxTokens);
+        }
+
+        const remaining = parseMinHeaderValue(headers?.['x-ratelimit-remaining']);
+        if (remaining === null) return;
+        if (remaining < tokens) tokens = Math.max(0, remaining);
+
+        if (remaining <= 0 && !isCircuitOpen()) {
+            const resetSeconds = parseMaxHeaderValue(headers?.['x-ratelimit-reset']);
+            if (resetSeconds !== null && resetSeconds * 1000 >= INLINE_RETRY_CEILING_MS) {
+                openCircuit(resetSeconds * 1000, 'x-ratelimit-remaining=0 detectado proactivamente', headers);
+            }
+        }
     }
 
     async function attemptOnce(fn) {
@@ -299,11 +330,15 @@ function openCircuit(waitMs, status, headers) {
                 // needs the real numbers, not a derived summary.
                 if (status === 429) {
                     console.warn(`[rateLimiter] 429 de Roblox en "${label}"`, { headers: headerSnapshot(err.response.headers) });
+                    // observeLimit() above may have ALREADY opened the circuit
+                    // proactively (same headers, remaining=0 branch) — don't
+                    // double-open/double-count if so, but a 429 with a long
+                    // wait always means the circuit ends up open either way.
                     const waitMs = computeWaitMs(err);
-                    if (waitMs !== null && waitMs >= INLINE_RETRY_CEILING_MS) {
-                        openCircuit(waitMs, status, err.response.headers);
-                        throw new CircuitOpenError(label, circuitOpenUntil);
+                    if (!isCircuitOpen() && waitMs !== null && waitMs >= INLINE_RETRY_CEILING_MS) {
+                        openCircuit(waitMs, `429 status=${status}`, err.response.headers);
                     }
+                    if (isCircuitOpen()) throw new CircuitOpenError(label, circuitOpenUntil);
                 }
 
                 // 5xx (Roblox's own servers, not a rate-limit signal) is

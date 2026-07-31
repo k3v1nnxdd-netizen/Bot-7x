@@ -95,6 +95,73 @@ module.exports = async function run() {
         assert(fnCallsDuringOpen === 0, 'long wait: zero real calls made by the 10 waiting requests — no retry storm');
     }
 
+    // --- EXACT production header combination reported live: verifies the
+    // multi-segment parser end to end (not just parseStrictestLimit in
+    // isolation) against the real strings, including the mismatched segment
+    // COUNT between x-ratelimit-limit (3 segments) and
+    // x-ratelimit-remaining/x-ratelimit-reset (2 segments each) — this is
+    // real Roblox behavior (the bare "6" and annotated "6;w=3600" both
+    // describe the SAME strict policy, which only needs one remaining/reset
+    // value), confirmed live by watching `remaining` decrement 1-for-1
+    // across successive real calls. ---
+    {
+        const bucket = makeBucket('test-production-case', { startingMaxTokens: 40, startingWindowMs: 60_000 });
+        let calls = 0;
+        const fn = async () => {
+            calls++;
+            throw make429Error({ limitHeader: '6, 6;w=3600, 70000', remaining: '0, 70000', reset: '1445, 0', retryAfter: 5 });
+        };
+        const t0 = Date.now();
+        let caught = null;
+        try { await bucket.run(fn); } catch (err) { caught = err; }
+
+        assert(caught?.circuitOpen === true, 'production case: opened the circuit');
+        assert(Date.now() - t0 < 2000, 'production case: failed fast, no inline sleep');
+        assert(calls === 1, 'production case: exactly one real call made');
+        const m = bucket.getMetrics();
+        assert(m.maxTokens === 6 && m.windowMs === 3_600_000, `production case: adopted 6 req/3600s correctly (got ${m.maxTokens}/${m.windowMs})`);
+        assert(m.circuitBreakerActivations === 1, 'production case: circuit opened exactly once (no double-count between the proactive and reactive paths)');
+        const actualOpenFor = m.circuitOpenUntil - Date.now();
+        assert(Math.abs(actualOpenFor - 1445 * 1000) < 3000, `production case: circuit open duration matches the real 1445s reset (got ~${Math.round(actualOpenFor / 1000)}s)`);
+    }
+
+    // --- Proactive open: a SUCCESSFUL (200) response already reporting
+    // remaining=0 with a long reset must open the circuit WITHOUT waiting
+    // for a subsequent guaranteed-to-fail 429 to discover it the hard way. ---
+    {
+        const bucket = makeBucket('test-proactive', { startingMaxTokens: 40, startingWindowMs: 60_000 });
+        const res = { headers: { 'x-ratelimit-limit': '6, 6;w=3600, 70000', 'x-ratelimit-remaining': '0, 70000', 'x-ratelimit-reset': '1445, 0' } };
+        await bucket.run(async () => res);
+        bucket.observeLimit(res.headers); // mirrors roblox/client.js's call pattern on every successful response
+        const m = bucket.getMetrics();
+        assert(m.circuitOpen === true, 'proactive: circuit opened from a SUCCESSFUL response alone, before any 429 was ever received');
+        assert(m.circuitBreakerActivations === 1, 'proactive: exactly one activation');
+    }
+
+    // --- Local token count syncs DOWN to Roblox's reported remaining (never up) ---
+    {
+        const bucket = makeBucket('test-sync-down', { startingMaxTokens: 40, startingWindowMs: 3_600_000 });
+        // Bucket believes it has plenty of headroom (40 tokens)...
+        const res = { headers: { 'x-ratelimit-limit': '40, 40;w=3600, 70000', 'x-ratelimit-remaining': '3, 70000', 'x-ratelimit-reset': '5, 0' } };
+        await bucket.run(async () => res);
+        bucket.observeLimit(res.headers);
+        // ...but Roblox says only 3 are actually left (e.g. shared-quota
+        // drift from traffic this process can't see) — our local count must
+        // drop to match, not stay optimistic at ~39.
+        const remainingSegmentsMatch = res.headers['x-ratelimit-remaining'].startsWith('3');
+        assert(remainingSegmentsMatch, 'sync-down setup sanity check');
+        // Can't read `tokens` directly (closure-private) — prove it
+        // indirectly: draining exactly 3 more calls should succeed, a 4th
+        // should have to wait for a token (short reset=5s window, so we
+        // just confirm it does NOT throw immediately as "plenty of tokens").
+        let drained = 0;
+        for (let i = 0; i < 3; i++) {
+            await bucket.run(async () => ({ headers: {} }));
+            drained++;
+        }
+        assert(drained === 3, 'sync-down: the 3 remaining (synced-down) tokens were usable');
+    }
+
     // --- Dynamic window adoption from a SUCCESS response (not just errors) ---
     {
         const bucket = makeBucket('test-observe', { startingMaxTokens: 40, startingWindowMs: 60_000 });

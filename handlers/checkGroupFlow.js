@@ -53,7 +53,7 @@ function buildEligibilityEmbed(groupKey, robloxUsername, discordUserId, status) 
     let statusText;
     if (status === 'eligible')     statusText = '<:true:1501213776878501899> **ELEGIBLE** — Puede recibir envíos de Robux.';
     else if (status === 'not_eligible') statusText = '<:alert:1501220021035204658> **NO ELEGIBLE** — No puede recibir envíos de Robux.';
-    else                             statusText = '⏳ Pendiente de revisión.';
+    else                             statusText = 'Pendiente de revisión.';
 
     return new EmbedBuilder()
         .setColor(EMBED_COLOR)
@@ -63,7 +63,7 @@ function buildEligibilityEmbed(groupKey, robloxUsername, discordUserId, status) 
             `<:point:1501212595464700104> **Solicitado por**\n<@${discordUserId}>\n\n` +
             `**Estado**\n${statusText}`
         )
-        .setImage(`attachment://${group.attachName}`)
+        .setThumbnail(`attachment://${group.attachName}`)
         .setFooter({ text: '7x Community • Check Group' })
         .setTimestamp();
 }

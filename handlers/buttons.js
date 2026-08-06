@@ -14,6 +14,7 @@ const { buildRefRow, sendPurchaseDM } = require('../utils/purchaseDm');
 const reviews            = require('../utils/reviews');
 const { requestReview }  = require('../utils/reviewFlow');
 const { startSeguidoresTicket, handleSeguidoresButton } = require('./seguidoresFlow');
+const { handleCheckGroupButton } = require('./checkGroupFlow');
 const config             = require('../config');
 
 // ── Countdown timers per ticket channel ───────────────────────────────────────
@@ -43,6 +44,8 @@ const PANEL_BUTTONS  = new Set(['comprar', 'otra_cosa', 'duels', 'seguidores']);
 const CALC_BUTTONS   = new Set(['calc_dinero', 'calc_robux']);
 const VERIF_BUTTONS  = new Set(['verif_check']);
 const TICKET_BUTTONS = new Set(['confirmar_pago', 'cerrar_ticket', 'confirmar_cerrar', 'cancelar_cerrar']);
+const CHECKGROUP_BUTTONS = new Set(['cg_noctra', 'cg_community', 'cg_group7x']);
+const CHECKGROUP_RESULT_BUTTONS = new Set(['cg_elig_yes', 'cg_elig_no']);
 
 function isTicketChannel(interaction) {
     return (
@@ -88,6 +91,18 @@ async function guardButton(interaction) {
     // Ticket-only buttons must come from an active ticket channel
     if (TICKET_BUTTONS.has(interaction.customId) && !isTicketChannel(interaction)) {
         await safeReply(interaction, { content: 'Este boton solo funciona dentro de un ticket activo.', ephemeral: true });
+        return false;
+    }
+
+    // Check Group panel buttons must come from the check group channel
+    if (CHECKGROUP_BUTTONS.has(interaction.customId) && interaction.channelId !== config.CHANNELS.CHECKGROUP) {
+        await safeReply(interaction, { content: 'Usa los botones del panel oficial de Check Group.', ephemeral: true });
+        return false;
+    }
+
+    // Check Group eligibility buttons must come from the results channel
+    if (CHECKGROUP_RESULT_BUTTONS.has(interaction.customId) && interaction.channelId !== config.CHANNELS.CHECKGROUP_RESULTS) {
+        await safeReply(interaction, { content: 'Este boton solo funciona en el canal de resultados.', ephemeral: true });
         return false;
     }
 
@@ -400,8 +415,9 @@ async function handleButton(interaction) {
     if (interaction.replied || interaction.deferred) return;
 
     const isSeg    = interaction.customId.startsWith('seg_');
+    const isCg     = interaction.customId.startsWith('cg_');
     const isReview = interaction.customId.startsWith('review_rate:');
-    const fn = isSeg ? handleSeguidoresButton : isReview ? onReviewRate : HANDLERS[interaction.customId];
+    const fn = isSeg ? handleSeguidoresButton : isCg ? handleCheckGroupButton : isReview ? onReviewRate : HANDLERS[interaction.customId];
     if (!fn) return;
 
     try {

@@ -18,6 +18,7 @@ const { getJoinDate, getLastChecked, trackIfNew, updateLastChecked, daysSince } 
 const config                                               = require('../config');
 const { buildMetodosEmbed, buildMetodosRow }               = require('../metodos');
 const { handleSeguidoresModal }                             = require('./seguidoresFlow');
+const { handleCheckGroupModal }                             = require('./checkGroupFlow');
 
 // ── Modal builders ────────────────────────────────────────────────────────────
 // These are exported so buttons.js can pass them to safeShowModal().
@@ -627,8 +628,9 @@ async function handleModal(interaction) {
     if (interaction.replied || interaction.deferred) return;
 
     const isSeg    = interaction.customId.startsWith('seg_');
+    const isCg     = interaction.customId.startsWith('cg_modal_');
     const isReview = interaction.customId.startsWith('review_modal:');
-    const fn = isSeg ? handleSeguidoresModal : isReview ? handleReviewModal : HANDLERS[interaction.customId];
+    const fn = isSeg ? handleSeguidoresModal : isCg ? handleCheckGroupModal : isReview ? handleReviewModal : HANDLERS[interaction.customId];
     if (!fn) return;
 
     try {

@@ -34,7 +34,7 @@ async function sendPricesTo(target) {
         for (let i = 0; i < chunks.length; i++) {
             const t = title + (chunks.length > 1 ? ` (${i + 1}/${chunks.length})` : '');
             await target.send({
-                embeds: [new EmbedBuilder().setColor(0x000000).setTitle(t).setDescription(chunks[i])],
+                embeds: [new EmbedBuilder().setColor(0x2B2D31).setTitle(t).setDescription(chunks[i])],
             });
         }
     }

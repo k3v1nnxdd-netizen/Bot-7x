@@ -11,6 +11,20 @@ const config = require('../config');
 
 const EMBED_COLOR = 0x2B2D31; // gray, per request
 
+// Anti-spam: caps how many unresolved requests a single Discord user can have
+// in the results channel at once (per Discord user, not per Roblox username).
+// In-memory only — resets on restart, same as the rest of this flow's state.
+const MAX_PENDING_PER_USER = 3;
+const pendingByUser = new Map(); // discordUserId -> count of unresolved requests
+
+function pendingCount(userId) { return pendingByUser.get(userId) ?? 0; }
+function incrementPending(userId) { pendingByUser.set(userId, pendingCount(userId) + 1); }
+function decrementPending(userId) {
+    const next = pendingCount(userId) - 1;
+    if (next <= 0) pendingByUser.delete(userId);
+    else pendingByUser.set(userId, next);
+}
+
 const GROUPS = {
     noctra:    { label: '7x (Antes Noctra Study)', file: path.join(__dirname, '..', 'se7en.png'),          attachName: 'se7en.png' },
     community: { label: "7x Community's",          file: path.join(__dirname, '..', '7 communitys.png'),   attachName: 'communitys.png' },
@@ -95,6 +109,13 @@ async function handleCheckGroupModal(interaction) {
         return safeReply(interaction, { content: '❌ Ingresa un nombre de usuario válido.', ephemeral: true });
     }
 
+    if (pendingCount(interaction.user.id) >= MAX_PENDING_PER_USER) {
+        return safeReply(interaction, {
+            content: `❌ Ya tienes ${MAX_PENDING_PER_USER} solicitudes pendientes de revisión. Espera a que se resuelvan antes de enviar otra.`,
+            ephemeral: true,
+        });
+    }
+
     if (!await safeDeferReply(interaction, { ephemeral: true })) return;
 
     const resultsChannel = interaction.client.channels.cache.get(config.CHANNELS.CHECKGROUP_RESULTS);
@@ -111,6 +132,7 @@ async function handleCheckGroupModal(interaction) {
             components: [buildEligibilityRow()],
             ...(fileExists && { files: [{ attachment: group.file, name: group.attachName }] }),
         });
+        incrementPending(interaction.user.id);
         await safeEditReply(interaction, { content: '✅ Tu solicitud fue enviada. Revisa el canal de resultados para ver si eres elegible.' });
     } catch (err) {
         console.error('[checkGroupFlow] send error:', err);
@@ -143,6 +165,8 @@ async function handleEligibilityButton(interaction) {
 
     const groupLabel = (oldEmbed?.title ?? '').replace(/^Elegibilidad - /, '');
     const groupKey = Object.keys(GROUPS).find(k => GROUPS[k].label === groupLabel) ?? 'noctra';
+
+    decrementPending(discordUserId);
 
     const embed = buildEligibilityEmbed(groupKey, robloxUsername, discordUserId, status);
     await interaction.update({ embeds: [embed], components: [buildEligibilityRow(true)] });

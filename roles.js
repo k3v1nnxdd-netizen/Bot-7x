@@ -27,7 +27,7 @@ function getRolesMsgId() { return rolesMsgId; }
 
 function buildRolesEmbed() {
     return new EmbedBuilder()
-        .setColor(0x000000)
+        .setColor(0x2B2D31)
         .setDescription(
             '# 7x • Ping Roles\n\n' +
             '<:point:1501212595464700104> Presiona la reacción correspondiente para recibir notificaciones\n\n' +

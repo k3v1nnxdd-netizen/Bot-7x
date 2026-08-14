@@ -5,7 +5,7 @@ const config = require('./config');
 
 function buildVerifEmbed() {
     return new EmbedBuilder()
-        .setColor(0x000000)
+        .setColor(0x2B2D31)
         .setDescription(
             "# 7x Community - Group's\n\n" +
             "<:followers7x:1525326777071960124> **7x Community's**\n" +

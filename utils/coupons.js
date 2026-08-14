@@ -1,9 +1,9 @@
 'use strict';
 
-const fs   = require('fs');
-const path = require('path');
+const fs = require('fs');
+const { dataPath, ensureDataDir } = require('./dataDir');
 
-const FILE = path.join(__dirname, '../data/coupons.json');
+const FILE = dataPath('coupons.json');
 const TMP  = FILE + '.tmp';
 
 function load() {
@@ -12,8 +12,7 @@ function load() {
 }
 
 function save(data) {
-    const dir = path.dirname(FILE);
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    ensureDataDir();
     fs.writeFileSync(TMP, JSON.stringify(data, null, 2), 'utf8');
     fs.renameSync(TMP, FILE);
 }

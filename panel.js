@@ -5,7 +5,7 @@ const config = require('./config');
 
 function buildEmbed() {
     return new EmbedBuilder()
-        .setColor(0x000000)
+        .setColor(0x2B2D31)
         .setTitle('<:buy:1501212698556371004> ** 7x COMMUNITY - Soporte & Compras**')
         .setDescription(
             '¿Quieres comprar **Robux** o tienes alguna **duda**?\n' +

@@ -5,7 +5,7 @@ const config = require('./config');
 
 function buildCalcEmbed() {
     return new EmbedBuilder()
-        .setColor(0x000000)
+        .setColor(0x2B2D31)
         .setTitle('#7x Community - Robux')
         .setDescription(
             '¿Quieres saber cuántos Robux puedes comprar o cuánto costarán los que necesitas?\n\n' +

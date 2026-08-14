@@ -10,7 +10,7 @@ const IMAGE_EXISTS = fs.existsSync(IMAGE_PATH);
 
 function buildReglasEmbed() {
     const embed = new EmbedBuilder()
-        .setColor(0x000000)
+        .setColor(0x2B2D31)
         .setDescription(
             '<:rgl:1510169745557819543> **REGLAS DEL SERVIDOR**\n\n' +
 

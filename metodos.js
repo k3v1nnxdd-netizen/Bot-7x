@@ -20,7 +20,7 @@ const OXXO_EXISTS = fs.existsSync(OXXO_PATH);
 
 function buildMetodosEmbed() {
     return new EmbedBuilder()
-        .setColor(0x000000)
+        .setColor(0x2B2D31)
         .setDescription(
             '# 7x - Métodos de Pago\n\n\n' +
             '<:point:1501212595464700104> Consulta los métodos de pago disponibles actualmente en 7x utilizando el menú desplegable de abajo.\n\n' +
@@ -60,7 +60,7 @@ function buildMetodosRow() {
 
 function buildTransferenciaEmbed() {
     return new EmbedBuilder()
-        .setColor(0x000000)
+        .setColor(0x2B2D31)
         .setTitle('🇲🇽 Transferencia — Mercado Pago')
         .setDescription(
             'Transferencia es uno de nuestros métodos de pago. A continuación se te otorgarán los datos para enviar el dinero.\n\n' +
@@ -93,7 +93,7 @@ function buildTransferenciaRow() {
 
 function buildOxxoEmbed() {
     const embed = new EmbedBuilder()
-        .setColor(0x000000)
+        .setColor(0x2B2D31)
         .setTitle('<:oxxo:1510195718231429180> Depósito OXXO')
         .setDescription(
             '<:point:1501212595464700104> Puedes realizar tu pago mediante depósito OXXO utilizando el código QR mostrado a continuación.\n\n' +
@@ -107,7 +107,7 @@ function buildOxxoEmbed() {
 
 function buildGiftCardEmbed() {
     return new EmbedBuilder()
-        .setColor(0x000000)
+        .setColor(0x2B2D31)
         .setTitle('<:card:1510169188373758166> Gift Card')
         .setDescription(
             '<:point:1501212595464700104> Aceptamos Gift Cards para compras internacionales.\n\n' +

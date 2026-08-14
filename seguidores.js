@@ -5,7 +5,7 @@ const config = require('./config');
 
 function buildSeguidoresEmbed() {
     return new EmbedBuilder()
-        .setColor(0x000000)
+        .setColor(0x2B2D31)
         .setDescription(
             '# SEGUIDORES\n\n' +
 

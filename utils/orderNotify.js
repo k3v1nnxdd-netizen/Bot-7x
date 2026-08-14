@@ -3,6 +3,7 @@
 const { EmbedBuilder } = require('discord.js');
 const config = require('../config');
 const tickets = require('./tickets');
+const robuxLeaderboard = require('./robuxLeaderboard');
 
 const TYPE_LABELS = {
     comprar:    'Compra de Robux',
@@ -28,6 +29,8 @@ async function findComprobante(channel, buyerId) {
 
 // Scrapes the order-specific embed each flow already sent when the ticket
 // was created — the only place these details exist (nothing is persisted).
+// For 'comprar' tickets also returns the parsed numeric robuxAmount/priceMxn
+// so the caller can feed the Robux leaderboard.
 async function extractOrderFields(channel, ticketType) {
     try {
         const messages = await channel.messages.fetch({ limit: 100 });
@@ -38,16 +41,20 @@ async function extractOrderFields(channel, ticketType) {
             const price = desc.match(/Precio final a pagar\*\*\n```\$([^`]+) MXN```/)?.[1]
                        ?? desc.match(/Precio a pagar\*\*\n```\$([^`]+) MXN```/)?.[1]
                        ?? null;
-            return [
-                { name: 'Robux comprados', value: robux },
-                { name: 'Precio',          value: price ? `$${price} MXN` : 'No disponible' },
-            ];
+            return {
+                fields: [
+                    { name: 'Robux comprados', value: robux },
+                    { name: 'Precio',          value: price ? `$${price} MXN` : 'No disponible' },
+                ],
+                robuxAmount: parseInt(robux.replace(/[^\d]/g, ''), 10) || null,
+                priceMxn:    price ? parseFloat(price.replace(/[^\d.]/g, '')) : null,
+            };
         }
 
         if (ticketType === 'duels') {
             const desc = messages.find(m => m.embeds[0]?.description?.includes('Set solicitado'))?.embeds[0]?.description ?? '';
             const set = desc.match(/Set solicitado\*\*\n```([^`]+)```/)?.[1] ?? 'No disponible';
-            return [{ name: 'Set solicitado', value: set }];
+            return { fields: [{ name: 'Set solicitado', value: set }] };
         }
 
         if (ticketType === 'seguidores') {
@@ -58,18 +65,18 @@ async function extractOrderFields(channel, ticketType) {
             const fields = [{ name: 'Seguidores', value: qty }];
             if (platform) fields.unshift({ name: 'Plataforma', value: platform });
             fields.push({ name: 'Precio', value: price ? `$${price} MXN` : 'No disponible' });
-            return fields;
+            return { fields };
         }
 
         if (ticketType === 'soporte') {
             const desc = messages.find(m => m.embeds[0]?.description?.includes('Motivo'))?.embeds[0]?.description ?? '';
             const motivo = desc.match(/Motivo\*\*\n```([^`]+)```/)?.[1] ?? 'No disponible';
-            return [{ name: 'Motivo', value: motivo }];
+            return { fields: [{ name: 'Motivo', value: motivo }] };
         }
 
-        return [];
+        return { fields: [] };
     } catch {
-        return [];
+        return { fields: [] };
     }
 }
 
@@ -85,14 +92,18 @@ async function sendOrderCompletionSummary(client, channel, buyerId) {
     }
 
     const ticketType = tickets.getType(channel);
-    const [fields, comprobante] = await Promise.all([
+    const [{ fields, robuxAmount, priceMxn }, comprobante] = await Promise.all([
         extractOrderFields(channel, ticketType),
         findComprobante(channel, buyerId),
     ]);
 
+    if (ticketType === 'comprar' && robuxAmount) {
+        robuxLeaderboard.recordPurchase(buyerId, robuxAmount, priceMxn);
+    }
+
     const embed = new EmbedBuilder()
-        .setColor(0x000000)
-        .setTitle('<:true:1501213776878501899> Pedido completado')
+        .setColor(0x2B2D31)
+        .setTitle('Pedido completado')
         .setDescription(
             `<:member:1501261625523699892> **Cliente**\n<@${buyerId}>\n\n` +
             `<:point:1501212595464700104> **Tipo de ticket**\n\`${TYPE_LABELS[ticketType] ?? 'Desconocido'}\`` +

@@ -19,7 +19,7 @@ async function sendPurchaseDM(client, userId) {
         const user  = await client.users.fetch(userId);
 
         const embed = new EmbedBuilder()
-            .setColor(0x000000)
+            .setColor(0x2B2D31)
             .setThumbnail(guild?.iconURL({ size: 256 }) ?? null)
             .setTitle('<:truepurple:1501214679400190086> ¡Gracias por tu compra en 7x!')
             .setDescription(

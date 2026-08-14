@@ -252,7 +252,7 @@ async function handleComprarModal(interaction) {
 
 
         const embedWelcome = new EmbedBuilder()
-            .setColor(0x000000)
+            .setColor(0x2B2D31)
             .setTitle('Resumen de tu compra')
             .setThumbnail(interaction.user.displayAvatarURL({ size: 256 }))
             .setDescription(descLines)
@@ -315,7 +315,7 @@ async function handleOtraCosaModal(interaction) {
         const channel = await tickets.createTicket(interaction.guild, userId, 'soporte', `soporte-${pad(soporteN++)}`);
 
         const embed = new EmbedBuilder()
-            .setColor(0x000000)
+            .setColor(0x2B2D31)
             .setTitle('🎫 ¡Bienvenido a tu ticket de soporte!')
             .setThumbnail(interaction.user.displayAvatarURL({ size: 256 }))
             .setDescription(
@@ -400,12 +400,12 @@ async function handleCalcDineroModal(interaction) {
     }
 
     const embed = new EmbedBuilder()
-        .setColor(0x000000)
-        .setTitle('<:money:1501213606077792266> Resultado del cálculo')
+        .setColor(0x2B2D31)
+        .setTitle('<a:boost:1525333836181934081> Resultado del cálculo')
         .addFields(
-            { name: '<:money:1501213606077792266> Presupuesto ingresado', value: `$${budget.toLocaleString('es-MX', { minimumFractionDigits: 0, maximumFractionDigits: 2 })} MXN`, inline: true },
+            { name: '<:point:1501212595464700104> Presupuesto ingresado', value: `$${budget.toLocaleString('es-MX', { minimumFractionDigits: 0, maximumFractionDigits: 2 })} MXN`, inline: true },
             { name: '<a:robuxxx:1510070809366892604> Robux que puedes obtener', value: `${result.robux.toLocaleString()} Robux`, inline: true },
-            { name: '<:money:1501213606077792266> Precio exacto del paquete', value: `${result.price} MXN`, inline: true },
+            { name: '<a:shop:1190502129748676650> Precio exacto del paquete', value: `${result.price} MXN`, inline: true },
         )
         .setFooter({ text: '7x Community • Calculadora de precios' });
 
@@ -433,12 +433,12 @@ async function handleCalcRobuxModal(interaction) {
     }
 
     const embed = new EmbedBuilder()
-        .setColor(0x000000)
-        .setTitle('<:money:1501213606077792266> Resultado del cálculo')
+        .setColor(0x2B2D31)
+        .setTitle('<a:boost:1525333836181934081> Resultado del cálculo')
         .setDescription(result.rounded ? `<:alert:1501220021035204658> Tu monto fue redondeado al paquete más cercano: **${result.amount.toLocaleString()} Robux**.` : null)
         .addFields(
             { name: '<a:robuxxx:1510070809366892604> Robux solicitados', value: `${result.amount.toLocaleString()} Robux`, inline: true },
-            { name: '<:money:1501213606077792266> Precio total', value: `${result.price} MXN`, inline: true },
+            { name: '<a:shop:1190502129748676650> Precio total', value: `${result.price} MXN`, inline: true },
         )
         .setFooter({ text: '7x Community • Calculadora de precios' });
 
@@ -479,7 +479,7 @@ async function handleVerifModal(interaction) {
         robloxUser = await roblox.getUserByUsername(username);
     } catch {
         const embed = new EmbedBuilder()
-            .setColor(0x000000)
+            .setColor(0x2B2D31)
             .setTitle('<:alert:1501220021035204658> Usuario no encontrado')
             .setDescription(
                 `No encontramos ninguna cuenta de Roblox con el nombre **${username}**.\n\n` +
@@ -501,7 +501,7 @@ async function handleVerifModal(interaction) {
 
     if (!inGroup) {
         const embed = new EmbedBuilder()
-            .setColor(0x000000)
+            .setColor(0x2B2D31)
             .setTitle('<:alert:1501220021035204658> No estás en la comunidad')
             .setDescription(
                 `**${robloxUser.name}** no se encuentra en la comunidad de Roblox requerida.\n\n` +
@@ -532,7 +532,7 @@ async function handleVerifModal(interaction) {
         : 'Primera vez';
 
     const embed = new EmbedBuilder()
-        .setColor(0x000000)
+        .setColor(0x2B2D31)
         .setTitle(`${statusIcon} Resultado de Verificación`)
         .addFields(
             { name: '<:member:1501261625523699892> Usuario de Roblox', value: `\`${robloxUser.name}\``,                  inline: true },

@@ -213,7 +213,7 @@ async function onConfirmarPago(interaction) {
     const mention = ownerId ? `<@${ownerId}>` : 'Usuario';
 
     const embed = new EmbedBuilder()
-        .setColor(0x000000)
+        .setColor(0x2B2D31)
         .setTitle('<:truepurple:1501214679400190086> PAGO EXITOSO')
         .setThumbnail(EXITOSO_EXISTS ? `attachment://${EXITOSO_NAME}` : null)
         .setDescription(

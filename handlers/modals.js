@@ -574,6 +574,15 @@ function buildReviewModal(ticketChannelId) {
                 .setMaxLength(1)
                 .setPlaceholder('Ej: 5')
                 .setRequired(true)
+        ),
+        new ActionRowBuilder().addComponents(
+            new TextInputBuilder()
+                .setCustomId('review_comment')
+                .setLabel('Déjanos una breve reseña sobre tu experiencia')
+                .setStyle(TextInputStyle.Short)
+                .setMaxLength(200)
+                .setPlaceholder('Ejem: Rapido, Legal, ect.')
+                .setRequired(true)
         )
     );
     return modal;
@@ -592,6 +601,11 @@ async function handleReviewModal(interaction) {
         return safeReply(interaction, { content: '❌ Escribe solo un número entero del 1 al 5.', ephemeral: true });
     }
 
+    const comment = interaction.fields.getTextInputValue('review_comment').trim();
+    if (!comment) {
+        return safeReply(interaction, { content: '❌ Escribe una breve reseña sobre tu experiencia.', ephemeral: true });
+    }
+
     if (!await safeDeferReply(interaction, { ephemeral: true })) return;
 
     const review = reviews.getReview(ticketChannelId);
@@ -603,13 +617,13 @@ async function handleReviewModal(interaction) {
     }
 
     const via = interaction.channel?.isDMBased?.() ? 'dm' : 'ticket';
-    const ok  = reviews.submitRating(ticketChannelId, interaction.user.id, score, via);
+    const ok  = reviews.submitRating(ticketChannelId, interaction.user.id, score, comment, via);
     if (!ok) {
         return safeEditReply(interaction, { content: '❌ Esta compra ya fue calificada anteriormente.' });
     }
 
     await safeEditReply(interaction, { content: '✅ ¡Gracias por tu calificación!' });
-    await finalizeReview(interaction.client, ticketChannelId, score);
+    await finalizeReview(interaction.client, ticketChannelId, score, comment);
 }
 
 // ── Router ────────────────────────────────────────────────────────────────────

@@ -27,12 +27,14 @@ function getReview(ticketChannelId) {
 
 // Idempotent — a second /pagoverified on the same ticket must not clobber
 // an existing (possibly already-rated) record.
-function createReviewRequest(ticketChannelId, buyerId) {
+function createReviewRequest(ticketChannelId, buyerId, orderLabel = null) {
     const data = load();
     if (data[ticketChannelId]) return data[ticketChannelId];
     data[ticketChannelId] = {
         buyerId,
+        orderLabel,
         rating: null,
+        comment: null,
         ratedVia: null,
         ratedAt: null,
         ticketMessageRef: null,
@@ -67,7 +69,7 @@ function setAnnounceMessageRef(ticketChannelId, channelId, messageId) {
 
 // Synchronous check-then-write (no awaits in between) so a near-simultaneous
 // DM + ticket submit can't both succeed.
-function submitRating(ticketChannelId, userId, score, via) {
+function submitRating(ticketChannelId, userId, score, comment, via) {
     const data = load();
     const rec  = data[ticketChannelId];
     if (!rec) return false;
@@ -75,6 +77,7 @@ function submitRating(ticketChannelId, userId, score, via) {
     if (rec.rating !== null) return false;
 
     rec.rating   = score;
+    rec.comment  = comment;
     rec.ratedVia = via;
     rec.ratedAt  = new Date().toISOString();
     save(data);

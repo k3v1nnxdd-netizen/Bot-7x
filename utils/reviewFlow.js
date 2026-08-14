@@ -3,6 +3,7 @@
 const { EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
 const config = require('../config');
 const reviews = require('./reviews');
+const tickets = require('./tickets');
 const { safeMessageEdit } = require('./safe');
 
 const SHOP_EMOJI  = '<a:shop:1190502129748676650>';
@@ -31,23 +32,49 @@ function buildReviewRow(ticketChannelId, disabled = false) {
     );
 }
 
+// Figures out what the ticket was for, so the review announcement can show
+// it ("Pedido: 1,500 Robux" / "Pedido: Duels" / "Pedido: Seguidores").
+// Robux amount is only known from the "Resumen de tu compra" embed sent
+// when the ticket was created — no other record of it exists, so it's
+// scraped from channel history rather than stored redundantly.
+async function detectOrderLabel(channel, ticketType) {
+    if (ticketType === 'duels')      return 'Duels';
+    if (ticketType === 'seguidores') return 'Seguidores';
+    if (ticketType === 'soporte')    return 'Soporte';
+    if (ticketType !== 'comprar')    return null;
+
+    try {
+        const messages = await channel.messages.fetch({ limit: 100 });
+        const summary  = messages.find(m => m.embeds[0]?.description?.includes('Robux a recibir'));
+        const match    = summary?.embeds[0]?.description?.match(/Robux a recibir\*\*\n```([^`]+)```/);
+        return match ? match[1] : 'Robux';
+    } catch {
+        return 'Robux';
+    }
+}
+
 // score === null → still-pending placeholder ("Reseña: ???"), shown the
 // moment a purchase is confirmed. Edited in place once the buyer rates.
-function buildAnnounceEmbed(buyerId, score = null) {
+function buildAnnounceEmbed(buyerId, score = null, avatarURL = null, orderLabel = null, comment = null) {
     const value = score === null
         ? '???'
         : `${score >= 5 ? STAR_EMOJI.repeat(5) : STATS_EMOJI.repeat(score)} **(${score}/5)**`;
 
-    return new EmbedBuilder()
+    const embed = new EmbedBuilder()
         .setColor(0x2B2D31) // reviews channel is always gray, pending or rated
         .setDescription(
             // No bullet on the "Reseña" line — a "•" right next to the
             // repeated star/stats emojis breaks the line rendering.
             `${SHOP_EMOJI} • Compra hecha por <@${buyerId}>\n\n` +
-            `**Reseña:** ${value}`
+            (orderLabel ? `**Pedido:** ${orderLabel}\n\n` : '') +
+            `**Reseña:** ${value}` +
+            (comment ? `\n**Comentario:** ${comment}` : '')
         )
         .setFooter({ text: '7x Community • Sistema de reseñas' })
         .setTimestamp();
+
+    if (avatarURL) embed.setThumbnail(avatarURL);
+    return embed;
 }
 
 // Sends the DM-side review prompt and stores the message ref so it can be
@@ -66,10 +93,12 @@ async function sendReviewDM(client, buyerId, ticketChannelId) {
     }
 }
 
-async function sendPendingAnnouncement(client, ticketChannelId, buyerId) {
+async function sendPendingAnnouncement(client, ticketChannelId, buyerId, orderLabel) {
     try {
-        const ch  = await client.channels.fetch(config.CHANNELS.REVIEWS);
-        const msg = await ch.send({ embeds: [buildAnnounceEmbed(buyerId, null)] });
+        const ch        = await client.channels.fetch(config.CHANNELS.REVIEWS);
+        const user       = await client.users.fetch(buyerId).catch(() => null);
+        const avatarURL  = user?.displayAvatarURL({ size: 256 }) ?? null;
+        const msg = await ch.send({ embeds: [buildAnnounceEmbed(buyerId, null, avatarURL, orderLabel)] });
         reviews.setAnnounceMessageRef(ticketChannelId, msg.channelId, msg.id);
     } catch (err) {
         console.warn('[reviewFlow] Could not send pending review announcement:', err.message);
@@ -81,7 +110,10 @@ async function sendPendingAnnouncement(client, ticketChannelId, buyerId) {
 // second call for the same ticket (either trigger firing twice) is a no-op.
 async function requestReview(client, channel, ticketChannelId, buyerId) {
     if (reviews.getReview(ticketChannelId)) return;
-    reviews.createReviewRequest(ticketChannelId, buyerId);
+
+    const ticketType = tickets.getType(channel);
+    const orderLabel = await detectOrderLabel(channel, ticketType);
+    reviews.createReviewRequest(ticketChannelId, buyerId, orderLabel);
 
     try {
         const ticketMsg = await channel.send({
@@ -94,13 +126,13 @@ async function requestReview(client, channel, ticketChannelId, buyerId) {
     }
 
     await sendReviewDM(client, buyerId, ticketChannelId);
-    await sendPendingAnnouncement(client, ticketChannelId, buyerId);
+    await sendPendingAnnouncement(client, ticketChannelId, buyerId, orderLabel);
 }
 
 // Called once a rating is submitted (from either the DM or the ticket
 // channel) — disables both prompt buttons and edits the pending
 // announcement in place to show the real score.
-async function finalizeReview(client, ticketChannelId, score) {
+async function finalizeReview(client, ticketChannelId, score, comment = null) {
     const rec = reviews.getReview(ticketChannelId);
     if (!rec) return;
 
@@ -125,7 +157,9 @@ async function finalizeReview(client, ticketChannelId, score) {
         }
     }
 
-    const embed = buildAnnounceEmbed(rec.buyerId, score);
+    const user      = await client.users.fetch(rec.buyerId).catch(() => null);
+    const avatarURL = user?.displayAvatarURL({ size: 256 }) ?? null;
+    const embed = buildAnnounceEmbed(rec.buyerId, score, avatarURL, rec.orderLabel, comment);
     if (rec.announceMessageRef) {
         try {
             const ch  = await client.channels.fetch(rec.announceMessageRef.channelId);

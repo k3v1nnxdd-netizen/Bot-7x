@@ -38,14 +38,16 @@ async function extractOrderFields(channel, ticketType) {
 
         if (ticketType === 'comprar') {
             const desc = messages.find(m => m.embeds[0]?.description?.includes('Robux a recibir'))?.embeds[0]?.description ?? '';
+            const robloxUser = desc.match(/Usuario de Roblox\*\*\n```([^`]+)```/)?.[1] ?? 'No disponible';
             const robux = desc.match(/Robux a recibir\*\*\n```([^`]+)```/)?.[1] ?? 'No disponible';
             const price = desc.match(/Precio final a pagar\*\*\n```\$([^`]+) MXN```/)?.[1]
                        ?? desc.match(/Precio a pagar\*\*\n```\$([^`]+) MXN```/)?.[1]
                        ?? null;
             return {
                 fields: [
-                    { name: 'Robux comprados', value: robux },
-                    { name: 'Precio',          value: price ? `$${price} MXN` : 'No disponible' },
+                    { name: 'Usuario de Roblox', value: robloxUser },
+                    { name: 'Robux comprados',   value: robux },
+                    { name: 'Precio',            value: price ? `$${price} MXN` : 'No disponible' },
                 ],
                 robuxAmount: parseInt(robux.replace(/[^\d]/g, ''), 10) || null,
                 priceMxn:    price ? parseFloat(price.replace(/[^\d.]/g, '')) : null,
@@ -55,7 +57,13 @@ async function extractOrderFields(channel, ticketType) {
         if (ticketType === 'duels') {
             const desc = messages.find(m => m.embeds[0]?.description?.includes('Set solicitado'))?.embeds[0]?.description ?? '';
             const set = desc.match(/Set solicitado\*\*\n```([^`]+)```/)?.[1] ?? 'No disponible';
-            return { fields: [{ name: 'Set solicitado', value: set }] };
+            const robloxUser = desc.match(/Usuario de Roblox\*\*\n```([^`]+)```/)?.[1] ?? 'No disponible';
+            return {
+                fields: [
+                    { name: 'Usuario de Roblox', value: robloxUser },
+                    { name: 'Set solicitado',    value: set },
+                ],
+            };
         }
 
         if (ticketType === 'seguidores') {

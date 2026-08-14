@@ -389,23 +389,23 @@ async function handleCalcDineroModal(interaction) {
     const budget = extractDecimal(raw);
 
     if (!budget) {
-        return safeEditReply(interaction, { content: '❌ Ingresa una cantidad válida. Ejemplo: 500 o 150.50' });
+        return safeEditReply(interaction, { content: '<:alert:1501220021035204658> Ingresa una cantidad válida. Ejemplo: 500 o 150.50' });
     }
 
     const result = lookupByBudget(budget);
     if (!result) {
         return safeEditReply(interaction, {
-            content: `❌ Con ese presupuesto no puedes comprar Robux. El paquete mínimo cuesta **$${MIN_PRICE} MXN** (${MIN.toLocaleString()} Robux).`,
+            content: `<:alert:1501220021035204658> Con ese presupuesto no puedes comprar Robux. El paquete mínimo cuesta **$${MIN_PRICE} MXN** (${MIN.toLocaleString()} Robux).`,
         });
     }
 
     const embed = new EmbedBuilder()
         .setColor(0x000000)
-        .setTitle('🧮 Resultado del cálculo')
+        .setTitle('<:money:1501213606077792266> Resultado del cálculo')
         .addFields(
-            { name: '💰 Presupuesto ingresado', value: `$${budget.toLocaleString('es-MX', { minimumFractionDigits: 0, maximumFractionDigits: 2 })} MXN`, inline: true },
+            { name: '<:money:1501213606077792266> Presupuesto ingresado', value: `$${budget.toLocaleString('es-MX', { minimumFractionDigits: 0, maximumFractionDigits: 2 })} MXN`, inline: true },
             { name: '<a:robuxxx:1510070809366892604> Robux que puedes obtener', value: `${result.robux.toLocaleString()} Robux`, inline: true },
-            { name: '💵 Precio exacto del paquete', value: `${result.price} MXN`, inline: true },
+            { name: '<:money:1501213606077792266> Precio exacto del paquete', value: `${result.price} MXN`, inline: true },
         )
         .setFooter({ text: '7x Community • Calculadora de precios' });
 
@@ -422,23 +422,23 @@ async function handleCalcRobuxModal(interaction) {
     const amount = extractNumber(raw);
 
     if (!amount) {
-        return safeEditReply(interaction, { content: '❌ Ingresa una cantidad válida de Robux. Ejemplo: 1500' });
+        return safeEditReply(interaction, { content: '<:alert:1501220021035204658> Ingresa una cantidad válida de Robux. Ejemplo: 1500' });
     }
 
     const result = lookup(amount);
     if (!result) {
         return safeEditReply(interaction, {
-            content: `❌ Cantidad no disponible. Elige entre **${MIN.toLocaleString()}** y **${MAX.toLocaleString()}** Robux.`,
+            content: `<:alert:1501220021035204658> Cantidad no disponible. Elige entre **${MIN.toLocaleString()}** y **${MAX.toLocaleString()}** Robux.`,
         });
     }
 
     const embed = new EmbedBuilder()
         .setColor(0x000000)
-        .setTitle('🧮 Resultado del cálculo')
-        .setDescription(result.rounded ? `⚠️ Tu monto fue redondeado al paquete más cercano: **${result.amount.toLocaleString()} Robux**.` : null)
+        .setTitle('<:money:1501213606077792266> Resultado del cálculo')
+        .setDescription(result.rounded ? `<:alert:1501220021035204658> Tu monto fue redondeado al paquete más cercano: **${result.amount.toLocaleString()} Robux**.` : null)
         .addFields(
             { name: '<a:robuxxx:1510070809366892604> Robux solicitados', value: `${result.amount.toLocaleString()} Robux`, inline: true },
-            { name: '💰 Precio total', value: `${result.price} MXN`, inline: true },
+            { name: '<:money:1501213606077792266> Precio total', value: `${result.price} MXN`, inline: true },
         )
         .setFooter({ text: '7x Community • Calculadora de precios' });
 

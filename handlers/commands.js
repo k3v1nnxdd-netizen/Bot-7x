@@ -8,6 +8,7 @@ const { createCoupon, getCoupon, setMessageRef } = require('../utils/coupons');
 const { buildRefRow, sendPurchaseDM } = require('../utils/purchaseDm');
 const tickets = require('../utils/tickets');
 const { requestReview } = require('../utils/reviewFlow');
+const { sendOrderCompletionSummary } = require('../utils/orderNotify');
 const {
     buildTransferenciaEmbed, buildTransferenciaRow,
     buildOxxoEmbed, buildGiftCardEmbed,
@@ -122,6 +123,7 @@ async function handlePagoVerified(interaction) {
 
     if (isTicket && buyerId) {
         await requestReview(interaction.client, interaction.channel, interaction.channelId, buyerId);
+        await sendOrderCompletionSummary(interaction.client, interaction.channel, buyerId);
     }
 }
 

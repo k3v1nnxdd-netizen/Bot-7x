@@ -40,6 +40,7 @@ if (RUN_BOT) {
     const { ensureSeguidoresPanel } = require('./seguidores');
     const { ensureCheckGroupPanel } = require('./checkGroup');
     const { updateLeaderboardMessage } = require('./utils/robuxLeaderboardPanel');
+    const { backfillFromOrderLog } = require('./utils/robuxLeaderboardBackfill');
     const tickets             = require('./utils/tickets');
     const { handleButton, clearTimers } = require('./handlers/buttons');
     const { handleModal }     = require('./handlers/modals');
@@ -178,6 +179,10 @@ if (RUN_BOT) {
 
         await ensureCheckGroupPanel(client).catch(err =>
             console.error('[bot] ensureCheckGroupPanel failed:', err)
+        );
+
+        await backfillFromOrderLog(client).catch(err =>
+            console.error('[bot] backfillFromOrderLog failed:', err)
         );
 
         await updateLeaderboardMessage(client).catch(err =>

@@ -1,8 +1,15 @@
 node_modules/
 .env
 scratch-test-*.js
-data/groupJoins.json
-data/groupJoins.json.tmp
+
+# Runtime state written via utils/dataDir.js (groupJoins, reviews, coupons,
+# the Robux leaderboard, ...) — never source code, must never be committed.
+# A committed snapshot gets checked out fresh on every Railway deploy and
+# clobbers whatever the mounted Volume had persisted, resetting all of this
+# on every `git push` regardless of the Volume. data/prices.js is a real
+# source file (a plain .js module) and is unaffected by this *.json glob.
+data/*.json
+data/*.json.tmp
 
 # Generated at runtime by services/persistentStore.js (assetStore.js) — the
 # global, persistent per-assetId Roblox catalog cache. Never source code;

@@ -13,9 +13,10 @@ function load() {
             users: raw.users ?? {},
             messageRef: raw.messageRef ?? null,
             top1UserId: raw.top1UserId ?? null,
+            processedOrders: raw.processedOrders ?? {},
         };
     } catch {
-        return { users: {}, messageRef: null, top1UserId: null };
+        return { users: {}, messageRef: null, top1UserId: null, processedOrders: {} };
     }
 }
 
@@ -26,10 +27,23 @@ function save(data) {
 }
 
 // Records one completed Robux purchase against a buyer's running totals.
-function recordPurchase(userId, robuxAmount, priceMxn) {
-    if (!Number.isFinite(robuxAmount) || robuxAmount <= 0) return;
+// orderId (the order-log message id) makes this idempotent — the same
+// order is never counted twice, so robuxLeaderboardBackfill.js can safely
+// re-scan the full order log on every boot to reconcile any gap without
+// double-counting purchases already recorded here in real time. Returns
+// true if this order was newly recorded, false if it was already counted
+// (or the amount was invalid) — callers use this to know whether to react
+// (refresh the panel, sync roles) or skip.
+function recordPurchase(userId, robuxAmount, priceMxn, orderId = null) {
+    if (!Number.isFinite(robuxAmount) || robuxAmount <= 0) return false;
 
-    const data  = load();
+    const data = load();
+
+    if (orderId) {
+        if (data.processedOrders[orderId]) return false;
+        data.processedOrders[orderId] = true;
+    }
+
     const key   = String(userId);
     const entry = data.users[key] ?? { totalRobux: 0, totalSpent: 0, purchases: 0 };
 
@@ -38,6 +52,19 @@ function recordPurchase(userId, robuxAmount, priceMxn) {
     entry.purchases += 1;
 
     data.users[key] = entry;
+    save(data);
+    return true;
+}
+
+// Clears buyer totals and the order-dedup set, while keeping the panel
+// message ref and current Top-1 holder intact — those aren't part of what's
+// being rebuilt. Used by robuxLeaderboardBackfill.js to force a clean,
+// complete rebuild from the order log (the only reliable way to reconcile
+// against purchases recorded before per-order dedup existed).
+function resetUsers() {
+    const data = load();
+    data.users = {};
+    data.processedOrders = {};
     save(data);
 }
 
@@ -85,6 +112,7 @@ function setTop1UserId(userId) {
 
 module.exports = {
     recordPurchase,
+    resetUsers,
     getEntry,
     getRanked,
     getTop,

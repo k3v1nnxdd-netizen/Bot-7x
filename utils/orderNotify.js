@@ -106,12 +106,6 @@ async function sendOrderCompletionSummary(client, channel, buyerId) {
         findComprobante(channel, buyerId),
     ]);
 
-    if (ticketType === 'comprar' && robuxAmount) {
-        robuxLeaderboard.recordPurchase(buyerId, robuxAmount, priceMxn);
-        await robuxLeaderboardPanel.updateLeaderboardMessage(client);
-        await robuxLeaderboardPanel.syncRobuxRoles(client, buyerId);
-    }
-
     const embed = new EmbedBuilder()
         .setColor(0x2B2D31)
         .setTitle('Pedido completado')
@@ -125,9 +119,22 @@ async function sendOrderCompletionSummary(client, channel, buyerId) {
 
     if (comprobante) embed.setImage(comprobante.url);
 
-    await logChannel.send({ embeds: [embed] }).catch(err =>
-        console.warn('[orderNotify] Could not send order summary:', err.message)
-    );
+    const logMsg = await logChannel.send({ embeds: [embed] }).catch(err => {
+        console.warn('[orderNotify] Could not send order summary:', err.message);
+        return null;
+    });
+
+    // The log message's own id doubles as this order's unique id — the
+    // same id robuxLeaderboardBackfill.js reads back when replaying this
+    // same channel, so an order is never double-counted whether it's
+    // recorded here in real time or reconciled later from history.
+    if (ticketType === 'comprar' && robuxAmount && logMsg) {
+        const isNew = robuxLeaderboard.recordPurchase(buyerId, robuxAmount, priceMxn, logMsg.id);
+        if (isNew) {
+            await robuxLeaderboardPanel.updateLeaderboardMessage(client);
+            await robuxLeaderboardPanel.syncRobuxRoles(client, buyerId);
+        }
+    }
 }
 
 module.exports = { sendOrderCompletionSummary };

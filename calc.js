@@ -6,8 +6,8 @@ const config = require('./config');
 function buildCalcEmbed() {
     return new EmbedBuilder()
         .setColor(0x2B2D31)
-        .setTitle('#7x Community - Robux')
         .setDescription(
+            '# 7x Community - Robux\n\n' +
             '¿Quieres saber cuántos Robux puedes comprar o cuánto costarán los que necesitas?\n\n' +
             '<:money:1501213606077792266> = Ingresa la cantidad de dinero que tienes y el bot te dirá cuántos Robux puedes obtener.\n\n' +
             '<a:robuxxx:1510070809366892604> = Ingresa la cantidad de Robux que deseas y el bot calculará el precio exacto.\n\n' +
@@ -32,11 +32,14 @@ function buildCalcRow() {
 }
 
 function isCalcMsg(msg, botId) {
+    // Matches both the current description-heading format and the older
+    // title-based format, so the existing pinned message is found and
+    // migrated in place instead of being orphaned and duplicated.
     return (
         msg.author.id === botId &&
         msg.embeds.length > 0 &&
         msg.components.length > 0 &&
-        msg.embeds[0]?.title?.includes('7x Community - Robux')
+        (msg.embeds[0]?.description?.includes('7x Community - Robux') || msg.embeds[0]?.title?.includes('7x Community - Robux'))
     );
 }
 

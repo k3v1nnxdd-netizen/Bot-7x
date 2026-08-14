@@ -9,7 +9,7 @@ const { buildRefRow, sendPurchaseDM } = require('../utils/purchaseDm');
 const tickets = require('../utils/tickets');
 const { requestReview } = require('../utils/reviewFlow');
 const { sendOrderCompletionSummary } = require('../utils/orderNotify');
-const robuxLeaderboard = require('../utils/robuxLeaderboard');
+const { buildLeaderboardEmbed } = require('../utils/robuxLeaderboardPanel');
 const {
     buildTransferenciaEmbed, buildTransferenciaRow,
     buildOxxoEmbed, buildGiftCardEmbed,
@@ -250,26 +250,7 @@ async function handleTopCompradores(interaction) {
     const ok = await safeDeferReply(interaction);
     if (!ok) return;
 
-    const top = robuxLeaderboard.getTop(10);
-    if (top.length === 0) {
-        return safeEditReply(interaction, { content: 'Todavía no hay compras registradas.' });
-    }
-
-    const lines = top.map((entry, i) =>
-        `**#${i + 1}** — <@${entry.userId}>\n` +
-        `<a:robuxxx:1510070809366892604> **${entry.totalRobux.toLocaleString()} Robux** · ` +
-        `<a:shop:1190502129748676650> $${Math.round(entry.totalSpent).toLocaleString()} MXN · ` +
-        `${entry.purchases} compra${entry.purchases !== 1 ? 's' : ''}`
-    );
-
-    const embed = new EmbedBuilder()
-        .setColor(0x2B2D31)
-        .setTitle('<a:robuxxx:1510070809366892604> Top Compradores de Robux')
-        .setDescription(lines.join('\n\n'))
-        .setFooter({ text: '7x Community • Ranking de compras' })
-        .setTimestamp();
-
-    await safeEditReply(interaction, { embeds: [embed] });
+    await safeEditReply(interaction, { embeds: [buildLeaderboardEmbed()] });
 }
 
 module.exports = { handleOutfit, handlePagos, handlePagoVerified, handleOffer, handleClose, handleTopCompradores, refreshCouponEmbed };

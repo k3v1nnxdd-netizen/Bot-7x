@@ -140,7 +140,10 @@ async function handleCheckGroupModal(interaction) {
     }
 }
 
-// ── Step 3: owner marks eligible / not eligible ───────────────────────────────
+// ── Step 3: owner marks eligible / not eligible (with a private confirm step) ─
+// Guards against misclicks — the decision only takes effect after the owner
+// confirms, and that confirmation prompt is ephemeral (visible to the owner
+// only), never touching the public message until confirmed.
 
 async function handleEligibilityButton(interaction) {
     if (interaction.replied || interaction.deferred) return;
@@ -155,8 +158,46 @@ async function handleEligibilityButton(interaction) {
     }
 
     const status = interaction.customId === 'cg_elig_yes' ? 'eligible' : 'not_eligible';
+    const label = status === 'eligible' ? 'ELEGIBLE' : 'NO ELEGIBLE';
 
-    const oldEmbed = interaction.message.embeds[0];
+    const confirmRow = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+            .setCustomId(`cg_elig_confirm:${status}:${interaction.message.id}`)
+            .setLabel('Confirmar')
+            .setStyle(ButtonStyle.Success),
+        new ButtonBuilder()
+            .setCustomId(`cg_elig_cancel:${interaction.message.id}`)
+            .setLabel('Cancelar')
+            .setStyle(ButtonStyle.Secondary),
+    );
+
+    await safeReply(interaction, {
+        content: `¿Confirmas marcar esta solicitud como **${label}**?`,
+        components: [confirmRow],
+        ephemeral: true,
+    });
+}
+
+async function handleEligibilityConfirm(interaction) {
+    if (interaction.replied || interaction.deferred) return;
+
+    if (interaction.user.id !== config.OWNER_ID) {
+        return safeReply(interaction, { content: '❌ Solo el owner puede usar este botón.', ephemeral: true });
+    }
+
+    const [, status, messageId] = interaction.customId.split(':');
+
+    const targetMessage = await interaction.channel.messages.fetch(messageId).catch(() => null);
+    if (!targetMessage) {
+        return safeReply(interaction, { content: '❌ No se encontró el mensaje original.', ephemeral: true });
+    }
+
+    const alreadyResolved = targetMessage.components[0]?.components?.every(c => c.disabled);
+    if (alreadyResolved) {
+        return safeReply(interaction, { content: '❌ Esta solicitud ya fue resuelta.', ephemeral: true });
+    }
+
+    const oldEmbed = targetMessage.embeds[0];
     const desc = oldEmbed?.description ?? '';
     const usernameMatch = desc.match(/```([^`]+)```/);
     const discordMatch = desc.match(/<@(\d+)>/);
@@ -169,13 +210,28 @@ async function handleEligibilityButton(interaction) {
     decrementPending(discordUserId);
 
     const embed = buildEligibilityEmbed(groupKey, robloxUsername, discordUserId, status);
-    await interaction.update({ embeds: [embed], components: [buildEligibilityRow(true)] });
+    await targetMessage.edit({ embeds: [embed], components: [buildEligibilityRow(true)] });
+
+    await safeReply(interaction, { content: '✅ Confirmado.', ephemeral: true });
+}
+
+async function handleEligibilityCancel(interaction) {
+    if (interaction.replied || interaction.deferred) return;
+
+    if (interaction.user.id !== config.OWNER_ID) {
+        return safeReply(interaction, { content: '❌ Solo el owner puede usar este botón.', ephemeral: true });
+    }
+
+    await safeReply(interaction, { content: '❌ Acción cancelada. La solicitud sigue pendiente.', ephemeral: true });
 }
 
 // ── Routers (called from handlers/buttons.js and handlers/modals.js) ─────────
 
 async function handleCheckGroupButtonRouter(interaction) {
-    if (interaction.customId.startsWith('cg_elig_')) return handleEligibilityButton(interaction);
+    const id = interaction.customId;
+    if (id === 'cg_elig_yes' || id === 'cg_elig_no') return handleEligibilityButton(interaction);
+    if (id.startsWith('cg_elig_confirm:')) return handleEligibilityConfirm(interaction);
+    if (id.startsWith('cg_elig_cancel:')) return handleEligibilityCancel(interaction);
     return handleCheckGroupButton(interaction);
 }
 

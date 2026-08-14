@@ -39,6 +39,7 @@ if (RUN_BOT) {
     const { ensureRolesPanel, EMOJI_ROLE_MAP, getRolesMsgId } = require('./roles');
     const { ensureSeguidoresPanel } = require('./seguidores');
     const { ensureCheckGroupPanel } = require('./checkGroup');
+    const { updateLeaderboardMessage } = require('./utils/robuxLeaderboardPanel');
     const tickets             = require('./utils/tickets');
     const { handleButton, clearTimers } = require('./handlers/buttons');
     const { handleModal }     = require('./handlers/modals');
@@ -177,6 +178,10 @@ if (RUN_BOT) {
 
         await ensureCheckGroupPanel(client).catch(err =>
             console.error('[bot] ensureCheckGroupPanel failed:', err)
+        );
+
+        await updateLeaderboardMessage(client).catch(err =>
+            console.error('[bot] updateLeaderboardMessage failed:', err)
         );
 
         joinVoice(guild);

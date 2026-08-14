@@ -23,11 +23,15 @@ module.exports = {
         CHECKGROUP:         '1534758810265059438',
         CHECKGROUP_RESULTS: '1534758835531808869',
         ORDER_LOG:          '1537756329131647018',
+        ROBUX_TOP:          '1537754184076627978',
     },
 
     ROBLOX_GROUP_ID:       282134403,
     ROBLOX_GROUP_DAYS_REQ: 15,
     ROBLOX_GROUP_LINK:     'https://www.roblox.com/es/communities/282134403/Noctra-Study',
+
+    // Cumulative Robux purchased (all-time) to qualify for the Rich Client role
+    RICH_CLIENT_ROBUX_THRESHOLD: 50000,
 
     CATEGORIES: {
         TICKETS: '1184353695643729940',
@@ -38,6 +42,8 @@ module.exports = {
     ROLES: {
         AUTO_ASSIGN: '1500335259575910450',
         NO_PING:     '1524950569972666468',
+        ROBUX_TOP1:  '1537762102914318397',
+        RICH_CLIENT: '1494480511010214028',
     },
 
     IMAGES: {

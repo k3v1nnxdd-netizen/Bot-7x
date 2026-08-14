@@ -101,8 +101,12 @@ async function guardButton(interaction) {
         return false;
     }
 
-    // Check Group eligibility buttons must come from the results channel
-    if (CHECKGROUP_RESULT_BUTTONS.has(interaction.customId) && interaction.channelId !== config.CHANNELS.CHECKGROUP_RESULTS) {
+    // Check Group eligibility buttons (and their confirm/cancel follow-ups)
+    // must come from the results channel
+    const isCheckGroupResultButton = CHECKGROUP_RESULT_BUTTONS.has(interaction.customId)
+        || interaction.customId.startsWith('cg_elig_confirm:')
+        || interaction.customId.startsWith('cg_elig_cancel:');
+    if (isCheckGroupResultButton && interaction.channelId !== config.CHANNELS.CHECKGROUP_RESULTS) {
         await safeReply(interaction, { content: 'Este boton solo funciona en el canal de resultados.', ephemeral: true });
         return false;
     }

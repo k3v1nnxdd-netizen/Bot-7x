@@ -4,6 +4,7 @@ const { EmbedBuilder } = require('discord.js');
 const config = require('../config');
 const tickets = require('./tickets');
 const robuxLeaderboard = require('./robuxLeaderboard');
+const robuxLeaderboardPanel = require('./robuxLeaderboardPanel');
 
 const TYPE_LABELS = {
     comprar:    'Compra de Robux',
@@ -99,6 +100,8 @@ async function sendOrderCompletionSummary(client, channel, buyerId) {
 
     if (ticketType === 'comprar' && robuxAmount) {
         robuxLeaderboard.recordPurchase(buyerId, robuxAmount, priceMxn);
+        await robuxLeaderboardPanel.updateLeaderboardMessage(client);
+        await robuxLeaderboardPanel.syncRobuxRoles(client, buyerId);
     }
 
     const embed = new EmbedBuilder()

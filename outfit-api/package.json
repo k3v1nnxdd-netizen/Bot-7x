@@ -1,0 +1,20 @@
+{
+  "name": "outfit-api",
+  "version": "1.0.0",
+  "private": true,
+  "description": "API independiente para resolver usuarios de Roblox y consultar sus outfits publicos",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node src/tests/run.js",
+    "test:live": "node src/tests/live/check.js"
+  },
+  "dependencies": {
+    "axios": "^1.16.1",
+    "dotenv": "^16.3.1",
+    "express": "^5.2.1"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

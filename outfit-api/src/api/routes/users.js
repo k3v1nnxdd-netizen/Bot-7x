@@ -1,0 +1,42 @@
+'use strict';
+
+const express = require('express');
+const router = express.Router();
+const userService = require('../../services/userService');
+const outfitService = require('../../services/outfitService');
+const { parseUsername, parseUserId, parsePagination } = require('../../validation/params');
+
+// Adaptadores HTTP finos: validar, llamar al servicio, responder. Ni logica
+// de negocio ni try/catch — Express 5 propaga el rechazo de un handler async
+// al error handler central, que es el unico sitio donde se traduce a HTTP.
+
+// Las rutas /by-username van declaradas ANTES que /:userId. Aunque no colisionan
+// (un userId siempre es numerico y la validacion lo rechazaria), el orden
+// explicito evita depender de esa coincidencia si mañana se añade otra ruta.
+
+// GET /v1/users/by-username/:username
+router.get('/by-username/:username', async (req, res) => {
+    res.locals.routeLabel = '/v1/users/by-username/:username';
+    const username = parseUsername(req.params.username);
+    res.json(await userService.resolveUsername(username, res.locals.cache));
+});
+
+// GET /v1/users/by-username/:username/outfits?page=&limit=
+// Compuesto: resuelve y lista en una sola llamada, para que el juego gaste
+// una peticion de HttpService en vez de dos. Ver outfitService.
+router.get('/by-username/:username/outfits', async (req, res) => {
+    res.locals.routeLabel = '/v1/users/by-username/:username/outfits';
+    const username = parseUsername(req.params.username);
+    const pagination = parsePagination(req.query);
+    res.json(await outfitService.listOutfitsByUsername(username, pagination, res.locals.cache));
+});
+
+// GET /v1/users/:userId/outfits?page=&limit=
+router.get('/:userId/outfits', async (req, res) => {
+    res.locals.routeLabel = '/v1/users/:userId/outfits';
+    const userId = parseUserId(req.params.userId);
+    const pagination = parsePagination(req.query);
+    res.json(await outfitService.listOutfits(userId, pagination, res.locals.cache));
+});
+
+module.exports = router;

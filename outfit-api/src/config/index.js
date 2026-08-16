@@ -1,0 +1,147 @@
+'use strict';
+
+const path = require('path');
+
+// Ruta EXPLICITA al .env de este servicio. dotenv por defecto resuelve
+// contra process.cwd(), asi que un `node outfit-api/server.js` lanzado desde
+// la raiz del repo cargaria el .env del BOT (TOKEN, API_KEY) en vez del
+// nuestro — variables que no nos pertenecen y que no queremos ni ver en este
+// proceso. Con la ruta fija, este servicio solo lee su propio archivo,
+// arranque desde donde arranque. En Railway no existe .env y todo llega por
+// variables del dashboard; dotenv simplemente no encuentra archivo y sigue.
+require('dotenv').config({ path: path.join(__dirname, '..', '..', '.env') });
+
+// Punto UNICO de lectura de process.env en todo el servicio: ningun otro
+// modulo toca process.env directamente, asi que el conjunto completo de
+// perillas del que depende este proceso se ve de un vistazo aqui en vez de
+// aparecer disperso en una docena de archivos.
+
+function intFromEnv(name, fallback) {
+    const raw = process.env[name];
+    if (raw === undefined || raw === '') return fallback;
+    const parsed = Number(raw);
+    if (!Number.isFinite(parsed) || parsed < 0) {
+        console.warn(`[config] ${name}="${raw}" no es un numero valido — usando el default ${fallback}`);
+        return fallback;
+    }
+    return Math.floor(parsed);
+}
+
+const port = intFromEnv('PORT', 3100);
+
+// El UNICO secreto de este servicio. Viaja siempre en el header `x-api-key`
+// y jamas por query string: un secreto en la URL termina en los logs de
+// acceso de cualquier proxy intermedio, y aqui nunca leemos la query para
+// autenticar (ver src/security/apiKey.js).
+const apiKey = process.env.OUTFIT_API_KEY || null;
+
+const logLevel = (process.env.LOG_LEVEL || 'info').toLowerCase();
+
+// Un unico driver soportado hoy. La variable existe para que activar Redis
+// mañana sea un cambio de configuracion, no de codigo — ver src/cache/cacheStore.js.
+const cacheDriver = (process.env.CACHE_DRIVER || 'memory').toLowerCase();
+
+// TTLs. Elegidos por cuanto cambia realmente cada dato, no por intuicion:
+//  - Un mapeo username -> userId es practicamente permanente (solo cambia si
+//    el jugador se renombra), de ahi las 12 h.
+//  - La LISTA de outfits cambia cuando el jugador crea o borra uno; 5 min es
+//    lo bastante corto para que lo note en la misma sesion.
+//  - El CONTENIDO de un outfit concreto cambia solo si lo edita: 1 h.
+//  - La cache negativa es la que impide que un buscador de usernames mande a
+//    Roblox cada tecla mal escrita. Es tan importante como la positiva.
+const ttl = {
+    usernameLookup: intFromEnv('TTL_USERNAME_MS', 12 * 60 * 60_000),
+    outfitList: intFromEnv('TTL_OUTFIT_LIST_MS', 5 * 60_000),
+    outfitDetails: intFromEnv('TTL_OUTFIT_DETAILS_MS', 60 * 60_000),
+    negative: intFromEnv('TTL_NEGATIVE_MS', 5 * 60_000),
+};
+
+// Guardia anti-abuso de NUESTRA API, por IP de origen. El default es
+// deliberadamente alto: quien nos llama son servidores de Roblox, y un
+// servidor = una IP con decenas de jugadores detras. Un limite pensado para
+// usuarios individuales cortaria un servidor lleno en cuanto se animara la
+// cosa. La proteccion real contra los limites de Roblox no es esto, es la
+// cache; esto solo frena un bucle de reintentos desbocado o una key filtrada.
+const rateLimit = {
+    windowMs: intFromEnv('RATE_LIMIT_WINDOW_MS', 60_000),
+    max: intFromEnv('RATE_LIMIT_MAX', 600),
+};
+
+// Politica de salida hacia Roblox. Sin cuotas asumidas por endpoint: Roblox
+// no publica limites estables para estas rutas y los ajusta sin avisar, asi
+// que un 429 se trata como condicion NORMAL y la pauta la marca Roblox
+// (Retry-After / x-ratelimit-*), no una constante nuestra. Ver
+// src/roblox/rateLimiter.js.
+const upstream = {
+    timeoutMs: intFromEnv('UPSTREAM_TIMEOUT_MS', 6_000),
+
+    // Techo global de peticiones simultaneas a Roblox, compartido por las tres
+    // rutas. Bajo a proposito: bajo carga real la cache absorbe la inmensa
+    // mayoria del trafico, y lo que llega hasta aqui conviene que llegue en
+    // goteo y no en avalancha.
+    maxConcurrent: intFromEnv('UPSTREAM_MAX_CONCURRENT', 3),
+
+    // Cola de espera del gate de concurrencia. Al llenarse se rechaza al
+    // instante (503 + Retry-After) en vez de acumular miles de peticiones
+    // colgadas: con miles de jugadores es preferible un "vuelve en 2s"
+    // inmediato a un socket abierto durante medio minuto.
+    maxQueue: intFromEnv('UPSTREAM_MAX_QUEUE', 200),
+
+    maxRetries: intFromEnv('UPSTREAM_MAX_RETRIES', 2),
+    retryBaseDelayMs: intFromEnv('UPSTREAM_RETRY_BASE_MS', 300),
+    retryMaxDelayMs: intFromEnv('UPSTREAM_RETRY_MAX_MS', 3_000),
+
+    // Cuanto estamos dispuestos a esperar DENTRO de la peticion antes de
+    // devolver el control al llamador. Si Roblox pide mas espera que esto,
+    // respondemos 503 con Retry-After y que reintente el juego: sostener el
+    // socket mas tiempo no acelera nada y multiplica las conexiones abiertas.
+    inlineWaitCeilingMs: intFromEnv('UPSTREAM_INLINE_WAIT_CEILING_MS', 2_000),
+
+    circuitFailureThreshold: intFromEnv('UPSTREAM_CIRCUIT_THRESHOLD', 5),
+    circuitBaseCooldownMs: intFromEnv('UPSTREAM_CIRCUIT_BASE_COOLDOWN_MS', 5_000),
+    circuitMaxCooldownMs: intFromEnv('UPSTREAM_CIRCUIT_MAX_COOLDOWN_MS', 60_000),
+};
+
+// Tope duro de entradas en memoria. Sin Volume ni disco: si se llena, se
+// expulsa la entrada menos recientemente usada. Acota el uso de RAM pase lo
+// que pase, incluso si alguien barre millones de userIds.
+const cache = {
+    maxEntries: intFromEnv('CACHE_MAX_ENTRIES', 50_000),
+};
+
+// `limit` restringido a un conjunto cerrado en vez de un rango libre: un
+// rango deja que un llamador genere decenas de variantes de clave por pagina
+// y fragmente el hit rate de la cache sin ningun beneficio. Tres valores
+// cubren cualquier UI real. `maxPage` acota igualmente el espacio de claves.
+const pagination = {
+    allowedLimits: [10, 25, 50],
+    defaultLimit: 25,
+    maxPage: 100,
+};
+
+if (!apiKey) {
+    console.error(
+        '[config] ERROR: falta la variable de entorno OUTFIT_API_KEY. ' +
+        'El servicio arranca (para no tumbar el healthcheck) pero TODA ruta /v1 respondera 401 hasta que la definas.'
+    );
+}
+
+if (cacheDriver !== 'memory') {
+    console.warn(
+        `[config] CACHE_DRIVER="${cacheDriver}" no esta implementado todavia — usando "memory". ` +
+        'Ver src/cache/cacheStore.js para el punto exacto donde enchufar Redis.'
+    );
+}
+
+module.exports = {
+    port,
+    apiKey,
+    logLevel,
+    cacheDriver,
+    ttl,
+    rateLimit,
+    upstream,
+    cache,
+    pagination,
+    serviceName: 'outfit-api',
+};

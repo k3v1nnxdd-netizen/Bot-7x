@@ -18,6 +18,8 @@ process.env.LOG_LEVEL = process.env.LOG_LEVEL || 'error';
 
 const http = require('http');
 const { createApp } = require('../../app');
+
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const config = require('../../config');
 
 const USERNAME = process.argv[2] || 'builderman';
@@ -42,6 +44,28 @@ function request(port, path) {
         req.on('error', reject);
         req.end();
     });
+}
+
+// Pide un recurso tolerando que ROBLOX nos limite. No es indulgencia con
+// nuestro codigo: avatar.roblox.com/v2/.../outfits limita por IP de forma
+// muy agresiva (dos listados frios seguidos bastan para un 429, comprobado
+// repetidamente), y en una prueba en frio como esta no hay cache que lo
+// absorba. Un 503 upstream_rate_limited es la respuesta CORRECTA ante eso,
+// asi que se espera el Retry-After que devolvemos y se reintenta una vez
+// antes de darlo por no verificado.
+async function requestTolerant(port, path) {
+    let res = await request(port, path);
+    if (res.status !== 503 || res.body?.error?.code !== 'upstream_rate_limited') return res;
+
+    const espera = Math.min(res.body.error.retryAfterSeconds ?? 10, 60);
+    console.log(`  ..   Roblox limito (503). Esperando el Retry-After de ${espera}s y reintentando una vez.`);
+    await sleep(espera * 1000 + 500);
+
+    res = await request(port, path);
+    if (res.status === 503 && res.body?.error?.code === 'upstream_rate_limited') {
+        res.limitadoPorRoblox = true;
+    }
+    return res;
 }
 
 let failures = 0;
@@ -99,43 +123,148 @@ function section(title) {
     }
 
     // ── 4. Listado de outfits ────────────────────────────────────────────────
-    section('4. listado de outfits');
+    section('4. listado de outfits (con outfitType por outfit)');
     let outfitId = null;
+    let outfitAvatarId = null;
     {
-        const res = await request(port, `/v1/users/${userId}/outfits?limit=10`);
-        check(`GET /v1/users/${userId}/outfits -> 200`, res.status === 200, `${res.ms}ms`);
-        check('la respuesta trae la forma paginada esperada',
-            Array.isArray(res.body?.outfits) && typeof res.body?.hasMore === 'boolean' && res.body?.limit === 10,
-            `count=${res.body?.count} hasMore=${res.body?.hasMore}`);
-        outfitId = res.body?.outfits?.[0]?.id ?? null;
-        if (res.body?.outfits?.length) {
-            console.log(`       primeros outfits: ${res.body.outfits.slice(0, 3).map(o => `${o.id}:${o.name}`).join(', ')}`);
+        const res = await requestTolerant(port, `/v1/users/${userId}/outfits?limit=10`);
+        if (res.limitadoPorRoblox) {
+            console.log('  --   Roblox sigue limitando el listado: seccion no verificada en esta pasada.');
+        } else {
+            check(`GET /v1/users/${userId}/outfits -> 200`, res.status === 200, `${res.ms}ms`);
+            check('la respuesta trae la forma paginada esperada',
+                Array.isArray(res.body?.outfits) && typeof res.body?.hasMore === 'boolean' && res.body?.limit === 10,
+                `count=${res.body?.count} hasMore=${res.body?.hasMore}`);
+            check('cada outfit trae su outfitType',
+                (res.body?.outfits ?? []).length > 0 && (res.body?.outfits ?? []).every(o => typeof o.outfitType === 'string'),
+                JSON.stringify((res.body?.outfits ?? []).slice(0, 3).map(o => `${o.name}:${o.outfitType}`)));
+
+            outfitId = res.body?.outfits?.[0]?.id ?? null;
+            outfitAvatarId = (res.body?.outfits ?? []).find(o => o.outfitType === 'Avatar')?.id ?? null;
         }
+    }
+
+    // ── 4b. Filtro por outfitType ────────────────────────────────────────────
+    section('4b. filtro por outfitType');
+    {
+        // Pausa deliberada. avatar.roblox.com/v2/.../outfits limita MUY
+        // agresivo: dos listados seguidos bastan para provocar un 429
+        // (comprobado repetidamente al investigar). En produccion eso lo
+        // absorbe la cache; aqui, que son dos listados distintos y frios a
+        // proposito, hay que espaciarlos.
+        await sleep(8000);
+
+        const res = await requestTolerant(port, `/v1/users/${userId}/outfits?limit=10&outfitType=DynamicHead`);
+
+        if (res.limitadoPorRoblox) {
+            console.log('  --   Roblox sigue limitando: filtro no verificado en esta pasada.');
+        } else {
+            check('outfitType=DynamicHead -> 200', res.status === 200, `${res.ms}ms count=${res.body?.count}`);
+            check('Roblox devuelve solo ese tipo',
+                (res.body?.outfits ?? []).length > 0 && (res.body?.outfits ?? []).every(o => o.outfitType === 'DynamicHead'));
+            check('el filtro se refleja en la respuesta', res.body?.outfitType === 'DynamicHead');
+        }
+
+        const malo = await request(port, `/v1/users/${userId}/outfits?outfitType=Basura`);
+        check('un outfitType desconocido -> 400 sin llamar a Roblox',
+            malo.status === 400 && malo.body?.error?.code === 'invalid_request');
     }
 
     // ── 5. Endpoint compuesto ────────────────────────────────────────────────
     section('5. endpoint compuesto (resolver + listar en una llamada)');
     {
-        const res = await request(port, `/v1/users/by-username/${USERNAME}/outfits?limit=10`);
-        check('GET /v1/users/by-username/:username/outfits -> 200', res.status === 200, `${res.ms}ms`);
-        check('devuelve el listado ya resuelto',
-            res.body?.userId === userId && Array.isArray(res.body?.outfits) && !!res.body?.username,
-            `userId=${res.body?.userId} username=${res.body?.username}`);
+        const res = await requestTolerant(port, `/v1/users/by-username/${USERNAME}/outfits?limit=10`);
+        if (res.limitadoPorRoblox) {
+            console.log('  --   Roblox sigue limitando: compuesto no verificado en esta pasada.');
+        } else {
+            check('GET /v1/users/by-username/:username/outfits -> 200', res.status === 200, `${res.ms}ms`);
+            check('devuelve el listado ya resuelto',
+                res.body?.userId === userId && Array.isArray(res.body?.outfits) && !!res.body?.username,
+                `userId=${res.body?.userId} username=${res.body?.username}`);
+        }
     }
 
-    // ── 6. Detalles de un outfit ─────────────────────────────────────────────
-    section('6. detalles de un outfit');
+    // Si el LISTADO quedo limitado, las secciones de detalle no tienen por que
+    // perderse: usan otro endpoint (v3/outfits/.../details), mucho menos
+    // limitado, y estos dos ids son reales y estables — el primero con ropa
+    // por capas, el segundo con partes del cuerpo.
     if (outfitId == null) {
-        console.log('  --   omitido: este usuario no tiene outfits publicos que listar');
-    } else {
+        outfitId = 555869704325162;
+        outfitAvatarId = 131929576;
+        console.log(`\n  ..   Listado no disponible: se continua con outfits reales conocidos (${outfitId}, ${outfitAvatarId}).`);
+    }
+
+    // ── 6. Detalles de un outfit: datos completos de reconstruccion ──────────
+    section('6. detalles de un outfit (HumanoidDescription completo)');
+    {
         const res = await request(port, `/v1/outfits/${outfitId}`);
+        const hd = res.body?.humanoidDescription;
+
         check(`GET /v1/outfits/${outfitId} -> 200`, res.status === 200, `${res.ms}ms`);
-        check('trae assets, escalas y colores normalizados',
-            Array.isArray(res.body?.assets) && 'scale' in (res.body ?? {}) && 'bodyColorFormat' in (res.body ?? {}),
-            `assets=${res.body?.assets?.length} tipo=${res.body?.playerAvatarType} colores=${res.body?.bodyColorFormat}`);
-        check('cada asset viene compacto: solo id, name y typeId',
-            (res.body?.assets ?? []).every(a => Object.keys(a).sort().join(',') === 'id,name,typeId'),
+        check('trae metadatos del outfit',
+            res.body?.outfitType != null && res.body?.playerAvatarType != null,
+            `tipo=${res.body?.outfitType} inventario=${res.body?.inventoryType} avatar=${res.body?.playerAvatarType}`);
+
+        check('humanoidDescription tiene todas las secciones',
+            hd && ['scale', 'bodyColors', 'bodyParts', 'clothing', 'accessories', 'layeredClothing', 'animations', 'emotes', 'other']
+                .every(k => k in hd));
+        check('las seis escalas',
+            hd?.scale && ['height', 'width', 'depth', 'head', 'proportion', 'bodyType'].every(k => k in hd.scale),
+            JSON.stringify(hd?.scale));
+        check('los seis colores del cuerpo',
+            hd?.bodyColors && ['head', 'torso', 'leftArm', 'rightArm', 'leftLeg', 'rightLeg'].every(k => k in hd.bodyColors),
+            `formato=${hd?.bodyColorFormat} ${JSON.stringify(hd?.bodyColors)}`);
+        check('las ocho categorias de accesorios clasicos',
+            hd?.accessories && ['hat', 'hair', 'face', 'neck', 'shoulder', 'front', 'back', 'waist'].every(k => Array.isArray(hd.accessories[k])));
+        check('las diez ranuras de animacion',
+            hd?.animations && ['climb', 'death', 'fall', 'idle', 'jump', 'run', 'swim', 'walk', 'pose', 'mood'].every(k => k in hd.animations));
+        check('la lista plana de assets conserva nombre y tipo',
+            (res.body?.assets ?? []).every(a => 'id' in a && 'name' in a && 'typeId' in a && 'typeName' in a),
             JSON.stringify(res.body?.assets?.[0] ?? null));
+
+        if (hd?.layeredClothing?.length) {
+            console.log(`       ropa por capas: ${JSON.stringify(hd.layeredClothing)}`);
+        }
+        console.log(`       tamaño de la respuesta: ${res.raw.length} bytes`);
+    }
+
+    // ── 6b. Un outfit de tipo Avatar (partes del cuerpo y ropa) ──────────────
+    section('6b. outfit de tipo Avatar');
+    if (outfitAvatarId == null) {
+        console.log('  --   omitido: no habia ninguno de tipo Avatar en la primera pagina');
+    } else {
+        const res = await request(port, `/v1/outfits/${outfitAvatarId}`);
+        const hd = res.body?.humanoidDescription;
+        check(`GET /v1/outfits/${outfitAvatarId} -> 200`, res.status === 200, `${res.ms}ms`);
+        check('las partes del cuerpo estan resueltas',
+            hd?.bodyParts && Object.values(hd.bodyParts).some(v => v != null),
+            JSON.stringify(hd?.bodyParts));
+        check('ningun asset se quedo sin clasificar',
+            (res.body?.assets ?? []).length > 0 && (hd?.other ?? []).length === 0,
+            `assets=${res.body?.assets?.length} sinClasificar=${hd?.other?.length}`);
+    }
+
+    // ── 6c. Bundles opcionales ───────────────────────────────────────────────
+    section('6c. ?bundles=1 (opcional, cuesta llamadas extra)');
+    if (outfitId == null) {
+        console.log('  --   omitido');
+    } else {
+        const antes = (await request(port, '/v1/metrics')).body.roblox.byRoute;
+        const res = await request(port, `/v1/outfits/${outfitId}?bundles=1`);
+        const despues = (await request(port, '/v1/metrics')).body.roblox.byRoute;
+
+        check('GET ?bundles=1 -> 200', res.status === 200, `${res.ms}ms`);
+        check('aparece la union de bundles y el detalle por asset',
+            Array.isArray(res.body?.bundles) && (res.body?.assets ?? []).every(a => 'bundles' in a),
+            `bundles=${JSON.stringify(res.body?.bundles)}`);
+        check('usa su propio bucket, sin tocar el de los outfits',
+            despues.assetBundles.calls > antes.assetBundles.calls
+            && despues.outfitDetails.calls === antes.outfitDetails.calls,
+            `assetBundles ${antes.assetBundles.calls} -> ${despues.assetBundles.calls}`);
+
+        const sinBundles = await request(port, `/v1/outfits/${outfitId}`);
+        check('sin la bandera, cero llamadas de bundles y respuesta sin ese campo',
+            sinBundles.body?.bundles === undefined);
     }
 
     // ── 7. Single-flight contra latencia real ────────────────────────────────

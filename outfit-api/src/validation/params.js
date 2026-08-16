@@ -90,7 +90,38 @@ function parsePagination(query) {
         }
     }
 
-    return { page, limit };
+    // Filtro por tipo de outfit. Se valida contra el conjunto de valores que
+    // Roblox usa de verdad en lugar de reenviar cualquier cadena: asi un valor
+    // mal escrito devuelve un 400 nuestro, explicito, en lugar de gastar una
+    // llamada a Roblox para acabar traduciendo un error opaco suyo.
+    let outfitType;
+    if (query.outfitType !== undefined) {
+        if (typeof query.outfitType !== 'string' || !config.outfitTypes.includes(query.outfitType)) {
+            throw new ValidationError(`outfitType debe ser uno de: ${config.outfitTypes.join(', ')}`);
+        }
+        outfitType = query.outfitType;
+    }
+
+    return { page, limit, outfitType };
 }
 
-module.exports = { ValidationError, parseUsername, parseUserId, parseOutfitId, parsePagination };
+// Bandera booleana de query. Solo se acepta la forma explicita "1" / "true" /
+// "0" / "false": cualquier otra cosa es un error en vez de un silencioso
+// "pues no". Para ?bundles=1 eso importa — activa un camino que cuesta
+// llamadas extra a Roblox, y nadie deberia activarlo (ni creer que lo activo)
+// por accidente.
+function parseBooleanFlag(raw, label) {
+    if (raw === undefined) return false;
+    if (raw === '1' || raw === 'true') return true;
+    if (raw === '0' || raw === 'false') return false;
+    throw new ValidationError(`${label} debe ser 1 o 0`);
+}
+
+module.exports = {
+    ValidationError,
+    parseUsername,
+    parseUserId,
+    parseOutfitId,
+    parsePagination,
+    parseBooleanFlag,
+};

@@ -120,7 +120,10 @@ module.exports = async function run() {
             '/v1/users/abc/outfits',                 // userId no numerico
             '/v1/users/156/outfits?limit=7',         // limit fuera del conjunto
             '/v1/users/156/outfits?page=0',
+            '/v1/users/156/outfits?outfitType=Basura', // tipo que Roblox no usa
+            '/v1/users/156/outfits?outfitType=avatar',  // Roblox distingue mayusculas
             '/v1/outfits/abc',                       // outfitId no numerico
+            '/v1/outfits/123?bundles=yes',           // bandera ambigua
         ];
 
         for (const path of casos) {
@@ -142,6 +145,10 @@ module.exports = async function run() {
         }
         assert.ok(res.body.roblox.byRoute.usernameLookup, 'debe verse el estado por ruta de Roblox');
         assert.ok('state' in res.body.roblox.byRoute.usernameLookup.circuit);
+        // El camino opcional de bundles tiene bucket propio: asi se ve por
+        // separado si esta consumiendo cuota o con el circuito abierto, sin
+        // confundirlo con los tres endpoints principales.
+        assert.ok(res.body.roblox.byRoute.assetBundles, 'assetBundles debe medirse aparte');
     });
 
     test('el limite propio corta con 429 y Retry-After', async () => {

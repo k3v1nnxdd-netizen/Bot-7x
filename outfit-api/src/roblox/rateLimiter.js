@@ -83,10 +83,16 @@ function makeBucket(name) {
     };
 }
 
+// Un bucket por ruta de Roblox, con estado independiente: que
+// catalog.roblox.com este limitado no debe frenar avatar.roblox.com ni al
+// reves. `assetBundles` existe aparte precisamente por eso — es el unico
+// camino opcional (?bundles=1) y el mas caro, y no puede robarle cuota a los
+// tres endpoints que atienden el trafico normal.
 const buckets = {
     usernameLookup: makeBucket('usernameLookup'),
     outfitList: makeBucket('outfitList'),
     outfitDetails: makeBucket('outfitDetails'),
+    assetBundles: makeBucket('assetBundles'),
 };
 
 function retryAfterSecondsFrom(until) {

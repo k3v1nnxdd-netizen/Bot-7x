@@ -49,10 +49,16 @@ const cacheDriver = (process.env.CACHE_DRIVER || 'memory').toLowerCase();
 //  - El CONTENIDO de un outfit concreto cambia solo si lo edita: 1 h.
 //  - La cache negativa es la que impide que un buscador de usernames mande a
 //    Roblox cada tecla mal escrita. Es tan importante como la positiva.
+//  - La pertenencia de un asset a un bundle es un dato ESTRUCTURAL del
+//    catalogo: no depende del jugador ni del outfit y no cambia una vez
+//    publicado. De ahi las 24 h, y de ahi que sea global — resuelto una vez,
+//    lo aprovechan todos los outfits de todos los jugadores que lleven ese
+//    asset.
 const ttl = {
     usernameLookup: intFromEnv('TTL_USERNAME_MS', 12 * 60 * 60_000),
     outfitList: intFromEnv('TTL_OUTFIT_LIST_MS', 5 * 60_000),
     outfitDetails: intFromEnv('TTL_OUTFIT_DETAILS_MS', 60 * 60_000),
+    assetBundles: intFromEnv('TTL_ASSET_BUNDLES_MS', 24 * 60 * 60_000),
     negative: intFromEnv('TTL_NEGATIVE_MS', 5 * 60_000),
 };
 
@@ -119,6 +125,20 @@ const pagination = {
     maxPage: 100,
 };
 
+// Valores de `outfitType` observados en vivo en las respuestas de
+// avatar.roblox.com/v2 (cada outfit del listado trae el suyo) y confirmados
+// como filtro valido del mismo endpoint. Se validan contra este conjunto en
+// lugar de reenviar cualquier cadena, para que un valor mal escrito devuelva
+// un 400 claro nuestro en vez de un error opaco de Roblox. Si Roblox añade un
+// tipo, se agrega aqui.
+const outfitTypes = ['Avatar', 'DynamicHead', 'Shoes'];
+
+// Tope de assets a los que se les resuelve el bundle en una sola peticion con
+// ?bundles=1. Un outfit real no pasa de ~20 assets; el tope existe para que
+// una respuesta anormalmente grande de Roblox no se traduzca en una rafaga
+// desmedida contra catalog.roblox.com.
+const maxBundleLookupsPerRequest = intFromEnv('MAX_BUNDLE_LOOKUPS_PER_REQUEST', 24);
+
 if (!apiKey) {
     console.error(
         '[config] ERROR: falta la variable de entorno OUTFIT_API_KEY. ' +
@@ -143,5 +163,7 @@ module.exports = {
     upstream,
     cache,
     pagination,
+    outfitTypes,
+    maxBundleLookupsPerRequest,
     serviceName: 'outfit-api',
 };

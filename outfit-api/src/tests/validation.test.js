@@ -2,7 +2,7 @@
 
 const { createSuite } = require('./harness');
 const {
-    ValidationError, parseUsername, parseUserId, parseOutfitId, parsePagination,
+    ValidationError, parseUsername, parseUserId, parseOutfitId, parsePagination, parseBooleanFlag,
 } = require('../validation/params');
 
 module.exports = async function run() {
@@ -54,12 +54,12 @@ module.exports = async function run() {
     });
 
     test('parsePagination aplica los valores por defecto', () => {
-        assert.deepStrictEqual(parsePagination({}), { page: 1, limit: 25 });
+        assert.deepStrictEqual(parsePagination({}), { page: 1, limit: 25, outfitType: undefined });
     });
 
     test('parsePagination acepta solo los limites del conjunto cerrado', () => {
-        assert.deepStrictEqual(parsePagination({ limit: '10' }), { page: 1, limit: 10 });
-        assert.deepStrictEqual(parsePagination({ limit: '50' }), { page: 1, limit: 50 });
+        assert.strictEqual(parsePagination({ limit: '10' }).limit, 10);
+        assert.strictEqual(parsePagination({ limit: '50' }).limit, 50);
         rejects(() => parsePagination({ limit: '7' }));
         rejects(() => parsePagination({ limit: '0' }));
         rejects(() => parsePagination({ limit: '100' }));
@@ -73,12 +73,41 @@ module.exports = async function run() {
     });
 
     test('parsePagination acota el rango de page', () => {
-        assert.deepStrictEqual(parsePagination({ page: '100' }), { page: 100, limit: 25 });
+        assert.strictEqual(parsePagination({ page: '100' }).page, 100);
         rejects(() => parsePagination({ page: '0' }));
         rejects(() => parsePagination({ page: '101' }));
         rejects(() => parsePagination({ page: '-3' }));
         rejects(() => parsePagination({ page: 'abc' }));
         rejects(() => parsePagination({ page: ['1'] }));
+    });
+
+    test('parsePagination acepta los outfitType que Roblox usa de verdad', () => {
+        // Los tres valores estan confirmados en vivo en las respuestas de
+        // avatar.roblox.com/v2, tanto como campo de cada outfit como filtro.
+        for (const tipo of ['Avatar', 'DynamicHead', 'Shoes']) {
+            assert.strictEqual(parsePagination({ outfitType: tipo }).outfitType, tipo);
+        }
+        assert.strictEqual(parsePagination({}).outfitType, undefined);
+    });
+
+    test('parsePagination rechaza un outfitType desconocido antes de gastar una llamada', () => {
+        rejects(() => parsePagination({ outfitType: 'Basura' }));
+        rejects(() => parsePagination({ outfitType: 'avatar' })); // Roblox distingue mayusculas
+        rejects(() => parsePagination({ outfitType: ['Avatar'] }));
+        rejects(() => parsePagination({ outfitType: '' }));
+    });
+
+    test('parseBooleanFlag solo acepta la forma explicita', () => {
+        assert.strictEqual(parseBooleanFlag(undefined, 'bundles'), false);
+        assert.strictEqual(parseBooleanFlag('1', 'bundles'), true);
+        assert.strictEqual(parseBooleanFlag('true', 'bundles'), true);
+        assert.strictEqual(parseBooleanFlag('0', 'bundles'), false);
+        assert.strictEqual(parseBooleanFlag('false', 'bundles'), false);
+        // Un "si" ambiguo activaria llamadas extra a Roblox sin que nadie lo
+        // haya pedido de verdad: mejor un 400.
+        rejects(() => parseBooleanFlag('yes', 'bundles'));
+        rejects(() => parseBooleanFlag('', 'bundles'));
+        rejects(() => parseBooleanFlag(['1'], 'bundles'));
     });
 
     return runSuite();

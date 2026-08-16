@@ -14,25 +14,34 @@ Todo lo que cuelga de `/v1` exige la cabecera `x-api-key`. `/health` no.
 |---|---|---|
 | `GET` | `/health` | Healthcheck de Railway. Público, sin límite, sin llamadas a Roblox. |
 | `GET` | `/v1/users/by-username/:username` | Resuelve `username` → `userId`. |
-| `GET` | `/v1/users/:userId/outfits?page=&limit=&outfitType=` | Lista los outfits de un usuario. |
+| `GET` | `/v1/users/:userId/outfits?limit=&pageToken=&outfitType=` | Lista los outfits **guardados** de un usuario. |
 | `GET` | `/v1/users/by-username/:username/outfits?…` | Resuelve **y** lista en una sola llamada. |
-| `GET` | `/v1/outfits/:outfitId?bundles=1` | Contenido completo del outfit. |
+| `GET` | `/v1/outfits/:outfitId?catalog=1&bundles=1` | Contenido completo del outfit. |
 | `GET` | `/v1/metrics` | Observabilidad interna. Protegida. |
 
-`page` va de 1 a 100 (por defecto 1). `limit` solo admite **10, 25 o 50** (por defecto 25). `outfitType` solo admite **`Avatar`, `DynamicHead`, `Shoes`** — los tres valores que Roblox usa realmente.
+`limit` solo admite **10, 25 o 50** (por defecto 25). `outfitType` solo admite **`Avatar`, `DynamicHead`, `Shoes`** — los tres valores que Roblox usa realmente.
 
-### Listado
+### Listado y paginación por cursor
 
 ```
-GET /v1/users/156/outfits?limit=10&outfitType=DynamicHead
+GET /v1/users/156/outfits?limit=25
 {
-  "userId": 156, "page": 1, "limit": 10, "outfitType": "DynamicHead",
-  "count": 10, "hasMore": true,
-  "outfits": [{ "id": 17762785106, "name": "Winky", "outfitType": "DynamicHead", "isEditable": false }]
+  "userId": 156, "limit": 25, "outfitType": null,
+  "count": 25, "hasMore": true,
+  "nextPageToken": "MXx8fGlkXzJ6d0FBQVlubHF4WFl4QkJSU3po…",
+  "outfits": [{ "id": 24477597, "name": "builderman2", "outfitType": "Avatar", "isEditable": true }]
 }
+
+GET /v1/users/156/outfits?limit=25&pageToken=MXx8fGlkXzJ6d0FBQVlubHF4WFl4QkJSU3po…
 ```
 
-`hasMore` se deduce de si la página vino llena. Roblox **no** devuelve ningún total en este endpoint (comprobado en vivo: la respuesta solo trae `data` y `paginationToken`), así que inventar un `totalCount` sería justamente lo que no se debe hacer.
+Para avanzar, reenvía el `nextPageToken` que recibiste como `pageToken`. **URL-encódealo** (puede contener `+`). Cuando `hasMore` es `false`, `nextPageToken` es `null` y el recorrido terminó.
+
+**`page` no existe en esta API y se rechaza con 400.** Roblox lo documenta pero lo **ignora**: `page=1`, `page=2` y `page=3` devuelven exactamente los mismos outfits — ese era el síntoma. Lo que sí funciona es `paginationToken`, y cuando se agota Roblox devuelve **cadena vacía** (`""`), que es lo que traduce `hasMore: false`.
+
+Roblox **no** devuelve ningún total en este endpoint (la respuesta solo trae `data` y `paginationToken`), así que no se expone ninguno.
+
+**Solo outfits guardados.** El listado envía siempre `isEditable=true`, así que devuelve únicamente los outfits que el jugador guardó, no los derivados de bundles del catálogo. La diferencia es enorme: builderman devuelve 25+ entradas sin el filtro y exactamente **2** con él.
 
 ### Detalle del outfit
 
@@ -86,6 +95,26 @@ Notas sobre campos concretos:
 - **`layeredClothing`** trae `order` y `puffiness` de cada pieza 3D. Sin ellos no se puede colocar bien la ropa por capas: es la diferencia entre «lleva zapatos» y «los lleva por encima o por debajo del pantalón». Un asset por capas aparece a la vez aquí y en su categoría.
 - **`other`** recoge cualquier tipo de asset que Roblox devuelva y que no encaje en una ranura conocida. Nunca se descarta nada en silencio.
 - Un `null` significa **«Roblox no lo proporcionó»**, nunca un valor rellenado por nuestra cuenta. `proportion: 0` y `bodyType: 0` son valores legítimos y distintos de `null`.
+
+### Estado de catálogo — `?catalog=1`
+
+Añade a cada asset si es limitado, si está fuera de venta y si Roblox todavía lo reconoce. **Una sola llamada por lote para el outfit entero**, no una por asset.
+
+```json
+"assets": [{
+  "id": 11844853, "name": "Turbo Builders Club Hard Hat", "typeId": 8, "typeName": "Hat",
+  "catalog": {
+    "available": true, "restrictions": ["Limited"], "isLimited": true, "offSale": true,
+    "price": 0, "lowestPrice": 0, "lowestResalePrice": 1100, "hasResellers": true,
+    "creatorType": "User", "creatorTargetId": 1, "creatorName": "Roblox"
+  }
+}]
+```
+
+- **Un asset fuera de venta no desaparece.** Conserva su `assetId`, su nombre, su tipo y todo lo que Roblox siga dando. Sigue formando parte del avatar.
+- **`available: false`** = Roblox no devolvió ficha para ese asset (borrado, moderado o fuera del catálogo). Se detecta por **ausencia** en la respuesta del lote, que es como Roblox lo señala. En ese caso el resto de campos van a `null` — «no se sabe», no `false`.
+- **`catalogResolved: false`** en la raíz = alguna consulta falló por nuestro lado. Permite distinguir «Roblox dice que no existe» de «no lo pudimos comprobar».
+- La ficha se cachea **por asset** (1 h) y de forma global: dos outfits que compartan sombrero comparten la entrada. Verificado en vivo: 10 assets → **1 llamada**; repetir → **0**.
 
 ### Errores
 
@@ -196,6 +225,7 @@ Solo `OUTFIT_API_KEY` es obligatoria.
 | `TTL_OUTFIT_LIST_MS` | 5 min | Caché del listado. |
 | `TTL_OUTFIT_DETAILS_MS` | 1 h | Caché del contenido de un outfit. |
 | `TTL_ASSET_BUNDLES_MS` | 24 h | Caché de bundle por asset (global). |
+| `TTL_CATALOG_DETAILS_MS` | 1 h | Caché de ficha de catálogo por asset (global). |
 | `TTL_NEGATIVE_MS` | 5 min | Caché de los 404. |
 | `RATE_LIMIT_MAX` / `RATE_LIMIT_WINDOW_MS` | 600 / 60 s | Límite propio, por IP. |
 | `UPSTREAM_TIMEOUT_MS` | 6 s | Timeout de cada llamada a Roblox. |
@@ -203,6 +233,7 @@ Solo `OUTFIT_API_KEY` es obligatoria.
 | `UPSTREAM_MAX_QUEUE` | 200 | Cola del gate; al llenarse se rechaza al instante. |
 | `UPSTREAM_MAX_RETRIES` | 2 | Reintentos ante 429/5xx/red. |
 | `MAX_BUNDLE_LOOKUPS_PER_REQUEST` | 24 | Tope de assets resueltos con `?bundles=1`. |
+| `MAX_CATALOG_BATCH_SIZE` | 100 | Tamaño del lote a catalog/items/details. |
 | `CACHE_MAX_ENTRIES` | 50 000 | Tope LRU en memoria. |
 | `CACHE_DRIVER` | `memory` | Reservado para Redis. |
 
@@ -234,13 +265,54 @@ npm install
 cp .env.example .env      # y pon una OUTFIT_API_KEY
 npm start                 # escucha en 3100
 
-npm test                  # 77 tests, sin red ni disco
+npm test                  # 92 tests, sin red ni disco
 npm run test:live         # verificación end-to-end contra la API real de Roblox
 ```
 
 ---
 
 ## Diseño
+
+### Auditoría: qué se puede obtener de un outfit
+
+Comprobado contra respuestas reales de los endpoints oficiales, no contra documentación.
+
+| Dato | ¿Se obtiene? | De dónde | Coste |
+|---|---|---|---|
+| ID y nombre | ✅ | `v3/outfits/{id}/details` | incluido |
+| `outfitType` | ✅ | `v3` details **y** `v2` listado | incluido |
+| `isEditable` | ✅ | `v3` details **y** `v2` listado | incluido |
+| R6 / R15 (`playerAvatarType`) | ✅ | `v3` details | incluido |
+| BodyParts + sus IDs | ✅ | `v3` details (tipos 17, 27-31, 79) | incluido |
+| Colores exactos del cuerpo (6) | ✅ | `v3` details → `bodyColor3s` (hex) | incluido |
+| Escala completa (6) | ✅ | `v3` details → `scale` | incluido |
+| Accesorios (8 categorías) | ✅ | `v3` details | incluido |
+| Ropa clásica (Shirt/Pants/TShirt) | ✅ | `v3` details | incluido |
+| Layered Clothing + `order`/`puffiness` | ✅ | `v3` details → `assets[].meta` | incluido |
+| Dynamic Head + `supportsHeadShapes` | ✅ | `v3` details | incluido |
+| Cara (Face 2D) | ✅ | `v3` details | incluido |
+| IDs de todos los assets | ✅ | `v3` details | incluido |
+| Datos para el `HumanoidDescription` | ✅ | `v3` details | incluido |
+| Assets **limitados** | ✅ `?catalog=1` | `catalog/v1/catalog/items/details` | **1 llamada por lote** |
+| Assets **fuera de venta** | ✅ `?catalog=1` | ídem | ídem |
+| Assets **eliminados / no disponibles** | ✅ `?catalog=1` | ídem (ausencia = señal) | ídem |
+| **Animaciones** de movimiento | ⚠️ ver abajo | — | — |
+| **Emotes** | ❌ no están en el outfit | `v1/users/{id}/avatar` (avatar actual) | otro endpoint |
+| **Bundles** | ⚠️ parcial, `?bundles=1` | `catalog/v1/assets/{id}/bundles` | **1 por asset** |
+
+**Todo lo marcado «incluido» sale de UNA sola llamada a Roblox.** Reconstruir un outfit no cuesta ni una petición por accesorio.
+
+#### Animaciones y emotes: la respuesta concreta
+
+Esto se comprobó específicamente, porque es fácil confundirlo:
+
+- **Emotes: NO pertenecen al outfit guardado.** El campo `emotes` **no existe** en la respuesta de `v3/outfits/{id}/details` — ni vacío ni nulo, no está. Sus claves de nivel superior son exactamente `id, name, assets, bodyColor3s, scale, playerAvatarType, outfitType, isEditable, universeId, inventoryType`. El campo `emotes` **solo** aparece en `v1/users/{userId}/avatar`, que describe el **avatar actual** del jugador, no un outfit guardado. Son dos cosas distintas y aquí no se mezclan.
+
+- **Animaciones de movimiento: no observadas en ningún outfit guardado.** Los assets de animación (`ClimbAnimation` 48, `FallAnimation` 50, `IdleAnimation` 51, `JumpAnimation` 52, `RunAnimation` 53, `SwimAnimation` 54, `WalkAnimation` 55) **sí** aparecen en el `assets` del **avatar actual** (verificado con la cuenta Roblox). En los outfits **guardados** examinados —4 de 2 usuarios, más 9 derivados de catálogo— no apareció ninguno. No puedo demostrar que Roblox nunca los guarde, así que el mapeo está preparado: si algún día llegan, se rellenan solas. Mientras no lleguen, esas ranuras quedan en `null` en lugar de inventarse.
+
+- **`MoodAnimation` sí viene**, porque forma parte del bundle de la cabeza dinámica, no de un paquete de animaciones.
+
+**Si necesitas animaciones o emotes**, el endpoint oficial adicional es `GET https://avatar.roblox.com/v1/users/{userId}/avatar` — pero devuelve el **avatar puesto ahora mismo**, no el outfit guardado que estés mostrando. Dímelo y lo añado como endpoint aparte, sin mezclarlo con este.
 
 ### Qué da Roblox y qué no
 
@@ -294,6 +366,6 @@ src/cache/                       fachada + driver de memoria + single-flight
 src/security/                    API key, límite por IP
 src/validation/                  validadores puros
 src/observability/               logger JSON, log por petición, métricas
-src/tests/                       77 tests sin red · fixtures/ con respuestas
+src/tests/                       92 tests sin red · fixtures/ con respuestas
                                  reales de Roblox · live/ verificación manual
 ```

@@ -118,9 +118,10 @@ const coloresPorIdDeBrickColor = {
     ],
 };
 
-// GET https://avatar.roblox.com/v2/avatar/users/156/outfits?page=1&itemsPerPage=3
+// GET .../outfits?page=1&itemsPerPage=3 — PRIMERA pagina.
 // Sin `filteredCount` por ningun lado: solo `data` y `paginationToken`.
-const listadoDeOutfits = {
+// Este token es el que hace avanzar de verdad el recorrido.
+const listadoPagina1 = {
     data: [
         { id: 555869704325162, name: 'adidas Ice Angels', isEditable: false, outfitType: 'Shoes' },
         { id: 17762785106, name: 'Winky', isEditable: false, outfitType: 'DynamicHead' },
@@ -129,11 +130,65 @@ const listadoDeOutfits = {
     paginationToken: 'MXx8fGlkXzJ6d0FBQVlubHF4WFl4QkJSU3podXJ0aWFSS2FjeVV4b3NnMjF8fHww',
 };
 
+// GET .../outfits?paginationToken=<el de arriba>&itemsPerPage=3 — SEGUNDA
+// pagina. Ids completamente distintos: es la prueba de que el cursor avanza,
+// frente a `page=2`, que devolvia otra vez los de la pagina 1.
+const listadoPagina2 = {
+    data: [
+        { id: 11155772506, name: 'Stevie Standard', isEditable: false, outfitType: 'DynamicHead' },
+        { id: 131929576, name: 'Robloxian 2.0', isEditable: false, outfitType: 'Avatar' },
+        { id: 131929573, name: 'Action Figure', isEditable: false, outfitType: 'Avatar' },
+    ],
+    paginationToken: 'MXx8fGlkXzJ6d0FBQVdXQklzVVB4QkFZaVFuaENU',
+};
+
+// GET .../outfits?isEditable=true&itemsPerPage=5 — los DOS unicos outfits que
+// builderman guardo de verdad, frente a los 25+ que devuelve sin el filtro.
+// `paginationToken: ""` — CADENA VACIA — es como Roblox dice "no hay mas".
+const listadoUltimaPagina = {
+    data: [
+        { id: 24477597, name: 'builderman2', isEditable: true, outfitType: 'Avatar' },
+        { id: 24477562, name: 'builderman1', isEditable: true, outfitType: 'Avatar' },
+    ],
+    paginationToken: '',
+};
+
+// GET https://avatar.roblox.com/v3/outfits/24477597/details — un outfit
+// realmente GUARDADO por el jugador (isEditable=true). Importa por dos cosas:
+// es el unico ejemplar R6 capturado, y demuestra que un outfit guardado NO
+// contiene animaciones de movimiento ni emotes ni el campo `emotes`.
+const outfitGuardadoR6 = {
+    id: 24477597,
+    name: 'builderman2',
+    assets: [
+        { id: 119735386706067, name: 'Mr. Chuckles - Head', assetType: { id: 79, name: 'DynamicHead' }, currentVersionId: 17699434760835, supportsHeadShapes: true },
+        { id: 73094282779994, name: 'Mr. Chuckles - Mood', assetType: { id: 78, name: 'MoodAnimation' }, currentVersionId: 2120416406346 },
+        { id: 27112025, name: 'Roblox 2.0 Torso', assetType: { id: 27, name: 'Torso' }, currentVersionId: 11201616558 },
+        { id: 27112052, name: 'Roblox 2.0 Left Arm', assetType: { id: 29, name: 'LeftArm' }, currentVersionId: 11201616588 },
+        { id: 27112039, name: 'Roblox 2.0 Right Arm', assetType: { id: 28, name: 'RightArm' }, currentVersionId: 11201616570 },
+        { id: 27112056, name: 'Roblox 2.0 Left Leg', assetType: { id: 30, name: 'LeftLeg' }, currentVersionId: 4414048454802 },
+        { id: 27112068, name: 'Roblox 2.0 Right Leg', assetType: { id: 31, name: 'RightLeg' }, currentVersionId: 67685323292678 },
+        { id: 13343843, name: 'ROBLOX R&R&R Hoodie by 1blox', assetType: { id: 11, name: 'Shirt' }, currentVersionId: 34200596 },
+        { id: 129458426, name: 'Jeans', assetType: { id: 12, name: 'Pants' }, currentVersionId: 304919540 },
+        { id: 11844853, name: 'Turbo Builders Club Hard Hat', assetType: { id: 8, name: 'Hat' }, currentVersionId: 883360292 },
+    ],
+    bodyColor3s: { headColor3: 'FFCC99', torsoColor3: '111111', rightArmColor3: 'FFCC99', leftArmColor3: 'FFCC99', rightLegColor3: 'FFCC99', leftLegColor3: 'FFCC99' },
+    scale: { height: 1.0, width: 1.0, head: 1.0, depth: 1.00, proportion: 0.0, bodyType: 0.0 },
+    playerAvatarType: 'R6',
+    outfitType: 'Avatar',
+    isEditable: true,
+    universeId: null,
+    inventoryType: 'Avatar',
+};
+
 module.exports = {
     ropaPorCapas,
     cabezaDinamica,
     partesDelCuerpo,
     avatarCompleto,
     coloresPorIdDeBrickColor,
-    listadoDeOutfits,
+    listadoPagina1,
+    listadoPagina2,
+    listadoUltimaPagina,
+    outfitGuardadoR6,
 };

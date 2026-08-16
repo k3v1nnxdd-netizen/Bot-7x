@@ -54,11 +54,16 @@ const cacheDriver = (process.env.CACHE_DRIVER || 'memory').toLowerCase();
 //    publicado. De ahi las 24 h, y de ahi que sea global — resuelto una vez,
 //    lo aprovechan todos los outfits de todos los jugadores que lleven ese
 //    asset.
+//  - La ficha de catalogo de un asset (limitado, fuera de venta, precio de
+//    reventa) es estructural salvo el precio, que se mueve despacio. 1 h es un
+//    equilibrio razonable, y como se cachea POR ASSET la comparte cualquier
+//    outfit de cualquier jugador que lleve esa pieza.
 const ttl = {
     usernameLookup: intFromEnv('TTL_USERNAME_MS', 12 * 60 * 60_000),
     outfitList: intFromEnv('TTL_OUTFIT_LIST_MS', 5 * 60_000),
     outfitDetails: intFromEnv('TTL_OUTFIT_DETAILS_MS', 60 * 60_000),
     assetBundles: intFromEnv('TTL_ASSET_BUNDLES_MS', 24 * 60 * 60_000),
+    catalogDetails: intFromEnv('TTL_CATALOG_DETAILS_MS', 60 * 60_000),
     negative: intFromEnv('TTL_NEGATIVE_MS', 5 * 60_000),
 };
 
@@ -119,10 +124,12 @@ const cache = {
 // rango deja que un llamador genere decenas de variantes de clave por pagina
 // y fragmente el hit rate de la cache sin ningun beneficio. Tres valores
 // cubren cualquier UI real. `maxPage` acota igualmente el espacio de claves.
+// La paginacion es POR CURSOR (ver src/roblox/client.js): Roblox ignora
+// `page`, asi que aqui no hay ningun tope de paginas que configurar — el
+// recorrido termina cuando Roblox deja de devolver token.
 const pagination = {
     allowedLimits: [10, 25, 50],
     defaultLimit: 25,
-    maxPage: 100,
 };
 
 // Valores de `outfitType` observados en vivo en las respuestas de
@@ -138,6 +145,11 @@ const outfitTypes = ['Avatar', 'DynamicHead', 'Shoes'];
 // una respuesta anormalmente grande de Roblox no se traduzca en una rafaga
 // desmedida contra catalog.roblox.com.
 const maxBundleLookupsPerRequest = intFromEnv('MAX_BUNDLE_LOOKUPS_PER_REQUEST', 24);
+
+// Tamaño maximo del lote a catalog/v1/catalog/items/details. Roblox admite
+// bastantes mas por peticion, pero un outfit real ronda los 20 assets, asi que
+// 100 garantiza que un outfit entero siempre entre en UN solo lote.
+const maxCatalogBatchSize = intFromEnv('MAX_CATALOG_BATCH_SIZE', 100);
 
 if (!apiKey) {
     console.error(
@@ -165,5 +177,6 @@ module.exports = {
     pagination,
     outfitTypes,
     maxBundleLookupsPerRequest,
+    maxCatalogBatchSize,
     serviceName: 'outfit-api',
 };

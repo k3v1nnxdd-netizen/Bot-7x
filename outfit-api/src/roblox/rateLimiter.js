@@ -93,6 +93,7 @@ const buckets = {
     outfitList: makeBucket('outfitList'),
     outfitDetails: makeBucket('outfitDetails'),
     assetBundles: makeBucket('assetBundles'),
+    catalogDetails: makeBucket('catalogDetails'),
 };
 
 function retryAfterSecondsFrom(until) {

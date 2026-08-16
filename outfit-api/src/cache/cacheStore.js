@@ -112,4 +112,18 @@ function reset() {
     metrics.negativeStores = 0;
 }
 
-module.exports = { key, withCache, getMetrics, reset, __driver: driver };
+// Acceso directo al almacen, para el patron "lee muchas claves, agrupa las que
+// falten en UNA sola llamada, guarda cada una por separado" — que es como se
+// consulta el catalogo de varios assets a la vez (ver outfitService). withCache
+// no sirve ahi porque razona sobre una clave y una llamada; aqui hay N claves
+// y una llamada. Sigue siendo la misma cache, con las mismas claves.
+async function get(cacheKey) {
+    const value = await driver.get(cacheKey);
+    return isNegative(value) ? undefined : value;
+}
+
+async function set(cacheKey, value, ttlMs) {
+    return driver.set(cacheKey, value, ttlMs);
+}
+
+module.exports = { key, withCache, get, set, getMetrics, reset, __driver: driver };

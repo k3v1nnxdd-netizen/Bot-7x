@@ -84,27 +84,40 @@ async function lookupUserByUsername(username) {
 // ── 2. listado de outfits ────────────────────────────────────────────────────
 
 // GET https://avatar.roblox.com/v2/avatar/users/{userId}/outfits
-// Parametros: page (1-based), itemsPerPage, outfitType (opcional).
-// Respuesta REAL confirmada en vivo: { data: [{ id, name, isEditable,
-// outfitType }], paginationToken } — NO existe `filteredCount`, ni con filtro
-// ni sin el. Por eso `hasMore` se deduce de si la pagina vino llena, que es la
-// unica señal honesta disponible; inventar un total seria justo lo contrario
-// de lo pedido.
+// Parametros: itemsPerPage, paginationToken (opcional), outfitType (opcional),
+// isEditable.
 //
-// `outfitType` se reenvia solo si viene: confirmado en vivo que Roblox filtra
-// correctamente (outfitType=Avatar devuelve solo Avatar, =DynamicHead solo
-// DynamicHead). Cada outfit del listado ya trae su propio `outfitType`, asi
-// que el cliente puede distinguirlos aunque no filtre.
-async function listOutfits(userId, { page, limit, outfitType }) {
-    const params = { page, itemsPerPage: limit };
-    if (outfitType) params.outfitType = outfitType;
-
-    const response = await rateLimiter.run('outfitList', () => http_.get(
-        `https://avatar.roblox.com/v2/avatar/users/${userId}/outfits`,
-        { params }
-    ), { notFoundCode: 'user_not_found' });
-
-    const data = Array.isArray(response.data?.data) ? response.data.data : [];
+// PAGINACION POR CURSOR, NO POR NUMERO DE PAGINA. Comprobado en vivo y sin
+// lugar a dudas: `page` esta DOCUMENTADO pero Roblox lo IGNORA — page=1,
+// page=2 y page=3 devuelven exactamente los mismos ids. Lo que si funciona es
+// `paginationToken`: pasar el token de una pagina devuelve el bloque
+// siguiente, distinto, junto a un token nuevo.
+//     page=1  -> 555869704325162, 17762785106, 11685920016
+//     page=2  -> 555869704325162, 17762785106, 11685920016   (identico)
+//     token   -> 11155772506, 131929576, 131929573           (avanza de verdad)
+//
+// FIN DEL RECORRIDO: al agotarse, Roblox devuelve `paginationToken: ""` —
+// cadena VACIA, no null y no ausente. Esa cadena vacia es la señal de "no hay
+// mas", y es lo que traduce `hasMore`.
+//
+// isEditable=true SIEMPRE. Sin el, el listado mezcla los outfits que el
+// jugador ha guardado con outfits derivados de bundles del catalogo que nunca
+// guardo. Verificado: builderman devuelve 25+ entradas sin filtro y solo DOS
+// con el ("builderman1" y "builderman2") — las unicas realmente suyas.
+//
+// Respuesta REAL: { data: [{ id, name, isEditable, outfitType }],
+// paginationToken }. NO existe `filteredCount` ni ningun otro total, asi que
+// no se expone ninguno: inventarlo seria justo lo contrario de lo pedido.
+// Mapeo puro de la respuesta del listado. Separado de la llamada HTTP para que
+// los tests puedan ejercitarlo contra respuestas reales guardadas — sobre todo
+// la distincion entre "hay mas paginas" y "se acabo", que es exactamente donde
+// estaba el fallo de paginacion.
+function normalizeOutfitList(raw) {
+    const data = Array.isArray(raw?.data) ? raw.data : [];
+    const nextToken = raw?.paginationToken;
+    // Solo una cadena NO vacia es un cursor de verdad. Al agotarse el
+    // recorrido Roblox manda "" (cadena vacia), no null ni ausencia.
+    const hasMore = typeof nextToken === 'string' && nextToken.length > 0;
 
     return {
         outfits: data.map(outfit => ({
@@ -113,8 +126,22 @@ async function listOutfits(userId, { page, limit, outfitType }) {
             outfitType: outfit.outfitType ?? null,
             isEditable: outfit.isEditable ?? null,
         })),
-        hasMore: data.length === limit,
+        nextPageToken: hasMore ? nextToken : null,
+        hasMore,
     };
+}
+
+async function listOutfits(userId, { limit, pageToken, outfitType }) {
+    const params = { itemsPerPage: limit, isEditable: true };
+    if (pageToken) params.paginationToken = pageToken;
+    if (outfitType) params.outfitType = outfitType;
+
+    const response = await rateLimiter.run('outfitList', () => http_.get(
+        `https://avatar.roblox.com/v2/avatar/users/${userId}/outfits`,
+        { params }
+    ), { notFoundCode: 'user_not_found' });
+
+    return normalizeOutfitList(response.data);
 }
 
 // ── 3. detalles de un outfit ─────────────────────────────────────────────────
@@ -180,4 +207,79 @@ async function getBundlesForAsset(assetId) {
     }));
 }
 
-module.exports = { lookupUserByUsername, listOutfits, getOutfitDetailsRaw, getBundlesForAsset };
+// ── 5. estado de catalogo de varios assets (opcional, POR LOTES) ─────────────
+
+// catalog.roblox.com requiere un x-csrf-token. Se cachea el token y solo se
+// renueva cuando Roblox rechaza uno caducado, en vez de hacer el baile del
+// 403 en cada llamada.
+let catalogCsrfToken = null;
+
+function postCatalogDetails(assetIds) {
+    const body = { items: assetIds.map(id => ({ itemType: 'Asset', id })) };
+    const headers = { 'Content-Type': 'application/json' };
+    if (catalogCsrfToken) headers['x-csrf-token'] = catalogCsrfToken;
+
+    return http_.post('https://catalog.roblox.com/v1/catalog/items/details', body, { headers })
+        .catch(err => {
+            const tokenNuevo = err.response?.status === 403 && err.response.headers['x-csrf-token'];
+            if (!tokenNuevo) throw err;
+            catalogCsrfToken = tokenNuevo;
+            return http_.post('https://catalog.roblox.com/v1/catalog/items/details', body, {
+                headers: { ...headers, 'x-csrf-token': catalogCsrfToken },
+            });
+        });
+}
+
+// POST https://catalog.roblox.com/v1/catalog/items/details
+//
+// UNA SOLA PETICION PARA TODOS LOS ASSETS DEL OUTFIT. Este es el endpoint que
+// responde a "¿esta fuera de venta?", "¿es limitado?", "¿sigue existiendo?" —
+// y admite lote, asi que un outfit entero (~20 assets) cuesta UNA llamada, no
+// veinte. Confirmado en vivo con 8 assets en una sola peticion.
+//
+// COMO SE DETECTA UN ASSET ELIMINADO O MODERADO: Roblox simplemente NO lo
+// incluye en la respuesta. Comprobado: al pedir [607702162, 999999999999]
+// vuelve un solo item. Tambien falto un Shirt real y antiguo (13343843), asi
+// que "ausente" cubre borrado, moderado o fuera del catalogo. Esa ausencia es
+// informacion, no un error: el asset SIGUE formando parte del outfit y
+// conserva su assetId — solo deja de tener ficha de catalogo.
+//
+// Devuelve Map<assetId, registro>. Quien llama decide que hacer con los que
+// falten; aqui no se inventa ninguno.
+async function getCatalogDetails(assetIds) {
+    const details = new Map();
+    if (assetIds.length === 0) return details;
+
+    const response = await rateLimiter.run('catalogDetails', () => postCatalogDetails(assetIds));
+
+    for (const item of (response.data?.data ?? [])) {
+        const restrictions = Array.isArray(item.itemRestrictions) ? item.itemRestrictions : [];
+        details.set(item.id, {
+            available: true,
+            restrictions,
+            // "Limited" y "LimitedUnique" son los dos valores que Roblox usa
+            // para un objeto de edicion limitada. Se derivan de lo que manda,
+            // no de una suposicion nuestra.
+            isLimited: restrictions.includes('Limited') || restrictions.includes('LimitedUnique'),
+            offSale: item.isOffSale ?? null,
+            price: item.price ?? null,
+            lowestPrice: item.lowestPrice ?? null,
+            lowestResalePrice: item.lowestResalePrice ?? null,
+            hasResellers: item.hasResellers ?? null,
+            creatorType: item.creatorType ?? null,
+            creatorTargetId: item.creatorTargetId ?? null,
+            creatorName: item.creatorName ?? null,
+        });
+    }
+
+    return details;
+}
+
+module.exports = {
+    lookupUserByUsername,
+    listOutfits,
+    getOutfitDetailsRaw,
+    getBundlesForAsset,
+    getCatalogDetails,
+    normalizeOutfitList, // puro; exportado para los tests
+};

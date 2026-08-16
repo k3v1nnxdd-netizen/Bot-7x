@@ -2,7 +2,7 @@
 
 const { createSuite } = require('./harness');
 const {
-    ValidationError, parseUsername, parseUserId, parseOutfitId, parsePagination, parseBooleanFlag,
+    ValidationError, parseUsername, parseUserId, parseOutfitId, parsePagination, parsePageToken, parseBooleanFlag,
 } = require('../validation/params');
 
 module.exports = async function run() {
@@ -54,7 +54,7 @@ module.exports = async function run() {
     });
 
     test('parsePagination aplica los valores por defecto', () => {
-        assert.deepStrictEqual(parsePagination({}), { page: 1, limit: 25, outfitType: undefined });
+        assert.deepStrictEqual(parsePagination({}), { limit: 25, pageToken: undefined, outfitType: undefined });
     });
 
     test('parsePagination acepta solo los limites del conjunto cerrado', () => {
@@ -72,13 +72,42 @@ module.exports = async function run() {
         rejects(() => parsePagination({ limit: ['10'] }));
     });
 
-    test('parsePagination acota el rango de page', () => {
-        assert.strictEqual(parsePagination({ page: '100' }).page, 100);
-        rejects(() => parsePagination({ page: '0' }));
-        rejects(() => parsePagination({ page: '101' }));
-        rejects(() => parsePagination({ page: '-3' }));
-        rejects(() => parsePagination({ page: 'abc' }));
-        rejects(() => parsePagination({ page: ['1'] }));
+    test('parsePagination RECHAZA page, porque Roblox lo ignora', () => {
+        // Comprobado en vivo: page=1 y page=2 devuelven exactamente los mismos
+        // outfits. Reenviarlo daria paginacion falsa; ignorarlo dejaria a quien
+        // lo mande convencido de estar paginando. Un 400 que explica el
+        // mecanismo real es la unica salida honesta.
+        rejects(() => parsePagination({ page: '1' }));
+        rejects(() => parsePagination({ page: '2' }));
+
+        let mensaje = '';
+        try { parsePagination({ page: '2' }); } catch (err) { mensaje = err.message; }
+        assert.match(mensaje, /pageToken/, 'el error debe indicar cual es el mecanismo correcto');
+    });
+
+    test('parsePageToken acepta un cursor real de Roblox', () => {
+        // Token literal devuelto por avatar.roblox.com en la sonda.
+        const real = 'MXx8fGlkXzJ6d0FBQVlubHF4WFl4QkJSU3podXJ0aWFSS2FjeVV4b3NnMjF8fHww';
+        assert.strictEqual(parsePageToken(real), real);
+        assert.strictEqual(parsePagination({ pageToken: real }).pageToken, real);
+        assert.strictEqual(parsePageToken(undefined), undefined);
+    });
+
+    test('parsePageToken restaura el "+" que la query convierte en espacio', () => {
+        // base64 puede contener '+', y un '+' sin codificar en una query llega
+        // como espacio. El espacio no existe en base64, asi que encontrarlo
+        // solo puede significar eso: se restaura en vez de romper un token
+        // que en realidad era valido.
+        assert.strictEqual(parsePageToken('ab cd+ef'), 'ab+cd+ef');
+    });
+
+    test('parsePageToken rechaza lo que no puede ser un cursor', () => {
+        rejects(() => parsePageToken(''));
+        rejects(() => parsePageToken('token con \n salto'));
+        rejects(() => parsePageToken('¿acentos?'));
+        rejects(() => parsePageToken('a'.repeat(513)));
+        rejects(() => parsePageToken(['abc']));
+        rejects(() => parsePageToken(123));
     });
 
     test('parsePagination acepta los outfitType que Roblox usa de verdad', () => {

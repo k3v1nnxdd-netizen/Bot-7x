@@ -119,11 +119,14 @@ module.exports = async function run() {
             '/v1/users/by-username/nombre%20con%20espacio',
             '/v1/users/abc/outfits',                 // userId no numerico
             '/v1/users/156/outfits?limit=7',         // limit fuera del conjunto
-            '/v1/users/156/outfits?page=0',
+            '/v1/users/156/outfits?page=2',          // Roblox ignora page: se rechaza en vez de fingir
+            '/v1/users/156/outfits?pageToken=',      // cursor vacio
+            '/v1/users/156/outfits?pageToken=%C2%BFacentos%3F', // no puede ser base64
             '/v1/users/156/outfits?outfitType=Basura', // tipo que Roblox no usa
             '/v1/users/156/outfits?outfitType=avatar',  // Roblox distingue mayusculas
             '/v1/outfits/abc',                       // outfitId no numerico
             '/v1/outfits/123?bundles=yes',           // bandera ambigua
+            '/v1/outfits/123?catalog=yes',
         ];
 
         for (const path of casos) {
@@ -149,6 +152,14 @@ module.exports = async function run() {
         // separado si esta consumiendo cuota o con el circuito abierto, sin
         // confundirlo con los tres endpoints principales.
         assert.ok(res.body.roblox.byRoute.assetBundles, 'assetBundles debe medirse aparte');
+        assert.ok(res.body.roblox.byRoute.catalogDetails, 'catalogDetails debe medirse aparte');
+    });
+
+    test('el 400 de page explica cual es el mecanismo real', async () => {
+        const res = await request(port, '/v1/users/156/outfits?page=2', auth);
+        assert.strictEqual(res.status, 400);
+        assert.match(res.body.error.message, /pageToken/);
+        assert.match(res.body.error.message, /ignora/);
     });
 
     test('el limite propio corta con 429 y Retry-After', async () => {

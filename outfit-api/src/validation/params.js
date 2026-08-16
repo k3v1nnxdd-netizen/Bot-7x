@@ -60,21 +60,51 @@ function parseOutfitId(raw) {
 // `limit` se restringe a un conjunto cerrado en lugar de a un rango. Un rango
 // libre 1-50 permite a un llamador generar 50 variantes de clave por pagina y
 // pulverizar el hit rate de la cache sin ganar nada; tres valores cubren
-// cualquier interfaz real. `page` se acota para que el espacio de claves sea
-// finito por construccion.
-function parsePagination(query) {
-    const { allowedLimits, defaultLimit, maxPage } = config.pagination;
+// cualquier interfaz real.
+// Un cursor de Roblox es una cadena base64. Se valida la FORMA, no el
+// contenido: solo Roblox sabe si un token concreto es valido, y adivinarlo no
+// es asunto nuestro. Lo que si evita esta comprobacion es mandarle basura —
+// comprobado en vivo que un token invalido le provoca un 500
+// InternalServerError, que ademas nuestro limitador reintentaria dos veces
+// antes de rendirse. Rechazar aqui la forma imposible ahorra esas tres
+// llamadas y devuelve un 400 util en lugar de un 502 opaco.
+const PAGE_TOKEN_PATTERN = /^[A-Za-z0-9+/=_-]{1,512}$/;
 
-    let page = 1;
-    if (query.page !== undefined) {
-        if (typeof query.page !== 'string' || !/^[0-9]{1,3}$/.test(query.page)) {
-            throw new ValidationError('page debe ser un entero positivo');
-        }
-        page = Number(query.page);
-        if (page < 1 || page > maxPage) {
-            throw new ValidationError(`page debe estar entre 1 y ${maxPage}`);
-        }
+function parsePageToken(raw) {
+    if (raw === undefined) return undefined;
+    if (typeof raw !== 'string' || raw === '') {
+        throw new ValidationError('pageToken debe ser el nextPageToken devuelto por una consulta anterior');
     }
+
+    // Un token base64 puede contener '+', y un '+' sin codificar dentro de una
+    // query string se decodifica como ESPACIO. Como el espacio no existe en
+    // base64, encontrarlo solo puede significar eso, asi que se restaura en
+    // lugar de rechazar un token que en realidad estaba bien. (Aun asi, lo
+    // correcto desde el juego es url-encodearlo.)
+    const token = raw.replace(/ /g, '+');
+
+    if (!PAGE_TOKEN_PATTERN.test(token)) {
+        throw new ValidationError('pageToken tiene un formato invalido');
+    }
+    return token;
+}
+
+function parsePagination(query) {
+    const { allowedLimits, defaultLimit } = config.pagination;
+
+    // `page` se rechaza ACTIVAMENTE en lugar de ignorarse. Roblox lo acepta y
+    // lo ignora en silencio: page=1, page=2 y page=3 devuelven exactamente los
+    // mismos outfits (comprobado en vivo). Reenviarlo daria paginacion falsa,
+    // e ignorarlo dejaria a quien lo mande convencido de estar paginando. Un
+    // 400 que explica el mecanismo real es la unica opcion honesta.
+    if (query.page !== undefined) {
+        throw new ValidationError(
+            'page no existe en esta API porque Roblox lo ignora (page=1 y page=2 devuelven lo mismo). ' +
+            'Usa pageToken con el nextPageToken de la respuesta anterior.'
+        );
+    }
+
+    const pageToken = parsePageToken(query.pageToken);
 
     let limit = defaultLimit;
     if (query.limit !== undefined) {
@@ -102,7 +132,7 @@ function parsePagination(query) {
         outfitType = query.outfitType;
     }
 
-    return { page, limit, outfitType };
+    return { limit, pageToken, outfitType };
 }
 
 // Bandera booleana de query. Solo se acepta la forma explicita "1" / "true" /
@@ -123,5 +153,6 @@ module.exports = {
     parseUserId,
     parseOutfitId,
     parsePagination,
+    parsePageToken,
     parseBooleanFlag,
 };

@@ -123,24 +123,67 @@ function section(title) {
     }
 
     // ── 4. Listado de outfits ────────────────────────────────────────────────
-    section('4. listado de outfits (con outfitType por outfit)');
+    section('4. listado de outfits (solo guardados, con outfitType)');
     let outfitId = null;
     let outfitAvatarId = null;
+    let primerToken = null;
+    let primerosIds = null;
     {
         const res = await requestTolerant(port, `/v1/users/${userId}/outfits?limit=10`);
         if (res.limitadoPorRoblox) {
             console.log('  --   Roblox sigue limitando el listado: seccion no verificada en esta pasada.');
         } else {
             check(`GET /v1/users/${userId}/outfits -> 200`, res.status === 200, `${res.ms}ms`);
-            check('la respuesta trae la forma paginada esperada',
-                Array.isArray(res.body?.outfits) && typeof res.body?.hasMore === 'boolean' && res.body?.limit === 10,
-                `count=${res.body?.count} hasMore=${res.body?.hasMore}`);
+            check('la respuesta trae la forma con cursor',
+                Array.isArray(res.body?.outfits) && typeof res.body?.hasMore === 'boolean'
+                && 'nextPageToken' in (res.body ?? {}) && res.body?.limit === 10,
+                `count=${res.body?.count} hasMore=${res.body?.hasMore} token=${res.body?.nextPageToken ? 'si' : 'null'}`);
             check('cada outfit trae su outfitType',
                 (res.body?.outfits ?? []).length > 0 && (res.body?.outfits ?? []).every(o => typeof o.outfitType === 'string'),
                 JSON.stringify((res.body?.outfits ?? []).slice(0, 3).map(o => `${o.name}:${o.outfitType}`)));
+            check('SOLO outfits guardados por el jugador (isEditable=true)',
+                (res.body?.outfits ?? []).every(o => o.isEditable === true),
+                JSON.stringify((res.body?.outfits ?? []).map(o => `${o.name}:${o.isEditable}`)));
+            check('sin token, hasMore debe ser false y nextPageToken null',
+                res.body?.hasMore === (res.body?.nextPageToken != null));
 
+            primerToken = res.body?.nextPageToken ?? null;
+            primerosIds = (res.body?.outfits ?? []).map(o => o.id).join(',');
             outfitId = res.body?.outfits?.[0]?.id ?? null;
             outfitAvatarId = (res.body?.outfits ?? []).find(o => o.outfitType === 'Avatar')?.id ?? null;
+        }
+    }
+
+    // ── 4a. Paginacion REAL por cursor ───────────────────────────────────────
+    section('4a. paginacion por cursor (el fallo que habia que arreglar)');
+    {
+        // `page` se rechaza a proposito: Roblox lo ignora y devolvia siempre
+        // los mismos outfits, que es justo el sintoma reportado.
+        const conPage = await request(port, `/v1/users/${userId}/outfits?page=2`);
+        check('?page=2 -> 400 explicando el mecanismo real',
+            conPage.status === 400 && /pageToken/.test(conPage.body?.error?.message ?? ''),
+            conPage.body?.error?.message?.slice(0, 90));
+
+        if (!primerToken) {
+            console.log('  --   este usuario cabe en una sola pagina: no hay cursor que seguir.');
+            console.log(`       (hasMore=false y nextPageToken=null es la respuesta correcta)`);
+        } else {
+            await sleep(8000);
+            const pag2 = await requestTolerant(port,
+                `/v1/users/${userId}/outfits?limit=10&pageToken=${encodeURIComponent(primerToken)}`);
+
+            if (pag2.limitadoPorRoblox) {
+                console.log('  --   Roblox limito la segunda pagina: no verificada en esta pasada.');
+            } else {
+                const segundosIds = (pag2.body?.outfits ?? []).map(o => o.id).join(',');
+                check('la segunda pagina responde 200', pag2.status === 200, `${pag2.ms}ms`);
+                check('DEVUELVE OUTFITS DISTINTOS a la primera',
+                    segundosIds.length > 0 && segundosIds !== primerosIds,
+                    `pagina1=[${primerosIds}] pagina2=[${segundosIds}]`);
+                check('y encadena un cursor nuevo o cierra el recorrido',
+                    pag2.body?.hasMore === (pag2.body?.nextPageToken != null),
+                    `hasMore=${pag2.body?.hasMore} nextPageToken=${pag2.body?.nextPageToken ? 'si' : 'null'}`);
+            }
         }
     }
 
@@ -160,8 +203,12 @@ function section(title) {
             console.log('  --   Roblox sigue limitando: filtro no verificado en esta pasada.');
         } else {
             check('outfitType=DynamicHead -> 200', res.status === 200, `${res.ms}ms count=${res.body?.count}`);
-            check('Roblox devuelve solo ese tipo',
-                (res.body?.outfits ?? []).length > 0 && (res.body?.outfits ?? []).every(o => o.outfitType === 'DynamicHead'));
+            // Vacio es un resultado CORRECTO: combinado con isEditable=true,
+            // solo salen los outfits de ese tipo que el jugador guardo, y
+            // muchos usuarios no tienen ninguno.
+            check('todo lo devuelto es de ese tipo',
+                (res.body?.outfits ?? []).every(o => o.outfitType === 'DynamicHead'),
+                `${res.body?.count} guardados de tipo DynamicHead`);
             check('el filtro se refleja en la respuesta', res.body?.outfitType === 'DynamicHead');
         }
 
@@ -242,6 +289,38 @@ function section(title) {
         check('ningun asset se quedo sin clasificar',
             (res.body?.assets ?? []).length > 0 && (hd?.other ?? []).length === 0,
             `assets=${res.body?.assets?.length} sinClasificar=${hd?.other?.length}`);
+    }
+
+    // ── 6bis. Estado de catalogo por lotes ───────────────────────────────────
+    section('6bis. ?catalog=1 (limitado / fuera de venta / ya no disponible)');
+    {
+        const antes = (await request(port, '/v1/metrics')).body.roblox.byRoute;
+        const res = await request(port, `/v1/outfits/${outfitId}?catalog=1`);
+        const despues = (await request(port, '/v1/metrics')).body.roblox.byRoute;
+
+        check('GET ?catalog=1 -> 200', res.status === 200, `${res.ms}ms`);
+        check('cada asset trae su ficha de catalogo',
+            (res.body?.assets ?? []).every(a => a.catalog && 'available' in a.catalog));
+        check('con los campos de estado pedidos',
+            (res.body?.assets ?? []).every(a => ['isLimited', 'offSale', 'restrictions'].every(k => k in a.catalog)));
+        check('los assets NO desaparecen aunque esten fuera de venta',
+            (res.body?.assets ?? []).every(a => a.id != null && a.typeName != null),
+            `assets=${res.body?.assets?.length} fueraDeVenta=${(res.body?.assets ?? []).filter(a => a.catalog?.offSale).length}`);
+
+        const llamadas = despues.catalogDetails.calls - antes.catalogDetails.calls;
+        check('UNA sola llamada por lote para TODO el outfit, no una por asset',
+            llamadas <= 1, `catalogDetails +${llamadas} para ${res.body?.assets?.length} assets`);
+
+        for (const a of (res.body?.assets ?? []).slice(0, 4)) {
+            console.log(`       ${a.id} "${a.name}" disponible=${a.catalog?.available} limitado=${a.catalog?.isLimited} fueraDeVenta=${a.catalog?.offSale} restricciones=${JSON.stringify(a.catalog?.restrictions)}`);
+        }
+
+        // La segunda vez, cero llamadas: la ficha se cachea POR ASSET y la
+        // comparte cualquier outfit de cualquier jugador que lleve esa pieza.
+        const antes2 = (await request(port, '/v1/metrics')).body.roblox.byRoute.catalogDetails.calls;
+        await request(port, `/v1/outfits/${outfitId}?catalog=1`);
+        const despues2 = (await request(port, '/v1/metrics')).body.roblox.byRoute.catalogDetails.calls;
+        check('repetir no cuesta ninguna llamada mas', antes2 === despues2, `calls ${antes2} -> ${despues2}`);
     }
 
     // ── 6c. Bundles opcionales ───────────────────────────────────────────────

@@ -21,7 +21,7 @@ router.get('/by-username/:username', async (req, res) => {
     res.json(await userService.resolveUsername(username, res.locals.cache));
 });
 
-// GET /v1/users/by-username/:username/outfits?page=&limit=
+// GET /v1/users/by-username/:username/outfits?limit=&pageToken=&outfitType=
 // Compuesto: resuelve y lista en una sola llamada, para que el juego gaste
 // una peticion de HttpService en vez de dos. Ver outfitService.
 router.get('/by-username/:username/outfits', async (req, res) => {
@@ -31,7 +31,10 @@ router.get('/by-username/:username/outfits', async (req, res) => {
     res.json(await outfitService.listOutfitsByUsername(username, pagination, res.locals.cache));
 });
 
-// GET /v1/users/:userId/outfits?page=&limit=
+// GET /v1/users/:userId/outfits?limit=&pageToken=&outfitType=
+// Paginacion POR CURSOR: se reenvia el `nextPageToken` de la respuesta
+// anterior como `pageToken`. `page` no existe aqui y se rechaza con 400 —
+// Roblox lo ignora y devolveria siempre los mismos outfits.
 router.get('/:userId/outfits', async (req, res) => {
     res.locals.routeLabel = '/v1/users/:userId/outfits';
     const userId = parseUserId(req.params.userId);

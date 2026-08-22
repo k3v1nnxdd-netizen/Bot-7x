@@ -173,6 +173,82 @@ function fail(label, detalle) {
         fail('insert + select parametrizados', err.message);
     }
 
+    // ── 5. El SQL real del servicio de whitelist ─────────────────────────────
+    // Los tests de src/tests/adminGroups.test.js sustituyen la base por un
+    // doble, asi que verifican el cableado HTTP pero NO que estas consultas
+    // sean SQL valido para Postgres. Eso solo lo puede decir Postgres, y es
+    // justo lo que se comprueba aqui: el UPSERT con `xmax = 0`, la funcion de
+    // ventana del listado y el UPDATE de baja, ejecutados de verdad.
+    //
+    // Usa un id de prueba imposible de confundir con un grupo real y lo borra
+    // al terminar, pase lo que pase.
+    const ID_PRUEBA = '999000000000000001';
+    const whitelist = require('../../services/groupWhitelistService');
+    const { NotFoundError } = require('../../roblox/errors');
+
+    try {
+        const alta = await whitelist.addGroup(ID_PRUEBA);
+        alta.created === true && alta.active === true
+            ? ok('addGroup() da de alta', `created=${alta.created} createdAt=${alta.createdAt}`)
+            : fail('addGroup() da de alta', JSON.stringify(alta));
+
+        const repetida = await whitelist.addGroup(ID_PRUEBA);
+        repetida.created === false && repetida.createdAt === alta.createdAt
+            ? ok('addGroup() repetido es idempotente y conserva el alta original')
+            : fail('addGroup() repetido', JSON.stringify(repetida));
+
+        const consulta = await whitelist.getGroup(ID_PRUEBA);
+        whitelist.isAuthorized(consulta)
+            ? ok('getGroup() lo ve autorizado')
+            : fail('getGroup()', JSON.stringify(consulta));
+
+        const listado = await whitelist.listGroups({ includeInactive: true, limit: 500, offset: 0 });
+        listado.groups.some(g => g.groupId === ID_PRUEBA) && typeof listado.total === 'number'
+            ? ok('listGroups() lo lista y calcula el total', `total=${listado.total}`)
+            : fail('listGroups()', JSON.stringify(listado).slice(0, 200));
+
+        const baja = await whitelist.removeGroup(ID_PRUEBA);
+        baja.active === false && baja.purged === false
+            ? ok('removeGroup() desactiva sin borrar')
+            : fail('removeGroup() desactiva', JSON.stringify(baja));
+
+        const trasBaja = await whitelist.getGroup(ID_PRUEBA);
+        trasBaja !== null && !whitelist.isAuthorized(trasBaja)
+            ? ok('tras la baja: sigue en la tabla pero ya no autorizado')
+            : fail('tras la baja', JSON.stringify(trasBaja));
+
+        const readmision = await whitelist.addGroup(ID_PRUEBA);
+        readmision.active === true && readmision.createdAt === alta.createdAt
+            ? ok('addGroup() readmite conservando la fecha de alta original')
+            : fail('readmision', JSON.stringify(readmision));
+
+        const purga = await whitelist.removeGroup(ID_PRUEBA, { purge: true });
+        purga.purged === true
+            ? ok('removeGroup({purge:true}) borra la fila')
+            : fail('purga', JSON.stringify(purga));
+
+        (await whitelist.getGroup(ID_PRUEBA)) === null
+            ? ok('tras la purga no queda rastro')
+            : fail('tras la purga', 'la fila sigue ahi');
+
+        try {
+            await whitelist.removeGroup(ID_PRUEBA);
+            fail('dar de baja algo inexistente', 'deberia lanzar NotFoundError');
+        } catch (err) {
+            err instanceof NotFoundError && err.code === 'group_not_found'
+                ? ok('dar de baja algo inexistente lanza group_not_found')
+                : fail('dar de baja algo inexistente', err.message);
+        }
+    } catch (err) {
+        fail('servicio de whitelist', err.message);
+    } finally {
+        // Red de seguridad: si algo de arriba fallo a mitad, la fila de prueba
+        // no puede quedarse viviendo en la whitelist de produccion.
+        try {
+            await db.query('DELETE FROM group_whitelist WHERE group_id = $1', [ID_PRUEBA]);
+        } catch { /* si la base ya no responde, no hay nada que limpiar */ }
+    }
+
     console.log(`\n${fallos === 0 ? 'VERIFICACION DE POSTGRES OK' : `VERIFICACION DE POSTGRES: ${fallos} fallo(s)`}`);
     await db.close();
     process.exit(fallos === 0 ? 0 : 1);

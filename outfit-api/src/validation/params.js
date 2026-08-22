@@ -147,6 +147,61 @@ function parseBooleanFlag(raw, label) {
     throw new ValidationError(`${label} debe ser 1 o 0`);
 }
 
+// ── Administracion de grupos autorizados ────────────────────────────────────
+
+// El id de grupo se guarda como TEXT (ver src/db/schema.js): los ids de Roblox
+// llegan como cadena y JavaScript no representa enteros grandes sin perder
+// precision. Eso obliga a normalizar la FORMA aqui, porque en una clave
+// primaria de texto "007" y "7" serian dos filas distintas para el mismo
+// grupo — una autorizada y la otra no, segun como lo escribiera cada quien.
+// Por eso se rechazan los ceros a la izquierda en vez de recortarlos en
+// silencio: quien manda "007" probablemente tiene un bug, y devolverle un 400
+// se lo enseña; recortarlo se lo esconde.
+//
+// La validacion NO es lo que protege de una inyeccion SQL — de eso se encargan
+// las consultas parametrizadas, siempre, incluso con valores ya validados
+// (ver src/db/pool.js). Esto es una frontera de coherencia de datos.
+const GROUP_ID_PATTERN = /^[1-9][0-9]{0,19}$/;
+
+function parseGroupId(raw, label = 'groupId') {
+    if (typeof raw !== 'string' || raw.trim() === '') {
+        throw new ValidationError(`${label} es obligatorio y debe ser el id numerico del grupo de Roblox, como texto`);
+    }
+    const groupId = raw.trim();
+    if (!GROUP_ID_PATTERN.test(groupId)) {
+        throw new ValidationError(
+            `${label} debe ser un entero positivo sin ceros a la izquierda (hasta 20 digitos)`
+        );
+    }
+    return groupId;
+}
+
+// Entero de query acotado, para `limit` y `offset` del listado. Aqui si es un
+// rango y no un conjunto cerrado como en la paginacion de outfits: no hay
+// cache que fragmentar detras, solo una consulta a nuestra propia base.
+function parseBoundedInt(raw, label, { min, max, fallback }) {
+    if (raw === undefined) return fallback;
+    if (typeof raw !== 'string' || !/^[0-9]{1,9}$/.test(raw)) {
+        throw new ValidationError(`${label} debe ser un entero entre ${min} y ${max}`);
+    }
+    const value = Number(raw);
+    if (value < min || value > max) {
+        throw new ValidationError(`${label} debe ser un entero entre ${min} y ${max}`);
+    }
+    return value;
+}
+
+// El listado se pagina SIEMPRE, aunque hoy la whitelist quepa en una pantalla:
+// un SELECT sin LIMIT es una bomba de relojeria que solo explota el dia que la
+// tabla ha crecido, y para entonces ya esta en produccion.
+function parseGroupListQuery(query) {
+    return {
+        includeInactive: parseBooleanFlag(query.includeInactive, 'includeInactive'),
+        limit: parseBoundedInt(query.limit, 'limit', { min: 1, max: 500, fallback: 100 }),
+        offset: parseBoundedInt(query.offset, 'offset', { min: 0, max: 1_000_000, fallback: 0 }),
+    };
+}
+
 module.exports = {
     ValidationError,
     parseUsername,
@@ -155,4 +210,6 @@ module.exports = {
     parsePagination,
     parsePageToken,
     parseBooleanFlag,
+    parseGroupId,
+    parseGroupListQuery,
 };

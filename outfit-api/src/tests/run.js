@@ -12,6 +12,9 @@
 // una sola vez al cargarse. dotenv no pisa lo que ya existe en process.env,
 // asi que esto gana aunque haya un .env local.
 process.env.OUTFIT_API_KEY = process.env.OUTFIT_API_KEY_TEST || 'clave-de-pruebas-no-usada-en-produccion';
+// Distinta de la anterior a proposito: varios tests comprueban justamente que
+// una no sirve para lo de la otra.
+process.env.ADMIN_API_KEY = process.env.ADMIN_API_KEY_TEST || 'clave-admin-de-pruebas-distinta-de-la-otra';
 process.env.LOG_LEVEL = 'error';          // sin ruido de peticiones en la salida
 process.env.CACHE_MAX_ENTRIES = '5';      // tope bajo para poder verificar la expulsion LRU
 process.env.RATE_LIMIT_MAX = '25';        // tope bajo para poder verificar el 429 propio

@@ -142,6 +142,15 @@ function getPool() {
     return pool;
 }
 
+// "No hay base configurada" se señala con un CODIGO, no con un mensaje: quien
+// lo captura (src/db/errors.js) decide por codigo, igual que hace con los
+// SQLSTATE de Postgres, y nadie tiene que comparar cadenas de texto.
+function notConfigured() {
+    const err = new Error('Postgres no esta configurado (falta DATABASE_URL)');
+    err.code = 'DB_NOT_CONFIGURED';
+    return err;
+}
+
 // UNICA via de acceso a Postgres del servicio.
 //
 // `params` no esta ahi por comodidad: es el contrato. Todo valor variable
@@ -152,7 +161,7 @@ function getPool() {
 async function query(text, params = []) {
     const activePool = getPool();
     if (!activePool) {
-        throw new Error('Postgres no esta configurado (falta DATABASE_URL)');
+        throw notConfigured();
     }
 
     metrics.queries++;
@@ -183,7 +192,7 @@ async function query(text, params = []) {
 async function withTransaction(fn) {
     const activePool = getPool();
     if (!activePool) {
-        throw new Error('Postgres no esta configurado (falta DATABASE_URL)');
+        throw notConfigured();
     }
 
     const client = await activePool.connect();

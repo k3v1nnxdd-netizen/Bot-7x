@@ -8,7 +8,7 @@ Servicio completamente autónomo: su propio `package.json`, sus propias dependen
 
 ## Endpoints
 
-Todo lo que cuelga de `/v1` exige la cabecera `x-api-key`. `/health` no.
+Todo lo que cuelga de `/v1` exige la cabecera `x-api-key`. `/health` no. Lo que cuelga de `/admin` exige **otra** cabecera, `x-admin-key` — ver [Administración de licencias](#administración-de-licencias).
 
 | Método | Ruta | Descripción |
 |---|---|---|
@@ -18,6 +18,10 @@ Todo lo que cuelga de `/v1` exige la cabecera `x-api-key`. `/health` no.
 | `GET` | `/v1/users/by-username/:username/outfits?…` | Resuelve **y** lista en una sola llamada. |
 | `GET` | `/v1/outfits/:outfitId?catalog=1&bundles=1` | Contenido completo del outfit. |
 | `GET` | `/v1/metrics` | Observabilidad interna. Protegida. |
+| `POST` | `/admin/groups` | Autoriza un grupo. **`x-admin-key`.** |
+| `GET` | `/admin/groups` | Lista los grupos autorizados. **`x-admin-key`.** |
+| `GET` | `/admin/groups/:groupId` | ¿Está autorizado este grupo? **`x-admin-key`.** |
+| `DELETE` | `/admin/groups/:groupId` | Retira la licencia. **`x-admin-key`.** |
 
 `limit` solo admite **10, 25 o 50** (por defecto 25). `outfitType` solo admite **`Avatar`, `DynamicHead`, `Shoes`** — los tres valores que Roblox usa realmente.
 
@@ -123,16 +127,20 @@ Formato único: `{ "error": { "code", "message" } }`.
 | HTTP | `code` | Significado |
 |---|---|---|
 | 400 | `invalid_request` | Parámetro inválido. |
-| 401 | `unauthorized` | Falta o es incorrecta `x-api-key`. |
+| 401 | `unauthorized` | Falta o es incorrecta `x-api-key` (o `x-admin-key` en `/admin`). |
 | 404 | `user_not_found` / `outfit_not_found` | No existe en Roblox. |
+| 404 | `group_not_found` | Ese grupo no está en la whitelist (solo `DELETE`). |
 | 404 | `route_not_found` | Ese endpoint no existe aquí. |
+| 413 | `payload_too_large` | Cuerpo mayor de 4 kB en `POST /admin/groups`. |
 | 429 | `rate_limited` | **Nuestro** límite. Baja el ritmo. Trae `Retry-After`. |
 | 503 | `upstream_rate_limited` | Límite de **Roblox**. Espera el `Retry-After` y reintenta. |
 | 503 | `upstream_unavailable` | Circuit breaker abierto: Roblox falla de forma sostenida. |
 | 502 | `upstream_error` | Roblox devolvió 5xx o no respondió. |
+| 503 | `database_unavailable` | Postgres no responde. Reintentar sirve. Solo en `/admin`. |
+| 503 | `admin_disabled` | Falta `ADMIN_API_KEY` en el servidor. Solo en `/admin`. |
 | 500 | `internal_error` | Fallo nuestro. El `X-Request-Id` lo cruza con el log. |
 
-429 y 503 están separados a propósito: la reacción correcta es distinta.
+429 y 503 están separados a propósito: la reacción correcta es distinta. Por lo mismo, un fallo de Postgres es `503 database_unavailable` y no un `500`: dice de quién es el problema y si reintentar sirve de algo.
 
 ---
 
@@ -218,7 +226,8 @@ Solo `OUTFIT_API_KEY` es obligatoria para servir outfits. `DATABASE_URL` solo ha
 
 | Variable | Por defecto | Para qué |
 |---|---|---|
-| `OUTFIT_API_KEY` | — | **Obligatoria.** El único secreto del servicio. |
+| `OUTFIT_API_KEY` | — | **Obligatoria.** La key que usa el juego de Roblox (`x-api-key`). |
+| `ADMIN_API_KEY` | — | Key de administración de licencias (`x-admin-key`). **Distinta de la anterior.** |
 | `PORT` | `3100` | La inyecta Railway. |
 | `LOG_LEVEL` | `info` | `error` \| `warn` \| `info` \| `debug` |
 | `TTL_USERNAME_MS` | 12 h | Caché de `username` → `userId`. |
@@ -286,13 +295,80 @@ CREATE TABLE IF NOT EXISTS group_whitelist (
 
 **Consultas siempre parametrizadas.** Todo pasa por `db.query(text, params)` de `src/db/pool.js`; ningún valor variable se concatena en el SQL. Para varias sentencias sobre la misma conexión (transacciones) está `db.withTransaction(fn)` — `query()` pide un cliente distinto en cada llamada, así que un `BEGIN` suelto no serviría de nada.
 
-**Cómo comprobar que está bien:**
+---
+
+## Administración de licencias
+
+Cuatro endpoints sobre `group_whitelist`, protegidos por **`ADMIN_API_KEY`** en la cabecera **`x-admin-key`**.
+
+**Dos secretos separados, y no es ceremonia.** `OUTFIT_API_KEY` vive dentro de un script de Roblox distribuido a servidores que no controlamos: hay que darla por filtrable. Si esa misma clave sirviera para administrar, cualquiera que la extrajera del juego podría autorizarse a sí mismo. Por eso van en **variables distintas y cabeceras distintas**: ninguna de las dos abre la puerta de la otra, y el servicio protesta por consola al arrancar si las configuras iguales. Están fuera de `/v1` por la misma razón: `/v1` es el contrato que consume Roblox, esto es un panel interno.
+
+| Método | Ruta | Respuesta |
+|---|---|---|
+| `POST` | `/admin/groups` | `201` si es alta nueva, `200` si ya estaba (idempotente). |
+| `GET` | `/admin/groups?includeInactive=&limit=&offset=` | Listado paginado con `total` y `hasMore`. |
+| `GET` | `/admin/groups/:groupId` | `200` siempre, con `authorized` booleano. |
+| `DELETE` | `/admin/groups/:groupId?purge=1` | Desactiva (o borra con `purge=1`). `404` si no está. |
+
+Tres decisiones que conviene conocer antes de consumirlos:
+
+- **Dar de alta dos veces no es un error.** `POST` es un UPSERT: si el grupo ya existe lo **reactiva** conservando su `created_at` original, y responde `200` con `created: false` en vez de `201`. Readmitir a un cliente es la operación normal, no un caso raro.
+- **`GET /admin/groups/:groupId` de un grupo que no está devuelve `200`, no `404`.** La pregunta es «¿está autorizado?», y «no» es una respuesta válida, no un recurso ausente. Trae `authorized` (el booleano que se usa) y `found` aparte, para poder distinguir «nunca estuvo» de «se le retiró la licencia».
+- **`DELETE` desactiva, no borra.** Conserva la fila y la fecha de alta, que es lo que hace falta el día que alguien reclame un pago. Con `?purge=1` sí se borra de verdad.
+
+### Ejemplos
 
 ```bash
-npm run db:check          # conexión, tabla, columnas, PK e insert/select parametrizado
+ADMIN="tu-ADMIN_API_KEY"
+BASE="https://<tu-servicio>.up.railway.app"
+
+# Agregar (201 la primera vez, 200 las siguientes)
+curl -X POST "$BASE/admin/groups" \
+  -H "x-admin-key: $ADMIN" -H "Content-Type: application/json" \
+  -d '{"groupId":"35216530"}'
+# {"groupId":"35216530","active":true,"createdAt":"2026-08-21T18:04:11.482Z","created":true,"authorized":true}
+
+# Comprobar si está autorizado
+curl "$BASE/admin/groups/35216530" -H "x-admin-key: $ADMIN"
+# {"groupId":"35216530","authorized":true,"found":true,"active":true,"createdAt":"2026-08-21T18:04:11.482Z"}
+
+# Listar (solo activos; añade ?includeInactive=1 para ver también las bajas)
+curl "$BASE/admin/groups" -H "x-admin-key: $ADMIN"
+# {"total":1,"count":1,"limit":100,"offset":0,"includeInactive":false,"hasMore":false,
+#  "groups":[{"groupId":"35216530","active":true,"createdAt":"2026-08-21T18:04:11.482Z"}]}
+
+# Retirar la licencia (la fila se conserva, active pasa a false)
+curl -X DELETE "$BASE/admin/groups/35216530" -H "x-admin-key: $ADMIN"
+# {"groupId":"35216530","active":false,"createdAt":"...","authorized":false,"purged":false}
+
+# Borrar la fila de verdad
+curl -X DELETE "$BASE/admin/groups/35216530?purge=1" -H "x-admin-key: $ADMIN"
 ```
 
-Y desde fuera del proceso, `GET /v1/metrics` trae un bloque `db` con `configured`, `schemaReady`, contadores y el último SQLSTATE. Nunca la cadena de conexión.
+En PowerShell:
+
+```powershell
+$H = @{ "x-admin-key" = "tu-ADMIN_API_KEY" }
+$BASE = "https://<tu-servicio>.up.railway.app"
+
+Invoke-RestMethod -Method Post -Uri "$BASE/admin/groups" -Headers $H `
+  -ContentType "application/json" -Body '{"groupId":"35216530"}'
+Invoke-RestMethod -Uri "$BASE/admin/groups/35216530" -Headers $H
+Invoke-RestMethod -Uri "$BASE/admin/groups" -Headers $H
+Invoke-RestMethod -Method Delete -Uri "$BASE/admin/groups/35216530" -Headers $H
+```
+
+### Cómo comprobar que todo esto está bien
+
+```bash
+npm test                  # 136 tests sin red ni base de datos (incluye /admin entero)
+npm run db:check          # contra el Postgres real: conexión, tabla, columnas, PK,
+                          # y el alta/consulta/baja/purga completos del servicio
+```
+
+Los tests de `/admin` sustituyen la base por un doble, así que verifican el cableado (separación de claves, validación, parametrización, códigos de error) pero **no** que el SQL sea válido para Postgres — eso solo lo puede decir Postgres, y es lo que hace `db:check`, que ejecuta el UPSERT, la función de ventana del listado y el `UPDATE` de baja de verdad y luego limpia lo que creó.
+
+Desde fuera del proceso, `GET /v1/metrics` trae un bloque `db` con `configured`, `schemaReady`, contadores y el último SQLSTATE. Nunca la cadena de conexión.
 
 ---
 
@@ -304,7 +380,7 @@ npm install
 cp .env.example .env      # y pon una OUTFIT_API_KEY
 npm start                 # escucha en 3100
 
-npm test                  # 103 tests, sin red ni base de datos
+npm test                  # 136 tests, sin red ni base de datos
 npm run test:live         # verificación end-to-end contra la API real de Roblox
 npm run db:check          # verificación contra el Postgres real (necesita DATABASE_URL)
 ```
@@ -407,7 +483,7 @@ src/db/                          pool de Postgres + esquema idempotente
 src/security/                    API key, límite por IP
 src/validation/                  validadores puros
 src/observability/               logger JSON, log por petición, métricas
-src/tests/                       103 tests sin red ni base de datos · fixtures/
+src/tests/                       136 tests sin red ni base de datos · fixtures/
                                  con respuestas reales de Roblox · live/
                                  verificación manual (Roblox y Postgres)
 ```

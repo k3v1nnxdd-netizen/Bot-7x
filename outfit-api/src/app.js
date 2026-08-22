@@ -5,7 +5,9 @@ const healthRoute = require('./api/routes/health');
 const usersRoute = require('./api/routes/users');
 const outfitsRoute = require('./api/routes/outfits');
 const metricsRoute = require('./api/routes/metrics');
+const adminGroupsRoute = require('./api/routes/adminGroups');
 const { requireApiKey } = require('./security/apiKey');
+const { requireAdminKey } = require('./security/adminKey');
 const { rateLimit } = require('./security/rateLimit');
 const { requestLogger } = require('./observability/requestLogger');
 const { latencyMiddleware } = require('./observability/metrics');
@@ -26,11 +28,15 @@ function createApp() {
     // un unico cubo — es decir, dejaria de limitar.
     app.set('trust proxy', true);
 
-    // NO hay parser de body, ni JSON ni de ningun tipo, y es intencional:
-    // esta API es enteramente de lectura y todos sus endpoints son GET. No
-    // añadir un parser elimina de raiz toda una familia de problemas (bodies
-    // gigantes, JSON malformado, content-type inesperado) en vez de tener que
-    // acotarla con limites y manejadores de error.
+    // NO hay parser de body A NIVEL DE APP, y sigue siendo intencional: la
+    // API de outfits es enteramente de lectura y todos sus endpoints son GET.
+    // No añadir un parser ahi elimina de raiz toda una familia de problemas
+    // (bodies gigantes, JSON malformado, content-type inesperado) en vez de
+    // tener que acotarla con limites y manejadores de error.
+    //
+    // El unico que necesita cuerpo es POST /admin/groups, y por eso su parser
+    // va montado DENTRO de ese router (con limite de 4kb), no aqui: /v1 no
+    // gana ninguna superficie nueva por que exista la administracion.
 
     // /health va PRIMERO, deliberadamente por delante del logger, del
     // limitador y de la API key: Railway lo consulta sin cabeceras y no puede
@@ -49,6 +55,18 @@ function createApp() {
     v1.use('/metrics', metricsRoute);
 
     app.use('/v1', rateLimit, requireApiKey, latencyMiddleware, v1);
+
+    // Administracion de licencias. Fuera de /v1 y con OTRO secreto
+    // (`x-admin-key`), de modo que la key que vive dentro del juego de Roblox
+    // no abre estas rutas ni aunque se filtre — y la de admin tampoco sirve
+    // para leer outfits.
+    //
+    // Comparte el limitador por IP con /v1: es el mismo guardia anti-abuso, y
+    // aqui ademas frena de paso cualquier intento de probar claves a lo bruto.
+    // NO pasa por latencyMiddleware: esas metricas describen el trafico que
+    // atiende al juego, y mezclarles unas pocas llamadas administrativas
+    // ensuciaria los percentiles que sirven para vigilar la carga real.
+    app.use('/admin/groups', rateLimit, requireAdminKey, adminGroupsRoute);
 
     app.use(notFoundHandler);
     app.use(errorHandler);

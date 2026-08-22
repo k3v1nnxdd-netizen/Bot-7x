@@ -35,6 +35,15 @@ const port = intFromEnv('PORT', 3100);
 // autenticar (ver src/security/apiKey.js).
 const apiKey = process.env.OUTFIT_API_KEY || null;
 
+// SEGUNDO secreto, y deliberadamente SEPARADO del anterior. `apiKey` la
+// conoce el juego de Roblox — vive dentro de un script que se distribuye a
+// servidores que no controlamos, asi que hay que asumir que puede filtrarse.
+// `adminApiKey` gobierna quien esta autorizado, es decir, quien paga: si
+// fuera la misma clave, cualquiera con acceso al juego podria darse licencia
+// a si mismo. Nunca sale de aqui ni de un cliente administrativo nuestro.
+// Viaja en su propio header (`x-admin-key`), tambien solo por cabecera.
+const adminApiKey = process.env.ADMIN_API_KEY || null;
+
 const logLevel = (process.env.LOG_LEVEL || 'info').toLowerCase();
 
 // Un unico driver soportado hoy. La variable existe para que activar Redis
@@ -183,6 +192,20 @@ if (!apiKey) {
     );
 }
 
+if (!adminApiKey) {
+    console.warn(
+        '[config] ADMIN_API_KEY no esta definida — las rutas /admin responderan 503 admin_disabled. ' +
+        'La API de outfits no se ve afectada. Genera una con: ' +
+        'node -e "console.log(require(\'crypto\').randomBytes(32).toString(\'hex\'))"'
+    );
+} else if (adminApiKey === apiKey) {
+    console.error(
+        '[config] ERROR: ADMIN_API_KEY y OUTFIT_API_KEY son la MISMA clave. Eso anula la separacion ' +
+        'entre "puede consultar outfits" y "puede dar licencias": la key del juego se distribuye a ' +
+        'servidores de Roblox, asi que cualquiera que la extraiga podria autorizarse solo. Cambia una de las dos.'
+    );
+}
+
 if (!database.url) {
     console.warn(
         '[config] DATABASE_URL no esta definida — el servicio arranca y la API de outfits ' +
@@ -200,6 +223,7 @@ if (cacheDriver !== 'memory') {
 module.exports = {
     port,
     apiKey,
+    adminApiKey,
     logLevel,
     cacheDriver,
     ttl,

@@ -29,6 +29,7 @@ const activeLevel = LEVELS[config.logLevel] ?? LEVELS.info;
 // precisamente la capa que existe para cuando alguien lo intente sin querer.
 const SENSITIVE = new Set([
     'xapikey', 'apikey', 'authorization', 'cookie', 'token', 'secret', 'password',
+    'xadminkey', 'adminkey', 'adminapikey',
     'databaseurl', 'connectionstring', 'dsn',
 ]);
 

@@ -5,6 +5,7 @@ const { ValidationError } = require('../validation/params');
 const {
     NotFoundError, UpstreamRateLimitedError, CircuitOpenError, UpstreamError,
 } = require('../roblox/errors');
+const { DatabaseUnavailableError } = require('../db/errors');
 
 // UNICO punto de traduccion error -> HTTP de todo el servicio. Los handlers
 // de ruta no capturan nada: dejan subir el error y aqui se decide. Asi el
@@ -35,6 +36,18 @@ function errorHandler(err, req, res, next) {
         return send(res, 400, err.code, err.message);
     }
 
+    // Errores de express.json(), que solo puede dispararlos POST
+    // /admin/groups: es el unico sitio con parser de body. Sin este bloque un
+    // JSON mal escrito acabaria de 500, culpando al servidor de un error del
+    // cliente. `err.type` lo pone body-parser; no es un instanceof porque
+    // reutiliza SyntaxError y otras clases nativas.
+    if (err?.type === 'entity.parse.failed') {
+        return send(res, 400, 'invalid_request', 'El cuerpo de la peticion debe ser JSON valido');
+    }
+    if (err?.type === 'entity.too.large') {
+        return send(res, 413, 'payload_too_large', 'El cuerpo de la peticion es demasiado grande');
+    }
+
     if (err instanceof NotFoundError) {
         return send(res, 404, err.code, err.message);
     }
@@ -46,6 +59,24 @@ function errorHandler(err, req, res, next) {
         const retryAfterSeconds = err.retryAfterSeconds ?? 5;
         res.set('Retry-After', String(retryAfterSeconds));
         return send(res, 503, err.code, err.message, { retryAfterSeconds });
+    }
+
+    // La base no responde (caida, reiniciando, sin conexiones libres). Es un
+    // 503 y no un 500 por la misma razon por la que un limite de Roblox no es
+    // un 429 nuestro: dice DE QUIEN es el problema y si reintentar sirve de
+    // algo. El detalle crudo se registra pero no se devuelve — un error de pg
+    // puede arrastrar el host y hasta el fragmento de consulta.
+    if (err instanceof DatabaseUnavailableError) {
+        logger.error('Postgres no disponible', {
+            requestId: req.requestId,
+            path: req.originalUrl,
+            code: err.cause?.code ?? null,
+            detail: err.cause?.message ?? err.message,
+        });
+        res.set('Retry-After', '5');
+        return send(res, 503, err.code, 'La base de datos no esta disponible, reintenta en unos segundos', {
+            retryAfterSeconds: 5,
+        });
     }
 
     if (err instanceof UpstreamError) {

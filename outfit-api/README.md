@@ -214,7 +214,7 @@ Usa siempre el endpoint compuesto cuando partas de un nombre: `HttpService` tien
 
 ## Configuración
 
-Solo `OUTFIT_API_KEY` es obligatoria.
+Solo `OUTFIT_API_KEY` es obligatoria para servir outfits. `DATABASE_URL` solo hace falta para la base de licencias: sin ella el servicio arranca igual y la API de outfits funciona con normalidad.
 
 | Variable | Por defecto | Para qué |
 |---|---|---|
@@ -236,6 +236,13 @@ Solo `OUTFIT_API_KEY` es obligatoria.
 | `MAX_CATALOG_BATCH_SIZE` | 100 | Tamaño del lote a catalog/items/details. |
 | `CACHE_MAX_ENTRIES` | 50 000 | Tope LRU en memoria. |
 | `CACHE_DRIVER` | `memory` | Reservado para Redis. |
+| `DATABASE_URL` | — | Postgres del sistema de licencias. La inyecta Railway al enlazar la base. |
+| `DATABASE_SSL` | `auto` | `auto` \| `disable` \| `no-verify` \| `verify`. |
+| `DB_POOL_MAX` | `5` | Conexiones por instancia. |
+| `DB_CONNECTION_TIMEOUT_MS` | 8 s | Espera máxima por una conexión libre. |
+| `DB_IDLE_TIMEOUT_MS` | 30 s | Cierre de conexiones ociosas. |
+| `DB_STATEMENT_TIMEOUT_MS` | 10 s | Corte por consulta, del lado del servidor. |
+| `DB_SCHEMA_MAX_RETRIES` | `4` | Intentos de aplicar el esquema al arrancar. |
 
 El límite propio va alto a propósito: quien llama son servidores de Roblox, y **una IP = decenas de jugadores**.
 
@@ -255,6 +262,38 @@ Servicio nuevo sobre **el mismo repositorio**, aislado por `Root Directory`:
 
 Genera la key con `node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"`.
 
+El **Volume sigue siendo ninguno**: la caché es en memoria y el único estado persistente vive ahora en Postgres, no en disco.
+
+---
+
+## Base de datos (sistema de licencias)
+
+Postgres entra **solo** para las licencias. La API de outfits no lo toca: es de lectura contra Roblox y su caché es en memoria, así que si la base no está disponible los outfits se sirven igual y lo único que queda inactivo es la parte de licencias.
+
+**Conexión.** Únicamente por `DATABASE_URL` — no hay ni una cadena de conexión en el código. En Railway se enlaza el servicio con la base (referencia `${{Postgres.DATABASE_URL}}`, red privada) y la variable se inyecta sola. El TLS se resuelve solo con `DATABASE_SSL=auto`: sin TLS contra `*.railway.internal`, y TLS sin verificar certificado contra el proxy público `*.proxy.rlwy.net`, que usa uno autofirmado.
+
+**Esquema.** Se aplica en cada arranque, después de empezar a escuchar y sin bloquear: el healthcheck responde desde el primer segundo. Todo el DDL es idempotente (`CREATE TABLE IF NOT EXISTS`), así que arrancar con la tabla ya creada es el caso normal, no una excepción. Se tolera además la carrera de dos instancias creando la tabla a la vez durante un redeploy (SQLSTATE `23505` / `42P07`), y se reintenta con backoff si la base todavía no acepta conexiones.
+
+```sql
+CREATE TABLE IF NOT EXISTS group_whitelist (
+    group_id TEXT PRIMARY KEY,
+    active BOOLEAN NOT NULL DEFAULT true,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+```
+
+`group_id` es `TEXT` a propósito: los ids de grupo de Roblox llegan como cadena y JavaScript no representa enteros grandes sin perder precisión.
+
+**Consultas siempre parametrizadas.** Todo pasa por `db.query(text, params)` de `src/db/pool.js`; ningún valor variable se concatena en el SQL. Para varias sentencias sobre la misma conexión (transacciones) está `db.withTransaction(fn)` — `query()` pide un cliente distinto en cada llamada, así que un `BEGIN` suelto no serviría de nada.
+
+**Cómo comprobar que está bien:**
+
+```bash
+npm run db:check          # conexión, tabla, columnas, PK e insert/select parametrizado
+```
+
+Y desde fuera del proceso, `GET /v1/metrics` trae un bloque `db` con `configured`, `schemaReady`, contadores y el último SQLSTATE. Nunca la cadena de conexión.
+
 ---
 
 ## Desarrollo local
@@ -265,8 +304,9 @@ npm install
 cp .env.example .env      # y pon una OUTFIT_API_KEY
 npm start                 # escucha en 3100
 
-npm test                  # 92 tests, sin red ni disco
+npm test                  # 103 tests, sin red ni base de datos
 npm run test:live         # verificación end-to-end contra la API real de Roblox
+npm run db:check          # verificación contra el Postgres real (necesita DATABASE_URL)
 ```
 
 ---
@@ -363,9 +403,11 @@ src/services/humanoidDescription.js   normalización pura, cero llamadas extra
 src/services/                    política de caché por entidad
 src/roblox/                      cliente, limitador reactivo, breaker, errores
 src/cache/                       fachada + driver de memoria + single-flight
+src/db/                          pool de Postgres + esquema idempotente
 src/security/                    API key, límite por IP
 src/validation/                  validadores puros
 src/observability/               logger JSON, log por petición, métricas
-src/tests/                       92 tests sin red · fixtures/ con respuestas
-                                 reales de Roblox · live/ verificación manual
+src/tests/                       103 tests sin red ni base de datos · fixtures/
+                                 con respuestas reales de Roblox · live/
+                                 verificación manual (Roblox y Postgres)
 ```

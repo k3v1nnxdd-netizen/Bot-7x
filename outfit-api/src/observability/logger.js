@@ -23,7 +23,14 @@ const activeLevel = LEVELS[config.logLevel] ?? LEVELS.info;
 
 // Nombres que nunca deben serializarse, en minusculas y sin separadores para
 // que `x-api-key`, `xApiKey` y `X_API_KEY` caigan todos en el mismo saco.
-const SENSITIVE = new Set(['xapikey', 'apikey', 'authorization', 'cookie', 'token', 'secret', 'password']);
+// `databaseurl` / `connectionstring` estan aqui por lo mismo: una cadena de
+// conexion de Postgres lleva la contraseña dentro. Ningun modulo la loguea
+// (src/db/pool.js solo emite host, puerto y nombre de base), pero esta es
+// precisamente la capa que existe para cuando alguien lo intente sin querer.
+const SENSITIVE = new Set([
+    'xapikey', 'apikey', 'authorization', 'cookie', 'token', 'secret', 'password',
+    'databaseurl', 'connectionstring', 'dsn',
+]);
 
 function isSensitive(key) {
     return SENSITIVE.has(String(key).toLowerCase().replace(/[-_]/g, ''));

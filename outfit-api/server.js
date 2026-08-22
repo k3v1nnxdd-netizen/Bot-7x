@@ -3,6 +3,8 @@
 const config = require('./src/config');
 const logger = require('./src/observability/logger');
 const { createApp } = require('./src/app');
+const db = require('./src/db/pool');
+const { ensureSchema } = require('./src/db/schema');
 
 const app = createApp();
 
@@ -10,9 +12,18 @@ const server = app.listen(config.port, () => {
     logger.info('outfit-api escuchando', {
         port: config.port,
         cacheDriver: config.cacheDriver,
-        apiKeyConfigured: Boolean(config.apiKey), // booleano, NUNCA la key
+        apiKeyConfigured: Boolean(config.apiKey),   // booleano, NUNCA la key
+        databaseConfigured: db.isConfigured(),      // booleano, NUNCA la URL
     });
 });
+
+// Esquema de Postgres, DESPUES de escuchar y sin bloquear el arranque: el
+// healthcheck de Railway responde desde el primer segundo y la API de outfits
+// atiende con normalidad mientras esto ocurre. Si falla no se lanza nada —
+// ensureSchema() ya lo registra y deja constancia en /v1/metrics — porque la
+// API de outfits no depende de la base para nada y no tiene por que caer con
+// ella.
+ensureSchema();
 
 // keepAliveTimeout debe SUPERAR el idle timeout del proxy que tengamos
 // delante (el edge de Railway ronda los 60s, como casi todos). Si nuestro
@@ -40,7 +51,11 @@ function shutdown(signal) {
     shuttingDown = true;
     logger.info('Apagando', { signal });
 
-    server.close(() => {
+    // Primero se dejan terminar las peticiones vivas y solo despues se
+    // devuelven las conexiones a Postgres: al reves, una peticion en curso se
+    // quedaria sin base a mitad. close() nunca lanza.
+    server.close(async () => {
+        await db.close();
         logger.info('Servidor cerrado limpiamente');
         process.exit(0);
     });

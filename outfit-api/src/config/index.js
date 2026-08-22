@@ -151,10 +151,42 @@ const maxBundleLookupsPerRequest = intFromEnv('MAX_BUNDLE_LOOKUPS_PER_REQUEST', 
 // 100 garantiza que un outfit entero siempre entre en UN solo lote.
 const maxCatalogBatchSize = intFromEnv('MAX_CATALOG_BATCH_SIZE', 100);
 
+// ── Postgres ────────────────────────────────────────────────────────────────
+// La inyecta Railway al enlazar el servicio con la base; en local sale del
+// .env. Nunca hay ninguna cadena de conexion escrita en el codigo: sin esta
+// variable simplemente no hay base de datos, y el servicio arranca igual
+// (ver src/db/pool.js). Lleva la contraseña dentro, asi que no se imprime en
+// ningun sitio — ni siquiera aqui, donde solo se dice si esta o no.
+const database = {
+    url: process.env.DATABASE_URL || null,
+
+    // auto | disable | no-verify | verify. El default resuelve solo los dos
+    // sabores de Postgres de Railway (red privada sin TLS / proxy publico con
+    // certificado autofirmado). Ver resolveSsl() en src/db/pool.js.
+    ssl: (process.env.DATABASE_SSL || 'auto').toLowerCase(),
+
+    poolMax: intFromEnv('DB_POOL_MAX', 5),
+    connectionTimeoutMs: intFromEnv('DB_CONNECTION_TIMEOUT_MS', 8_000),
+    idleTimeoutMs: intFromEnv('DB_IDLE_TIMEOUT_MS', 30_000),
+    statementTimeoutMs: intFromEnv('DB_STATEMENT_TIMEOUT_MS', 10_000),
+
+    // Intentos de aplicar el esquema al arrancar. Tras un redeploy la base
+    // puede tardar unos segundos en aceptar conexiones y no merece la pena
+    // quedarse sin tablas por eso.
+    schemaMaxRetries: intFromEnv('DB_SCHEMA_MAX_RETRIES', 4),
+};
+
 if (!apiKey) {
     console.error(
         '[config] ERROR: falta la variable de entorno OUTFIT_API_KEY. ' +
         'El servicio arranca (para no tumbar el healthcheck) pero TODA ruta /v1 respondera 401 hasta que la definas.'
+    );
+}
+
+if (!database.url) {
+    console.warn(
+        '[config] DATABASE_URL no esta definida — el servicio arranca y la API de outfits ' +
+        'funciona igual, pero no habra base de datos (whitelist de grupos / licencias).'
     );
 }
 
@@ -174,6 +206,7 @@ module.exports = {
     rateLimit,
     upstream,
     cache,
+    database,
     pagination,
     outfitTypes,
     maxBundleLookupsPerRequest,

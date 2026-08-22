@@ -58,17 +58,33 @@ const CREADOR_GRUPO = 'Group';
 
 const denegado = (motivo, real = null) => ({ ok: false, motivo, propiedadReal: real });
 
-async function verify({ token, gameId, placeId, creatorType = null, creatorId = null }) {
+// LOS TRES PRIMEROS ESLABONES DE LA CADENA, aparte porque los comparten dos
+// clases de ruta muy distintas:
+//
+//   - la verificacion completa (/v1/license/verify), que ademas comprueba la
+//     propiedad real del juego contra Roblox;
+//   - las rutas de DATOS que consume el juego (/v1/users, /v1/outfits), que
+//     son GET sin cuerpo y por tanto no traen gameId ni placeId. Ahi no hay
+//     nada que comprobar contra Roblox: son lecturas sobre datos publicos, y
+//     lo que se exige es tener una licencia viva.
+//
+// Estar aqui y no duplicado en cada sitio es lo que garantiza que "token
+// valido" signifique EXACTAMENTE lo mismo en todas partes: mismo hash, misma
+// comparacion en tiempo constante, mismo trato al token revocado.
+//
+// Un token REGENERADO deja de valer sin nada mas que hacer: la busqueda es por
+// hash y el hash viejo ya no esta en ninguna fila.
+async function authenticate(token) {
     // Un token con forma imposible no llega a costar una consulta. La
     // respuesta es IDENTICA a la de un token desconocido: distinguir "mal
     // formado" de "no existe" solo le sirve a quien esta probando tokens.
     if (!licenseToken.looksLikeToken(token)) {
-        return denegado(MOTIVOS.TOKEN_INVALIDO);
+        return { ok: false, motivo: MOTIVOS.TOKEN_INVALIDO };
     }
 
     const licencia = await groupWhitelist.findByTokenHash(licenseToken.hashToken(token));
     if (!licencia) {
-        return denegado(MOTIVOS.TOKEN_INVALIDO);
+        return { ok: false, motivo: MOTIVOS.TOKEN_INVALIDO };
     }
 
     // Confirmacion en tiempo constante sobre el hash completo. Redundante con
@@ -76,12 +92,22 @@ async function verify({ token, gameId, placeId, creatorType = null, creatorId = 
     // con su indice, y no es una comparacion pensada para resistir medicion de
     // tiempos.
     if (!licenseToken.matchesHash(token, licencia.tokenHash)) {
-        return denegado(MOTIVOS.TOKEN_INVALIDO);
+        return { ok: false, motivo: MOTIVOS.TOKEN_INVALIDO };
     }
 
     if (licencia.active !== true) {
-        return denegado(MOTIVOS.LICENCIA_INACTIVA);
+        return { ok: false, motivo: MOTIVOS.LICENCIA_INACTIVA };
     }
+
+    return { ok: true, licencia };
+}
+
+async function verify({ token, gameId, placeId, creatorType = null, creatorId = null }) {
+    const autenticacion = await authenticate(token);
+    if (!autenticacion.ok) {
+        return denegado(autenticacion.motivo);
+    }
+    const licencia = autenticacion.licencia;
 
     // ── A partir de aqui, la palabra la tiene Roblox ─────────────────────────
     // Si esto lanza, lanza: es un fallo temporal y sube hasta el 503. Lo que
@@ -127,4 +153,4 @@ function detectarDeclaracionFalsa({ creatorType, creatorId }, real) {
     return false;
 }
 
-module.exports = { verify, detectarDeclaracionFalsa, MOTIVOS };
+module.exports = { verify, authenticate, detectarDeclaracionFalsa, MOTIVOS };

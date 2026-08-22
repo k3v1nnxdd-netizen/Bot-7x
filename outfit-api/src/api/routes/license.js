@@ -4,23 +4,28 @@ const express = require('express');
 const router = express.Router();
 const licenseService = require('../../services/licenseService');
 const logger = require('../../observability/logger');
-const { parseLicenseVerifyBody, parseLicenseTokenHeader } = require('../../validation/params');
+const { parseLicenseVerifyBody } = require('../../validation/params');
 
-// Verificacion de licencia para el JUEGO. Cuelga de /v1, con el resto de lo
-// que consume Roblox, y por tanto detras de `x-api-key` y del limitador por
-// IP que ya protegen esa rama (ver src/app.js).
+// Verificacion de licencia para el JUEGO.
 //
-// ADMIN_API_KEY NO PINTA NADA AQUI, y es una separacion que hay que sostener a
+// UNA SOLA CREDENCIAL: `x-license-token`. No hay `x-api-key` aqui, y no es un
+// descuido — es la simplificacion que la hace mejor. `OUTFIT_API_KEY` es la
+// MISMA para todos los clientes y viaja dentro del .rbxl que se vende: la
+// tiene cualquiera que compre el sistema y cualquiera que le robe una copia,
+// asi que no identifica a nadie y no se puede revocar sin romperle el juego a
+// todos a la vez. El token si: uno por licencia, revocable de uno en uno.
+//
+// ADMIN_API_KEY NO PINTA NADA AQUI, y esa separacion si hay que sostenerla a
 // conciencia: `x-admin-key` decide QUIEN tiene licencia y solo la conocemos
 // nosotros. Si esta ruta la aceptara, la clave que gobierna el negocio tendria
-// que viajar dentro de un script distribuido a servidores de Roblox que no
-// controlamos. Lo que el juego presenta aqui es su PROPIO token de licencia,
-// que solo le sirve a el y que se puede revocar sin tocar nada mas.
+// que viajar dentro de un script distribuido a servidores de Roblox.
 //
-// Tres secretos, tres alcances, y ninguno abre la puerta del otro:
-//   x-api-key   -> "eres cliente nuestro"        (la misma para todos)
-//   token       -> "soy el grupo 35216530"       (uno por licencia)
-//   x-admin-key -> "puedes dar y quitar licencias" (solo /admin)
+// Dos secretos, dos alcances, y ninguno abre la puerta del otro:
+//   x-license-token -> "soy el grupo 35216530"          (uno por licencia)
+//   x-admin-key     -> "puedo dar y quitar licencias"   (solo /admin)
+//
+// El limitador por IP sigue delante (ver src/app.js), y la cabecera se
+// comprueba ANTES del parser de cuerpo: sin credencial no se lee ni un byte.
 
 // Parser de cuerpo montado SOLO en este router, igual que hace
 // /admin/groups. La API de outfits sigue sin parser a nivel de app: es de solo
@@ -30,14 +35,12 @@ const { parseLicenseVerifyBody, parseLicenseTokenHeader } = require('../../valid
 router.use(express.json({ limit: '2kb' }));
 
 // POST /v1/license/verify
-//   cabeceras: x-api-key (la del juego) + x-license-token (la de la licencia)
+//   cabecera: x-license-token
 //   body: { creatorType, creatorId, gameId, placeId }
 //
 // El token NO va en el cuerpo: `HttpService:GetSecret()` de Roblox devuelve un
 // objeto Secret que no se puede serializar con JSONEncode, asi que un secreto
 // guardado como Secret —que es donde debe estar— solo puede salir por cabecera.
-// Son dos credenciales DISTINTAS y no se unifican: la del juego dice "esto usa
-// el sistema" y viaja dentro del .rbxl; la de licencia dice "soy este grupo".
 //
 // DOS FORMAS DE RESPUESTA, y la distincion es deliberada:
 //
@@ -54,11 +57,9 @@ router.use(express.json({ limit: '2kb' }));
 router.post('/verify', async (req, res) => {
     res.locals.routeLabel = 'POST /v1/license/verify';
 
-    // El token por CABECERA; el resto, en el cuerpo. Ver la explicacion larga
-    // en validation/params.js: un Secret de Roblox no se puede serializar con
-    // JSONEncode, asi que no puede viajar en el body.
-    const token = parseLicenseTokenHeader(req.headers);
-    const datos = { ...parseLicenseVerifyBody(req.body), token };
+    // El token ya lo validó requireLicenseTokenHeader ANTES de que se leyera
+    // el cuerpo (ver src/app.js): sin cabecera no se llega hasta aqui.
+    const datos = { ...parseLicenseVerifyBody(req.body), token: res.locals.licenseToken };
 
     const resultado = await licenseService.verify(datos);
 

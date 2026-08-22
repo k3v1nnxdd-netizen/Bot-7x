@@ -53,7 +53,9 @@ module.exports = async function run() {
 
     const OUTFIT = config.apiKey;
     const ADMIN = config.adminApiKey;
-    const juegoHeaders = { 'content-type': 'application/json', 'x-api-key': OUTFIT };
+    // La UNICA credencial del juego es x-license-token, que añade verificar().
+    // x-api-key ya no se manda: estas rutas no la miran.
+    const juegoHeaders = { 'content-type': 'application/json' };
 
     const TOKEN = licenseToken.generateToken();
     const HASH = crypto.createHash('sha256').update(TOKEN, 'utf8').digest('hex');
@@ -308,26 +310,62 @@ module.exports = async function run() {
         assert.strictEqual(robloxCalls.length, 2, 'cinco verificaciones, dos llamadas a Roblox');
     });
 
-    // ═══ Separacion de secretos ══════════════════════════════════════════════
+    // ═══ UNA sola credencial: el token de licencia ═══════════════════════════
 
-    test('la ADMIN_API_KEY no abre /v1/license/verify', async () => {
+    test('funciona SIN x-api-key: la unica credencial es el token', async () => {
+        // `juegoHeaders` ya no lleva x-api-key. La clave compartida del .rbxl
+        // no pinta nada aqui: no identifica a nadie y no se puede revocar sin
+        // romperle el juego a todos los clientes a la vez.
         licenciaEn(filaActiva());
-        robloxDice({});
-        const res = await verificar(port, cuerpo(), { headers: { 'content-type': 'application/json', 'x-admin-key': ADMIN } });
+        robloxDice({ duenio: { type: 'Group', id: GROUP_ID } });
 
-        assert.strictEqual(res.status, 401, 'la clave de administracion no sirve para verificar');
-        assert.strictEqual(res.body.error.code, 'unauthorized');
-        assert.strictEqual(calls.length, 0, 'un no autorizado no llega a costar una consulta');
-        assert.strictEqual(robloxCalls.length, 0, 'ni una llamada a Roblox');
+        assert.ok(!('x-api-key' in juegoHeaders), 'los tests no mandan la clave del juego');
+        const res = await verificar(port, cuerpo());
+
+        assert.strictEqual(res.status, 200);
+        assert.deepStrictEqual(res.body, { ok: true, groupId: GROUP_ID });
     });
 
-    test('sin x-api-key -> 401 y ni una consulta', async () => {
+    test('una x-api-key incorrecta da igual: ya no se mira', async () => {
+        licenciaEn(filaActiva());
+        robloxDice({ duenio: { type: 'Group', id: GROUP_ID } });
+        const res = await verificar(port, cuerpo(), {
+            headers: { 'content-type': 'application/json', 'x-api-key': 'una-clave-cualquiera' },
+        });
+
+        assert.strictEqual(res.status, 200, 'lo que decide es el token, no la clave compartida');
+    });
+
+    test('la ADMIN_API_KEY no sustituye al token de licencia', async () => {
+        // Sin token, la clave de administracion no abre nada: se rechaza antes
+        // de tocar la base o Roblox.
         licenciaEn(filaActiva());
         robloxDice({});
-        const res = await verificar(port, cuerpo(), { headers: { 'content-type': 'application/json' } });
+        const soloAdmin = await verificar(port, cuerpo(), {
+            token: null,
+            headers: { 'content-type': 'application/json', 'x-admin-key': ADMIN },
+        });
 
-        assert.strictEqual(res.status, 401);
-        assert.strictEqual(calls.length, 0);
+        assert.strictEqual(soloAdmin.status, 400, 'sin x-license-token no se pasa');
+        assert.match(soloAdmin.body.error.message, /x-license-token/);
+        assert.strictEqual(calls.length, 0, 'ni una consulta');
+        assert.strictEqual(robloxCalls.length, 0, 'ni una llamada a Roblox');
+
+        // Y usada COMO token tampoco: no es la credencial de ningun grupo.
+        licenciaEn(filaActiva());
+        robloxDice({});
+        const comoToken = await verificar(port, cuerpo(), { token: ADMIN });
+        assert.strictEqual(comoToken.status, 403);
+        assert.strictEqual(comoToken.body.motivo, 'token_invalido');
+    });
+
+    test('el token de licencia NO abre /admin', async () => {
+        // La separacion que si hay que sostener: quien tiene una licencia no
+        // puede darse licencias a si mismo ni quitarselas a otro.
+        const res = await request(port, 'GET', '/admin/groups', {
+            headers: { 'x-admin-key': TOKEN },
+        });
+        assert.strictEqual(res.status, 401, 'un token de licencia no es la clave de administracion');
     });
 
     // ═══ Autorizacion concedida ══════════════════════════════════════════════
@@ -533,24 +571,6 @@ module.exports = async function run() {
         assert.strictEqual(robloxCalls.length, 0, 'sin credencial valida no se pregunta a Roblox');
     });
 
-    test('las dos credenciales son distintas y no se pueden intercambiar', async () => {
-        // Mandar el token de licencia como si fuera la clave del juego.
-        licenciaEn(filaActiva());
-        robloxDice({});
-        const comoApiKey = await request(port, 'POST', '/v1/license/verify', {
-            headers: { 'content-type': 'application/json', 'x-api-key': TOKEN, 'x-license-token': TOKEN },
-            body: cuerpo(),
-        });
-        assert.strictEqual(comoApiKey.status, 401, 'el token de licencia no abre /v1');
-
-        // Y al reves: la clave del juego como token de licencia.
-        licenciaEn(filaActiva());
-        robloxDice({});
-        const comoToken = await verificar(port, cuerpo(), { token: OUTFIT });
-        assert.strictEqual(comoToken.status, 403, 'la clave del juego no identifica a ningun grupo');
-        assert.strictEqual(comoToken.body.motivo, 'token_invalido');
-    });
-
     test('la cabecera no acaba en la URL registrada', async () => {
         // Es media razon de mandar secretos por cabecera: requestLogger si
         // registra la URL, y un token en la query acabaria ahi y en el log de
@@ -627,9 +647,19 @@ module.exports = async function run() {
         assert.strictEqual(roto.body.error.code, 'invalid_request');
 
         const enorme = await request(port, 'POST', '/v1/license/verify', {
-            headers: juegoHeaders, raw: JSON.stringify(cuerpo({ relleno: 'x'.repeat(5_000) })),
+            headers: { ...juegoHeaders, 'x-license-token': TOKEN },
+            raw: JSON.stringify(cuerpo({ relleno: 'x'.repeat(5_000) })),
         });
         assert.strictEqual(enorme.status, 413);
+
+        // Y SIN credencial, ese mismo cuerpo enorme ni se lee: la cabecera se
+        // comprueba antes del parser, asi que sale 400 sin gastar nada.
+        const enormeSinToken = await request(port, 'POST', '/v1/license/verify', {
+            headers: juegoHeaders,
+            raw: JSON.stringify(cuerpo({ relleno: 'x'.repeat(5_000) })),
+        });
+        assert.strictEqual(enormeSinToken.status, 400, 'sin credencial no se llega ni a medir el cuerpo');
+        assert.match(enormeSinToken.body.error.message, /x-license-token/);
         assert.strictEqual(calls.length, 0);
     });
 
@@ -709,19 +739,35 @@ module.exports = async function run() {
     test('las rutas de outfits siguen sin parser de body', async () => {
         licenciaEn(filaActiva());
         robloxDice({});
-        const escritura = await request(port, 'POST', '/v1/users', { headers: juegoHeaders, body: cuerpo() });
+        // /v1/users tambien va con el token de licencia: sin cabecera, 400.
+        const sinToken = await request(port, 'POST', '/v1/users', { headers: juegoHeaders, body: cuerpo() });
+        assert.strictEqual(sinToken.status, 400, 'sin token no se entra a las rutas de datos');
+        assert.match(sinToken.body.error.message, /x-license-token/);
 
-        assert.strictEqual(escritura.status, 404, 'la verificacion no le ha dado superficie de escritura a /v1');
+        // Y con token, POST /v1/users sigue sin existir: la verificacion no le
+        // ha dado superficie de escritura a la API de datos.
+        licenciaEn(filaActiva());
+        const escritura = await request(port, 'POST', '/v1/users', {
+            headers: { ...juegoHeaders, 'x-license-token': TOKEN }, body: cuerpo(),
+        });
+        assert.strictEqual(escritura.status, 404, 'sigue sin superficie de escritura');
         assert.strictEqual(escritura.body.error.code, 'route_not_found');
 
         const metrics = await request(port, 'GET', '/v1/metrics', { headers: { 'x-api-key': OUTFIT } });
         assert.strictEqual(metrics.status, 200, '/v1 sigue funcionando igual');
-        assert.strictEqual(calls.length, 0, 'la API de outfits no consulta la base para nada');
+        // Antes las rutas de datos no tocaban Postgres para nada. Ahora si:
+        // UNA consulta, la del token de licencia, por clave unica indexada. Es
+        // el precio de que el comprador configure un solo Secret, y conviene
+        // tenerlo escrito porque acopla esas rutas a la base.
+        assert.strictEqual(calls.length, 1, 'solo la consulta de la licencia, ni una mas');
+        assert.match(calls[0].text, /license_token_hash/);
     });
 
     test('GET /v1/license/verify no existe: es POST o nada', async () => {
         licenciaEn(filaActiva());
-        const res = await request(port, 'GET', '/v1/license/verify', { headers: { 'x-api-key': OUTFIT } });
+        const res = await request(port, 'GET', '/v1/license/verify', {
+            headers: { 'x-license-token': TOKEN },
+        });
         assert.strictEqual(res.status, 404);
         assert.strictEqual(res.body.error.code, 'route_not_found');
     });

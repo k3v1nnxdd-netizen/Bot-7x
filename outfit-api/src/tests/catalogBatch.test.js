@@ -66,7 +66,8 @@ module.exports = async function run() {
 
     const OUTFIT = config.apiKey;
     const ADMIN = config.adminApiKey;
-    const juego = { 'content-type': 'application/json', 'x-api-key': OUTFIT };
+    // La UNICA credencial del juego es x-license-token, que añade pedir().
+    const juego = { 'content-type': 'application/json' };
 
     const TOKEN = licenseToken.generateToken();
     const HASH = crypto.createHash('sha256').update(TOKEN, 'utf8').digest('hex');
@@ -247,20 +248,43 @@ module.exports = async function run() {
 
     // ═══ La doble puerta ═════════════════════════════════════════════════════
 
-    test('sin x-api-key -> 401 y ni una llamada', async () => {
+    test('funciona SIN x-api-key: la unica credencial es el token', async () => {
+        // La clave compartida del .rbxl no pinta nada aqui: es la misma para
+        // todos los clientes, no identifica a nadie y no se puede revocar sin
+        // romperle el juego a todos a la vez.
         licenciaFila = filaActiva(); montarRoblox();
-        const res = await pedir(port, cuerpo(), { headers: { 'content-type': 'application/json' } });
+        assert.ok(!('x-api-key' in juego), 'los tests no mandan la clave del juego');
 
-        assert.strictEqual(res.status, 401);
-        assert.strictEqual(llamadas.length, 0);
+        const res = await pedir(port, cuerpo());
+        assert.strictEqual(res.status, 200);
+        assert.ok(res.body.assets.length > 0, 'y resuelve catalogo de verdad');
     });
 
-    test('la ADMIN_API_KEY no abre el catalogo', async () => {
+    test('sin x-license-token -> 400 antes de leer el cuerpo o tocar nada', async () => {
         licenciaFila = filaActiva(); montarRoblox();
-        const res = await pedir(port, cuerpo(), { headers: { 'content-type': 'application/json', 'x-admin-key': ADMIN } });
+        const res = await pedir(port, cuerpo(), { token: null });
 
-        assert.strictEqual(res.status, 401);
+        assert.strictEqual(res.status, 400);
+        assert.match(res.body.error.message, /x-license-token/);
+        assert.strictEqual(llamadas.length, 0, 'ni una llamada a Roblox');
+    });
+
+    test('la ADMIN_API_KEY no sustituye al token de licencia', async () => {
+        licenciaFila = filaActiva(); montarRoblox();
+        const soloAdmin = await pedir(port, cuerpo(), {
+            token: null,
+            headers: { 'content-type': 'application/json', 'x-admin-key': ADMIN },
+        });
+
+        assert.strictEqual(soloAdmin.status, 400, 'sin token no se abre el catalogo');
         assert.strictEqual(llamadas.length, 0);
+
+        // Y usada COMO token tampoco: no es la credencial de ningun grupo.
+        licenciaFila = null; montarRoblox();
+        const comoToken = await pedir(port, cuerpo(), { token: ADMIN });
+        assert.strictEqual(comoToken.status, 403);
+        assert.strictEqual(comoToken.body.motivo, 'token_invalido');
+        assert.strictEqual(deCatalogo().length, 0);
     });
 
     test('con x-api-key pero SIN token de licencia -> 400, no se resuelve nada', async () => {

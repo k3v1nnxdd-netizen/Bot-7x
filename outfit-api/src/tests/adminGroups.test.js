@@ -795,13 +795,18 @@ module.exports = async function run() {
         const metrics = await request(port, 'GET', '/v1/metrics', { headers: outfitAuth });
         assert.strictEqual(metrics.status, 200, '/v1 sigue funcionando con su propia key');
 
-        const validacion = await request(port, 'GET', '/v1/users/abc/outfits', { headers: outfitAuth });
-        assert.strictEqual(validacion.status, 400);
-        assert.strictEqual(validacion.body.error.code, 'invalid_request');
+        // /v1/users ya NO se abre con la clave del juego: va con el token de
+        // licencia, para que el comprador configure un solo Secret. Sin el,
+        // 400 diciendo que falta la cabecera.
+        const sinLicencia = await request(port, 'GET', '/v1/users/abc/outfits', { headers: outfitAuth });
+        assert.strictEqual(sinLicencia.status, 400);
+        assert.match(sinLicencia.body.error.message, /x-license-token/);
 
         // Un POST con cuerpo contra /v1 no encuentra ruta: la administracion no
         // le ha añadido superficie de escritura a la API del juego.
-        const escritura = await request(port, 'POST', '/v1/users', {
+        // Un POST con cuerpo contra /v1 no encuentra ruta: la administracion no
+        // le ha añadido superficie de escritura a la API del juego.
+        const escritura = await request(port, 'POST', '/v1/no-existe', {
             headers: jsonHeaders(outfitAuth),
             body: { groupId: GROUP_ID },
         });

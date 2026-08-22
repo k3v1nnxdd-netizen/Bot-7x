@@ -7,6 +7,8 @@ const config = require('../config');
 const logger = require('../observability/logger');
 const ownRateLimit = require('../security/rateLimit');
 const robloxRateLimiter = require('../roblox/rateLimiter');
+const db = require('../db/pool');
+const licenseToken = require('../security/licenseToken');
 
 // Tests de la app completa por HTTP real, pero SIN red hacia fuera: todos los
 // casos se resuelven antes de que ningun servicio llame a Roblox (healthcheck,
@@ -48,7 +50,21 @@ module.exports = async function run() {
     });
     const port = server.address().port;
     const KEY = config.apiKey;
-    const auth = { 'x-api-key': KEY };
+
+    // Las rutas de datos que consume el juego (/v1/users, /v1/outfits) van
+    // ahora con el token de licencia y NADA mas: el comprador configura un
+    // solo Secret. Se sustituye db.query por una licencia viva para que estos
+    // tests puedan seguir ejercitando lo suyo, que es la VALIDACION de
+    // parametros — la del token tiene su propio archivo.
+    const TOKEN = licenseToken.generateToken();
+    const queryOriginal = db.query;
+    db.query = async () => ({
+        rows: [{ group_id: '35216530', active: true, license_token_hash: licenseToken.hashToken(TOKEN) }],
+        rowCount: 1,
+    });
+
+    const auth = { 'x-license-token': TOKEN };
+    const authMetrics = { 'x-api-key': KEY };   // /v1/metrics no se migra: es observabilidad nuestra
 
     test('GET /health responde 200 sin API key y sin tocar Roblox', async () => {
         const before = robloxCallCounts();
@@ -77,7 +93,7 @@ module.exports = async function run() {
 
     test('la API key nunca aparece en una respuesta', async () => {
         const responses = await Promise.all([
-            request(port, '/v1/metrics', auth),
+            request(port, '/v1/metrics', authMetrics),
             request(port, '/v1/metrics'),
             request(port, '/v1/users/by-username/ab', auth),
             request(port, '/health'),
@@ -100,13 +116,16 @@ module.exports = async function run() {
     });
 
     test('toda respuesta de /v1 trae X-Request-Id', async () => {
-        const res = await request(port, '/v1/metrics', auth);
+        const res = await request(port, '/v1/metrics', authMetrics);
         assert.ok(res.headers['x-request-id'], 'hace falta un id para poder cruzar log y reporte');
         assert.match(res.headers['x-request-id'], /^[0-9a-f-]{36}$/);
     });
 
     test('una ruta inexistente -> 404 route_not_found', async () => {
-        const res = await request(port, '/v1/no-existe', auth);
+        // Con la clave de /v1: asi la peticion llega al router y se ve el 404
+        // de verdad. Sin credencial ninguna, un prefijo desconocido responde
+        // 401 y no revela que rutas existen, que tambien es lo correcto.
+        const res = await request(port, '/v1/no-existe', authMetrics);
         assert.strictEqual(res.status, 404);
         assert.strictEqual(res.body.error.code, 'route_not_found');
     });
@@ -141,7 +160,7 @@ module.exports = async function run() {
     });
 
     test('GET /v1/metrics devuelve las secciones de observabilidad', async () => {
-        const res = await request(port, '/v1/metrics', auth);
+        const res = await request(port, '/v1/metrics', authMetrics);
         assert.strictEqual(res.status, 200);
         for (const seccion of ['process', 'http', 'cache', 'ownRateLimit', 'roblox']) {
             assert.ok(res.body[seccion], `falta la seccion ${seccion}`);
@@ -167,11 +186,11 @@ module.exports = async function run() {
         const { maxPerWindow } = ownRateLimit.getMetrics();
 
         for (let i = 0; i < maxPerWindow; i++) {
-            const res = await request(port, '/v1/metrics', auth);
+            const res = await request(port, '/v1/metrics', authMetrics);
             assert.strictEqual(res.status, 200, `la peticion ${i + 1} debia pasar`);
         }
 
-        const res = await request(port, '/v1/metrics', auth);
+        const res = await request(port, '/v1/metrics', authMetrics);
         assert.strictEqual(res.status, 429);
         // 429 = limite NUESTRO. Es un codigo distinto del 503 que devuelve un
         // limite de Roblox, justamente para que el juego pueda reaccionar bien
@@ -181,6 +200,8 @@ module.exports = async function run() {
     });
 
     const ok = await suite.run();
+
+    db.query = queryOriginal;
     await new Promise(resolve => server.close(resolve));
     return ok;
 };

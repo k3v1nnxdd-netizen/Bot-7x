@@ -8,18 +8,30 @@ Servicio completamente autónomo: su propio `package.json`, sus propias dependen
 
 ## Endpoints
 
-Todo lo que cuelga de `/v1` exige la cabecera `x-api-key`. `/health` no. Lo que cuelga de `/admin` exige **otra** cabecera, `x-admin-key` — ver [Administración de licencias](#administración-de-licencias).
+Tres alcances, tres credenciales, y ninguna abre la puerta de otra:
+
+| Cabecera | Qué dice | Dónde vale |
+|---|---|---|
+| `x-license-token` | «soy el grupo 35216530» — **una por licencia**, revocable de una en una | **todo lo que consume el juego**: `/v1/users/*`, `/v1/outfits/*`, `/v1/license/*`, `/v1/catalog/*` |
+| `x-api-key` | clave del servicio, solo nuestra | `/v1/metrics` |
+| `x-admin-key` | «puedo dar y quitar licencias» — solo nosotros | `/admin/*` |
+
+**El comprador configura UN solo Secret** en su experiencia (`OutfitLicenseToken`) y con él llama a todo. No necesita `OUTFIT_API_KEY`.
+
+Las rutas del juego **no** piden `x-api-key` porque esa clave era idéntica para todos los clientes y viajaba dentro del `.rbxl` que se vende: no identificaba a nadie y no se podía revocar sin romperle el juego a todos a la vez. El token sí. `/health` no pide ninguna credencial; `/v1/metrics` se queda con `x-api-key` a propósito — es observabilidad nuestra (percentiles, breaker, contadores de la base) y un cliente con licencia no tiene por qué verla.
+
+En las rutas de **datos** (`/v1/users`, `/v1/outfits`) la comprobación es token → licencia encontrada → licencia activa. No se resuelve la propiedad del juego contra Roblox: son GET sin cuerpo, sin `gameId` ni `placeId`, y son lecturas sobre datos **públicos** de Roblox. La autorización del producto sigue viviendo entera en `/v1/license/verify`.
 
 | Método | Ruta | Descripción |
 |---|---|---|
 | `GET` | `/health` | Healthcheck de Railway. Público, sin límite, sin llamadas a Roblox. |
-| `GET` | `/v1/users/by-username/:username` | Resuelve `username` → `userId`. |
-| `GET` | `/v1/users/:userId/outfits?limit=&pageToken=&outfitType=` | Lista los outfits **guardados** de un usuario. |
-| `GET` | `/v1/users/by-username/:username/outfits?…` | Resuelve **y** lista en una sola llamada. |
-| `GET` | `/v1/outfits/:outfitId?catalog=1&bundles=1` | Contenido completo del outfit. |
-| `GET` | `/v1/metrics` | Observabilidad interna. Protegida. |
-| `POST` | `/v1/catalog/batch` | Inteligencia de catálogo de un outfit entero. **`x-api-key` + token de licencia.** |
-| `POST` | `/v1/license/verify` | ¿Puede este juego usar el sistema? **`x-api-key` + token de licencia.** |
+| `GET` | `/v1/users/by-username/:username` | Resuelve `username` → `userId`. **`x-license-token`.** |
+| `GET` | `/v1/users/:userId/outfits?limit=&pageToken=&outfitType=` | Lista los outfits **guardados**. **`x-license-token`.** |
+| `GET` | `/v1/users/by-username/:username/outfits?…` | Resuelve **y** lista. **`x-license-token`.** |
+| `GET` | `/v1/outfits/:outfitId?catalog=1&bundles=1` | Contenido completo del outfit. **`x-license-token`.** |
+| `GET` | `/v1/metrics` | Observabilidad interna. **`x-api-key`.** No la consume el juego. |
+| `POST` | `/v1/catalog/batch` | Inteligencia de catálogo de un outfit entero. **`x-license-token`.** |
+| `POST` | `/v1/license/verify` | ¿Puede este juego usar el sistema? **`x-license-token`.** |
 | `POST` | `/admin/groups` | Autoriza un grupo. **`x-admin-key`.** |
 | `GET` | `/admin/groups` | Lista los grupos autorizados. **`x-admin-key`.** |
 | `GET` | `/admin/groups/:groupId` | ¿Está autorizado este grupo? **`x-admin-key`.** |
@@ -130,7 +142,7 @@ Formato único: `{ "error": { "code", "message" } }`.
 |---|---|---|
 | 400 | `invalid_request` | Parámetro inválido. |
 | 503 | `verificacion_no_disponible` | No se pudo comprobar la propiedad del juego con Roblox. Reintentar. |
-| 401 | `unauthorized` | Falta o es incorrecta `x-api-key` (o `x-admin-key` en `/admin`). |
+| 401 | `unauthorized` | Falta o es incorrecta `x-api-key` (outfits) o `x-admin-key` (`/admin`). |
 | 404 | `user_not_found` / `outfit_not_found` | No existe en Roblox. |
 | 404 | `group_not_found` | Ese grupo no está en la whitelist (solo `DELETE`). |
 | 404 | `route_not_found` | Ese endpoint no existe aquí. |
@@ -151,15 +163,23 @@ Formato único: `{ "error": { "code", "message" } }`.
 
 ```lua
 local HttpService = game:GetService("HttpService")
-local BASE, KEY = "https://<tu-servicio>.up.railway.app", "<OUTFIT_API_KEY>"
+local BASE = "https://<tu-servicio>.up.railway.app"
+
+-- UN SOLO Secret para todo. Se configura una vez en la experiencia
+-- (Game Settings → Security → Secrets) con el nombre OutfitLicenseToken y el
+-- token que entregó /addgroup o /regeneratetoken.
+local TOKEN = HttpService:GetSecret("OutfitLicenseToken")
 
 local function apiGet(path)
     local ok, res = pcall(HttpService.RequestAsync, HttpService, {
-        Url = BASE .. path, Method = "GET", Headers = { ["x-api-key"] = KEY },
+        Url = BASE .. path, Method = "GET", Headers = { ["x-license-token"] = TOKEN },
     })
     if not ok then return nil, "network" end
     local body = HttpService:JSONDecode(res.Body)
     if res.StatusCode == 200 then return body end
+    -- 403 llega como { ok = false, motivo = "..." }: token_invalido o
+    -- licencia_inactiva. El resto de errores llega como { error = {...} }.
+    if res.StatusCode == 403 then return nil, body.motivo end
     return nil, body.error and body.error.code or tostring(res.StatusCode)
 end
 
@@ -229,7 +249,7 @@ Solo `OUTFIT_API_KEY` es obligatoria para servir outfits. `DATABASE_URL` solo ha
 
 | Variable | Por defecto | Para qué |
 |---|---|---|
-| `OUTFIT_API_KEY` | — | **Obligatoria.** La key que usa el juego de Roblox (`x-api-key`). |
+| `OUTFIT_API_KEY` | — | Clave del servicio para `/v1/metrics` (`x-api-key`). **El juego ya no la necesita.** |
 | `ADMIN_API_KEY` | — | Key de administración de licencias (`x-admin-key`). **Distinta de la anterior.** |
 | `PORT` | `3100` | La inyecta Railway. |
 | `LOG_LEVEL` | `info` | `error` \| `warn` \| `info` \| `debug` |
@@ -304,11 +324,10 @@ CREATE TABLE IF NOT EXISTS group_whitelist (
 
 La **inteligencia de catálogo** de un outfit entero en una sola petición: nombre, precio, tipo, fuera de venta, limitado, reventa, a qué bundle pertenece cada asset, qué es una Dynamic Head, cuál es su Mood, qué es Korblox y qué es Headless — y, sobre todo, **qué tiene que comprobar el juego** para saber si el jugador lo posee.
 
-### Doble puerta: `x-api-key` **y** token de licencia
+### Una sola credencial: `x-license-token`
 
 ```
 POST /v1/catalog/batch
-x-api-key: <OUTFIT_API_KEY>
 x-license-token: 7xl_…
 Content-Type: application/json
 
@@ -321,7 +340,9 @@ Content-Type: application/json
 }
 ```
 
-`x-api-key` **no basta**, y es deliberado: esa clave viaja dentro del `.rbxl` que se vende, así que todo el que compre el sistema —o le robe una copia— la tiene. Sirve para decir «esto viene de un juego que usa el sistema», no «este juego ha pagado». Para lo segundo está el token, que es único por licencia y revocable de uno en uno.
+Aquí **no** se pide `x-api-key`, y no es un descuido: esa clave viaja dentro del `.rbxl` que se vende, así que la tiene todo el que compre el sistema —o le robe una copia—. Dice «esto viene de un juego que usa el sistema», no «este juego ha pagado», y no se puede revocar sin romperle el juego a todos los clientes a la vez. Lo que decide es el token: único por licencia y revocable de uno en uno.
+
+**Sin `x-license-token` la petición se rechaza con `400` antes de leer el cuerpo**, antes de abrir una conexión a Postgres y antes de llamar a Roblox — la cabecera se comprueba delante del parser.
 
 El token va en la cabecera `x-license-token`, **igual que en `/v1/license/verify` y por el mismo motivo**: un `Secret` de Roblox no se puede serializar con `JSONEncode`, así que no cabe en el cuerpo. Si llega en el body, `400` diciendo dónde va.
 
@@ -448,11 +469,12 @@ Korblox y Headless llevan además un **registro curado** (`src/catalog/specialBu
 
 Lo que el **juego** pregunta al arrancar: *¿este servidor puede usar el sistema?*
 
-Cuelga de `/v1`, así que va detrás de `x-api-key` y del limitador por IP como el resto de lo que consume Roblox. **`ADMIN_API_KEY` no se acepta aquí y no debe aparecer nunca en un script de Roblox**: esa clave decide quién tiene licencia, y un script se distribuye a servidores que no controlamos. Lo que el juego presenta es su propio token, que solo le sirve a él y se puede revocar sin tocar nada más.
+La **única** credencial es `x-license-token`, y sigue detrás del limitador por IP. **`ADMIN_API_KEY` no se acepta aquí y no debe aparecer nunca en un script de Roblox**: esa clave decide quién tiene licencia, y un script se distribuye a servidores que no controlamos. Lo que el juego presenta es su propio token, que solo le sirve a él y se puede revocar sin tocar nada más.
+
+**Sin la cabecera, `400` antes de hacer ningún trabajo**: no se lee el cuerpo, no se consulta la base y no se llama a Roblox.
 
 ```
 POST /v1/license/verify
-x-api-key: <OUTFIT_API_KEY>
 x-license-token: 7xl_…
 Content-Type: application/json
 
@@ -462,7 +484,7 @@ Content-Type: application/json
 
 **El token viaja por cabecera, no en el cuerpo**, y no es una preferencia: `HttpService:GetSecret()` devuelve un objeto `Secret` que **no se puede serializar con `JSONEncode`**. Un token guardado donde debe estar —como Secret de Roblox— simplemente no cabe en el body. Por cabecera sí, y además encaja con el resto del servicio: los otros dos secretos ya viajan así, y una cabecera no acaba en la URL que sí se registra.
 
-**Son tres credenciales distintas y no se unifican:** `x-api-key` dice *«esto viene de un juego que usa el sistema»* (la misma para todos, vive en el `.rbxl`); `x-license-token` dice *«soy el grupo 35216530»* (una por licencia, revocable de una en una); `x-admin-key` solo abre `/admin`.
+**Son credenciales distintas y no se unifican:** `x-license-token` dice *«soy el grupo 35216530»* (una por licencia, revocable de una en una) y `x-admin-key` dice *«puedo dar y quitar licencias»* (solo `/admin`). La `x-api-key` ya no interviene aquí; sigue viva solo para las rutas de outfits, que no están protegidas por licencia.
 
 Si el token llega en el **cuerpo**, la respuesta es `400` diciendo dónde va — no un `403 token_invalido` que mandaría a revisar una licencia que está perfecta. Si **falta la cabecera**, también `400`.
 
@@ -541,11 +563,9 @@ local respuesta = HttpService:RequestAsync({
     Method = "POST",
     Headers = {
         ["Content-Type"] = "application/json",
-        -- Las dos credenciales, cada una en su cabecera. Pueden ser Secrets:
-        -- un Secret NO se puede meter en el Body (JSONEncode no lo serializa),
-        -- pero en un Header funciona.
-        ["x-api-key"]       = HttpService:GetSecret("OUTFIT_API_KEY"),
-        ["x-license-token"] = HttpService:GetSecret("LICENSE_TOKEN"),
+        -- Una sola credencial. Puede ser un Secret: un Secret NO se puede
+        -- meter en el Body (JSONEncode no lo serializa), pero en un Header sí.
+        ["x-license-token"] = HttpService:GetSecret("OutfitLicenseToken"),
     },
     Body = HttpService:JSONEncode({
         gameId  = game.GameId,     -- universeId; se contrasta con el place
@@ -694,7 +714,7 @@ Invoke-RestMethod -Method Delete -Uri "$BASE/admin/groups/35216530?reason=Reembo
 ### Cómo comprobar que todo esto está bien
 
 ```bash
-npm test                  # 245 tests sin red ni base de datos (incluye /admin y la verificacion de licencia)
+npm test                  # 265 tests sin red ni base de datos (incluye /admin y la verificacion de licencia)
 npm run db:check          # contra el Postgres real: conexión, tabla, columnas, PK,
                           # y el alta/consulta/baja/purga completos del servicio
 ```
@@ -713,7 +733,7 @@ npm install
 cp .env.example .env      # y pon una OUTFIT_API_KEY
 npm start                 # escucha en 3100
 
-npm test                  # 245 tests, sin red ni base de datos
+npm test                  # 265 tests, sin red ni base de datos
 npm run test:live         # verificación end-to-end contra la API real de Roblox
 npm run db:check          # verificación contra el Postgres real (necesita DATABASE_URL)
 ```

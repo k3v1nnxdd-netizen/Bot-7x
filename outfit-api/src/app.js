@@ -10,6 +10,7 @@ const licenseRoute = require('./api/routes/license');
 const catalogRoute = require('./api/routes/catalog');
 const { requireApiKey } = require('./security/apiKey');
 const { requireAdminKey } = require('./security/adminKey');
+const { requireLicenseTokenHeader, requireActiveLicense } = require('./security/licenseGuard');
 const { rateLimit } = require('./security/rateLimit');
 const { requestLogger } = require('./observability/requestLogger');
 const { latencyMiddleware } = require('./observability/metrics');
@@ -48,26 +49,56 @@ function createApp() {
 
     app.use(requestLogger);
 
-    // Orden del resto: guardia de abuso barato primero (rechaza una avalancha
-    // antes de gastar nada), luego la API key, luego la instrumentacion de
-    // latencia — que asi mide trabajo real y no rechazos instantaneos que
-    // falsearian los percentiles a la baja.
+    // ── Rutas gobernadas por la LICENCIA ─────────────────────────────────────
+    //
+    // SIN `x-api-key`. La credencial del juego aqui es UNA sola: el token de
+    // licencia, unico por grupo y revocable de uno en uno.
+    //
+    // Quitar la key compartida no afloja nada, al reves. `OUTFIT_API_KEY` es la
+    // misma para todos los clientes y vive dentro del .rbxl que se vende: la
+    // tiene cualquiera que compre el sistema y cualquiera que le robe una
+    // copia. Exigirla ADEMAS del token solo añadia un secreto que no
+    // identifica a nadie y que no se puede revocar sin romperle el juego a
+    // todos los clientes a la vez. Lo que decide sigue siendo lo mismo de
+    // siempre: token -> licencia activa -> propiedad real del juego.
+    //
+    // ORDEN: estos dos montajes van ANTES del de /v1 a proposito. Express
+    // recorre las capas en orden, asi que si el general fuera primero, su
+    // `requireApiKey` respondaria 401 antes de que la peticion llegara aqui.
+    //
+    // `requireLicenseTokenHeader` va antes del parser de cuerpo (que se monta
+    // dentro de cada router): una peticion sin la cabecera se rechaza sin leer
+    // ni un byte del body, sin tocar la base y sin llamar a Roblox.
+    //
+    // `notFoundHandler` cierra cada prefijo. Sin el, un `/v1/license/loquesea`
+    // no encontraria ruta aqui, caeria al montaje general de /v1 y acabaria
+    // respondiendo 401 por falta de api key en vez del 404 que corresponde.
+    app.use('/v1/license', rateLimit, requireLicenseTokenHeader, latencyMiddleware, licenseRoute, notFoundHandler);
+    app.use('/v1/catalog', rateLimit, requireLicenseTokenHeader, latencyMiddleware, catalogRoute, notFoundHandler);
+
+    // Rutas de DATOS que consume el juego. Tambien con el token de licencia y
+    // nada mas: el comprador configura UN solo Secret en su experiencia
+    // (`OutfitLicenseToken`) y con el llama a todo lo que necesita.
+    //
+    // `requireActiveLicense` comprueba token -> licencia -> activa. No resuelve
+    // la propiedad del juego contra Roblox, y no puede: son GET sin cuerpo, sin
+    // gameId ni placeId. Tampoco hace falta — esto son lecturas sobre datos
+    // PUBLICOS de Roblox, no la autorizacion del producto, que sigue viviendo
+    // entera en /v1/license/verify.
+    app.use('/v1/users', rateLimit, requireLicenseTokenHeader, requireActiveLicense,
+        latencyMiddleware, usersRoute, notFoundHandler);
+    app.use('/v1/outfits', rateLimit, requireLicenseTokenHeader, requireActiveLicense,
+        latencyMiddleware, outfitsRoute, notFoundHandler);
+
+    // ── Lo unico que queda con la clave compartida ───────────────────────────
+    //
+    // /v1/metrics es observabilidad NUESTRA: el juego no la consume y no tiene
+    // por que poder consultarla. Migrarla a licencia significaria que cualquier
+    // cliente puede ver los percentiles, el estado del breaker y los contadores
+    // de la base — asi que se queda con `x-api-key`, que es una clave que solo
+    // manejamos nosotros y quien opere el servicio.
     const v1 = express.Router();
-    v1.use('/users', usersRoute);
-    v1.use('/outfits', outfitsRoute);
     v1.use('/metrics', metricsRoute);
-
-    // Verificacion de licencia del juego. Va en /v1 y NO en /admin porque el
-    // secreto que presenta es el token de la propia licencia, no la clave de
-    // administracion: `x-admin-key` gobierna quien tiene licencia y no puede
-    // acabar dentro de un script distribuido a servidores de Roblox.
-    v1.use('/license', licenseRoute);
-
-    // Inteligencia de catalogo. Ademas de la x-api-key de /v1 exige el TOKEN de
-    // licencia (ver src/security/licenseGuard.js): la key del juego viaja
-    // dentro del .rbxl que se vende, asi que por si sola no puede abrir lo que
-    // precisamente se ha sacado del .rbxl para protegerlo.
-    v1.use('/catalog', catalogRoute);
 
     app.use('/v1', rateLimit, requireApiKey, latencyMiddleware, v1);
 

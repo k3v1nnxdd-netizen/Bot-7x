@@ -12,12 +12,17 @@ const { parseCatalogBatchBody } = require('../../validation/params');
 // algo esta fuera de venta — solo pregunta, y con la respuesta se limita a
 // comprobar propiedad.
 //
-// DOBLE PUERTA, y las dos hacen falta:
-//   x-api-key  -> "esto viene de un juego que usa el sistema" (esta en el .rbxl)
-//   token      -> "este grupo ha pagado"                      (unico por licencia)
-// La primera la pone el montaje en /v1 (src/app.js); la segunda, requireLicense,
-// que reutiliza tal cual la cadena de /v1/license/verify — token, licencia
-// activa y propiedad REAL del juego resuelta contra Roblox.
+// UNA SOLA CREDENCIAL: el token de licencia, por la cabecera x-license-token.
+// No hay x-api-key, y quitarla no afloja nada: esa clave es la MISMA para todos
+// los clientes y viaja dentro del .rbxl que se vende, asi que no identifica a
+// nadie ni se puede revocar sin romperle el juego a todos a la vez. Lo que
+// decide es requireLicense, que reutiliza tal cual la cadena de
+// /v1/license/verify — token, licencia activa y propiedad REAL del juego
+// resuelta contra Roblox.
+//
+// La cabecera se comprueba ANTES del parser de cuerpo (ver src/app.js): una
+// peticion sin credencial no llega a costar ni una lectura del body, ni una
+// consulta a Postgres, ni una llamada a Roblox.
 
 // Parser montado SOLO aqui, como en /admin/groups y /v1/license/verify. 8 kb:
 // 80 ids ocupan ~1 kb y el limite convierte un cuerpo desmedido en un 413

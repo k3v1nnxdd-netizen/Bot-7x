@@ -28,11 +28,20 @@ const config = require('../config');
 // ── Look ─────────────────────────────────────────────────────────────────────
 // Soft, "completed"-looking tones rather than saturated ones: these embeds are
 // posted publicly in a customer-facing server.
-const VERDE   = 0x6FCF97; // license granted / active
-const ROJO    = 0xE57373; // license withdrawn — soft, not alarm red
-const NARANJA = 0xF2994A; // known group, license no longer valid
-const GRIS    = 0x9AA0A6; // never had a license at all
-const NEUTRO  = 0x2B2D31; // the listing, same gray as the rest of the bot's panels
+// Misma familia (flat UI) para los cinco, de modo que los colores se lean como
+// un sistema y no como cinco decisiones sueltas. Son un paso más saturados que
+// los pasteles iniciales: la barra del embed tiene que verse a un vistazo en un
+// canal lleno, sin llegar al rojo de alarma ni al verde de neón.
+const VERDE   = 0x2ECC71; // licencia concedida / activa   (antes 0x6FCF97)
+const ROJO    = 0xE74C3C; // licencia retirada             (antes 0xE57373)
+const NARANJA = 0xE67E22; // grupo conocido, licencia caducada (antes 0xF2994A)
+const GRIS    = 0x7F8C8D; // nunca tuvo licencia           (antes 0x9AA0A6)
+
+// El listado NO es un estado: en la misma lista conviven vigentes y retiradas,
+// así que pintarlo de verde o rojo comunicaría algo falso. Gris pizarra, con
+// presencia suficiente para no desaparecer contra el fondo del embed como
+// hacía el 0x2B2D31 del resto de paneles.
+const NEUTRO  = 0x4F545C;
 
 // Emojis del servidor, no unicode. Se declaran aquí y en un solo sitio porque
 // un id de emoji equivocado no falla: se imprime `<a:add:123>` en crudo en

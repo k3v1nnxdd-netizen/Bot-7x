@@ -197,7 +197,7 @@ module.exports = async function run() {
     });
     const altaJson = alta.toJSON();
 
-    assert(altaJson.color === 0x6FCF97, 'el embed de alta usa el verde suave de "completado" (#6FCF97)');
+    assert(altaJson.color === 0x2ECC71, 'el embed de alta usa el verde de "completado" (#2ECC71)');
     assert(altaJson.title === 'Licencia agregada', 'el título es exactamente "Licencia agregada"');
     assert(altaJson.thumbnail?.url === 'https://tr.rbxcdn.com/icono.png', 'el icono real del grupo va como thumbnail (arriba a la derecha)');
     assert(desc(alta).startsWith(`${E.alta} **Activa**`), 'la primera línea es el emoji de alta + el estado');
@@ -235,7 +235,7 @@ module.exports = async function run() {
         actorId: ADMIN_ID,
         motivo: 'Reembolso',
     });
-    assert(baja.toJSON().color === 0xE57373, 'la baja usa un rojo suave, no un rojo chillón');
+    assert(baja.toJSON().color === 0xE74C3C, 'la baja usa un rojo contenido, no el rojo de alarma');
     assert(baja.toJSON().title === 'Licencia desactivada', 'el título es texto limpio, sin emoji que no renderizaría');
     assert(desc(baja).startsWith(`${E.baja} **Inactiva**`), 'la primera línea es el emoji de remover + el estado');
     assert(desc(baja).includes(`${E.grupo} **Mi Grupo**`) && desc(baja).includes(`${E.roblox}`), 'repite el mismo bloque de identidad que /addgroup');
@@ -275,9 +275,9 @@ module.exports = async function run() {
         groupId: GROUP_ID, nombreGrupo: 'Grupo Ajeno', iconUrl: null, miembros: 500,
     });
 
-    assert(activa.toJSON().color === 0x6FCF97, 'autorizado -> verde');
-    assert(inactiva.toJSON().color === 0xF2994A, 'desactivado -> naranja');
-    assert(nunca.toJSON().color === 0x9AA0A6, 'nunca existió -> gris');
+    assert(activa.toJSON().color === 0x2ECC71, 'autorizado -> verde');
+    assert(inactiva.toJSON().color === 0xE67E22, 'desactivado -> naranja');
+    assert(nunca.toJSON().color === 0x7F8C8D, 'nunca existió -> gris');
     assert(
         desc(activa).startsWith(`${E.alta} **Autorizado**`) &&
         desc(inactiva).startsWith(`${E.baja} **Licencia retirada**`) &&
@@ -331,7 +331,7 @@ module.exports = async function run() {
         'el listado NO repite el id de Discord en crudo: ocho veces por página lo convierte en un muro'
     );
     assert(listado.toJSON().footer.text.startsWith('Página 1/1'), 'el pie indica en qué página se está');
-    assert(listado.toJSON().color === 0x2B2D31, 'el listado usa el gris neutro del resto de paneles del bot');
+    assert(listado.toJSON().color === 0x4F545C, 'el listado usa un gris pizarra neutro, no un color de estado');
 
     const vacio = gl.buildListEmbed({ groups: [], total: 0, pagina: 0, paginas: 1, truncado: false });
     assert(

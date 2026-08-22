@@ -106,6 +106,18 @@ router.post('/', async (req, res) => {
         ...presentar(result),
         created: result.created,
         authorized: groupWhitelist.isAuthorized(result),
+
+        // LA UNICA VEZ QUE EL TOKEN EN CLARO SALE DE ESTE SERVICIO EN SU VIDA.
+        // De la base solo se puede recuperar su SHA-256, asi que si esta
+        // respuesta se pierde, el token se pierde con ella: no hay forma de
+        // volver a mostrarlo, solo de emitir otro.
+        //
+        // `null` cuando la licencia ya tenia uno (una reactivacion NO cambia
+        // la credencial: el juego del cliente sigue funcionando sin tocarlo).
+        // `tokenIssued` lo dice explicitamente para que el bot no tenga que
+        // interpretar un null.
+        tokenIssued: result.tokenIssued,
+        token: result.token,
     });
 });
 

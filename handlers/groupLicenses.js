@@ -192,7 +192,34 @@ function bloqueLicencia({ nombreGrupo, groupId, discordUserId, robloxUsername, e
     return `${grupo}\n${discord}\n${roblox}`;
 }
 
-function buildAddedEmbed({ licencia, nombreGrupo, iconUrl, actorId }) {
+// Estado de la credencial, para el embed PUBLICO. Dice si se emitió un token
+// y si llegó a entregarse — nunca el token, que es un secreto y este embed lo
+// ve el servidor entero.
+const CREDENCIAL = {
+    entregada: 'Token nuevo, enviado en privado',
+    noEntregada: 'Token nuevo, pero NO se pudo entregar por Discord',
+    conservada: 'Sin cambios: el grupo conserva su token',
+};
+
+// El token en claro solo existe en la respuesta del alta y solo se enseña
+// aquí, en un mensaje EFIMERO que ve únicamente quien ejecutó el comando.
+//
+// No va en el embed por un motivo que no admite matices: los embeds de
+// licencias son públicos (así se pidieron), y publicar la credencial de un
+// cliente en un canal es entregársela a todo el que pase por ahí. Y no se
+// puede "borrar luego": lo que se publica en Discord ya se ha visto.
+function mensajeDeToken({ token, groupId }, nombreGrupo) {
+    return [
+        `**Token de licencia — ${texto(nombreGrupo)}** · \`${groupId}\``,
+        '```',
+        token,
+        '```',
+        'Se muestra **una sola vez**: la API guarda solo su hash (SHA-256), así que no hay forma de volver a consultarlo.',
+        'Este mensaje solo lo ves tú. Entrégaselo al cliente por un canal privado.',
+    ].join('\n');
+}
+
+function buildAddedEmbed({ licencia, nombreGrupo, iconUrl, actorId, credencial }) {
     // `created` viene de si Postgres INSERTÓ o ACTUALIZÓ la fila (xmax = 0), no
     // de una suposición de aquí: es el único dato honesto sobre si la licencia
     // es nueva o una readmisión.
@@ -212,6 +239,8 @@ function buildAddedEmbed({ licencia, nombreGrupo, iconUrl, actorId }) {
             { name: 'Alta original', value: fecha(licencia.createdAt), inline: true },
             { name: 'Enlace actual', value: fecha(licencia.linkedAt),  inline: true },
             { name: 'Agregado por',  value: actorId ? `<@${actorId}>` : '—', inline: true },
+            // Solo el ESTADO de la credencial. El token va aparte, en privado.
+            { name: 'Credencial',    value: credencial ?? CREDENCIAL.conservada, inline: false },
         )
         .setFooter({ text: FOOTER })
         .setTimestamp();
@@ -427,12 +456,29 @@ async function handleAddGroup(interaction) {
         return fallar(interaction, `❌ ${mensajeDeError(err)}`);
     }
 
+    const nombreGrupo = licencia.groupName ?? info.name;
+
+    // LA CREDENCIAL SE ENTREGA ANTES QUE NADA. El token en claro existe una
+    // sola vez, en esta variable, y la API ya solo guarda su hash: si algo
+    // fallara después y se perdiera, no habría forma de recuperarlo. Por eso
+    // se entrega primero y el embed público se pinta después, con el resultado
+    // real de esa entrega en vez de una promesa.
+    let credencial = CREDENCIAL.conservada;
+    if (licencia.token) {
+        const entregado = await safeFollowUp(interaction, {
+            content: mensajeDeToken(licencia, nombreGrupo),
+            ephemeral: true,
+        });
+        credencial = entregado ? CREDENCIAL.entregada : CREDENCIAL.noEntregada;
+    }
+
     await safeEditReply(interaction, {
         embeds: [buildAddedEmbed({
             licencia,
-            nombreGrupo: licencia.groupName ?? info.name,
+            nombreGrupo,
             iconUrl,
             actorId: licencia.addedBy ?? interaction.user.id,
+            credencial,
         })],
     });
 }
@@ -583,6 +629,8 @@ module.exports = {
         buildListRow,
         paginar,
         validarGroupId,
+        mensajeDeToken,
+        CREDENCIAL,
         fecha,
         GRUPOS_POR_PAGINA,
     },

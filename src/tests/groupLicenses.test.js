@@ -218,13 +218,62 @@ module.exports = async function run() {
         campo(alta, 'Enlace actual').includes('<t:1769936400:f>'),
         'la fecha del enlace actual es distinta de la del alta y también es un timestamp de Discord'
     );
-    assert(altaJson.fields.length === 3, 'el embed de alta es compacto: una sola fila de tres campos');
+    assert(
+        altaJson.fields.length === 4,
+        'el embed de alta es compacto: una fila de tres campos más el estado de la credencial'
+    );
 
     const reactivada = gl.buildAddedEmbed({
         licencia: licencia({ created: false }), nombreGrupo: 'Mi Grupo', iconUrl: null, actorId: ADMIN_ID,
+        credencial: gl.CREDENCIAL.conservada,
     });
     assert(desc(reactivada).includes('Licencia reactivada'), 'una licencia que ya existía se anuncia como reactivada');
     assert(reactivada.toJSON().thumbnail === undefined, 'sin icono de Roblox el embed sigue construyéndose igual');
+
+    // ── La credencial: el token JAMÁS puede acabar en un embed público ──────
+
+    const TOKEN = '7xl_' + 'A'.repeat(43);
+
+    const conToken = gl.buildAddedEmbed({
+        licencia: licencia({ token: TOKEN, tokenIssued: true }),
+        nombreGrupo: 'Mi Grupo', iconUrl: null, actorId: ADMIN_ID,
+        credencial: gl.CREDENCIAL.entregada,
+    });
+
+    // ESTA es la assert que más importa de todo el archivo: los embeds de
+    // licencias son públicos, y publicar la credencial de un cliente en un
+    // canal es entregársela a todo el que pase por ahí. Y no se puede
+    // deshacer: lo que se publica en Discord ya se ha visto.
+    assert(
+        !serializado(conToken).includes(TOKEN) && !serializado(conToken).includes('7xl_'),
+        'el token NO aparece en el embed público ni aunque venga en la licencia'
+    );
+    assert(
+        campo(conToken, 'Credencial') === gl.CREDENCIAL.entregada,
+        'el embed dice que se emitió y se entregó, sin decir el qué'
+    );
+    assert(
+        campo(reactivada, 'Credencial') === gl.CREDENCIAL.conservada,
+        'una reactivación deja claro que el grupo conserva su token de siempre'
+    );
+    assert(
+        gl.CREDENCIAL.noEntregada.length > 0 &&
+        campo(gl.buildAddedEmbed({
+            licencia: licencia({ token: TOKEN, tokenIssued: true }),
+            nombreGrupo: 'G', iconUrl: null, actorId: ADMIN_ID, credencial: gl.CREDENCIAL.noEntregada,
+        }), 'Credencial') === gl.CREDENCIAL.noEntregada,
+        'y si la entrega falla, el embed lo dice en vez de fingir que salió bien'
+    );
+
+    // El mensaje efímero: es el ÚNICO sitio donde el token puede aparecer.
+    const privado = gl.mensajeDeToken({ token: TOKEN, groupId: GROUP_ID }, 'Mi Grupo');
+    assert(privado.includes(TOKEN), 'el mensaje privado sí lleva el token: es su único momento');
+    assert(privado.includes('```'), 'va en un bloque de código para poder copiarlo de una pieza');
+    assert(
+        privado.includes('una sola vez') && privado.toLowerCase().includes('hash'),
+        'y explica que no se puede volver a consultar, porque la API solo guarda su hash'
+    );
+    assert(privado.length <= 2000, 'cabe en el límite de un mensaje de Discord');
 
     // ── /deletegroup ────────────────────────────────────────────────────────
 
@@ -356,7 +405,7 @@ module.exports = async function run() {
 
     // ── Emojis: los del servidor, y solo donde Discord los pinta ────────────
 
-    const todosLosEmbeds = [alta, reactivada, baja, sinMotivo, activa, inactiva, nunca, listado, vacio, truncado, sinComprador];
+    const todosLosEmbeds = [alta, reactivada, conToken, baja, sinMotivo, activa, inactiva, nunca, listado, vacio, truncado, sinComprador];
 
     assert(
         todosLosEmbeds.every(e => !UNICODE_EMOJI.test(serializado(e))),
@@ -384,6 +433,10 @@ module.exports = async function run() {
     assert(
         todosLosEmbeds.every(e => !serializado(e).includes(SECRETO)),
         'ningún embed contiene la clave de administración'
+    );
+    assert(
+        todosLosEmbeds.every(e => !/7xl_/.test(serializado(e))),
+        'ningún embed contiene un token de licencia, venga de donde venga'
     );
     assert(
         todosLosEmbeds.every(e => !serializado(e).includes('railway.internal') && !serializado(e).includes(URL_INTERNA)),

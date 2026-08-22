@@ -16,7 +16,14 @@ const config = require('../config');
 // final; la mas antigua es siempre la primera que devuelve el iterador. Da un
 // LRU real en O(1) sin lista enlazada ni dependencias.
 
-const MAX_ENTRIES = config.cache.maxEntries;
+// El tope se lee EN CADA expulsion, no se captura al cargar el modulo. La
+// diferencia importa: capturado en una `const`, el valor queda fijado por el
+// orden de los `require` y deja de poder ajustarse sin reiniciar el proceso —
+// que es justo lo que hace falta poder hacer en los tests, donde una suite
+// necesita un tope minusculo para provocar expulsiones y otra necesita sitio
+// para trabajar. Leerlo aqui no cuesta nada (es una propiedad de un objeto ya
+// cargado) y en produccion se comporta exactamente igual.
+const maxEntries = () => config.cache.maxEntries;
 const SWEEP_INTERVAL_MS = 60_000;
 
 const store = new Map(); // key -> { value, expiresAt }
@@ -59,8 +66,8 @@ async function set(key, value, ttlMs) {
     metrics.sets++;
 
     // Tope duro de memoria. Se expulsa en bucle (y no una sola entrada) por
-    // si MAX_ENTRIES se bajara en caliente por configuracion.
-    while (store.size > MAX_ENTRIES) {
+    // si el tope se bajara en caliente por configuracion.
+    while (store.size > maxEntries()) {
         const oldestKey = store.keys().next().value;
         if (oldestKey === undefined) break;
         store.delete(oldestKey);
@@ -91,7 +98,7 @@ function getMetrics() {
     return {
         driver: 'memory',
         entries: store.size,
-        maxEntries: MAX_ENTRIES,
+        maxEntries: maxEntries(),
         ...metrics,
         hitRate: lookups === 0 ? null : +(metrics.hits / lookups).toFixed(4),
     };

@@ -6,6 +6,7 @@ const {
     NotFoundError, UpstreamRateLimitedError, CircuitOpenError, UpstreamError,
 } = require('../roblox/errors');
 const { DatabaseUnavailableError } = require('../db/errors');
+const { OwnershipUnavailableError } = require('../services/gameOwnershipService');
 
 // UNICO punto de traduccion error -> HTTP de todo el servicio. Los handlers
 // de ruta no capturan nada: dejan subir el error y aqui se decide. Asi el
@@ -77,6 +78,22 @@ function errorHandler(err, req, res, next) {
         return send(res, 503, err.code, 'La base de datos no esta disponible, reintenta en unos segundos', {
             retryAfterSeconds: 5,
         });
+    }
+
+    // No se pudo AVERIGUAR de quien es la experiencia (Roblox caido, limitado
+    // o con el breaker abierto). Es 503 y jamas un 403, y esa diferencia es
+    // justo lo que impide que un mal rato de Roblox eche a un cliente legitimo
+    // de su propio juego: "ahora mismo no lo se, reintenta" no es lo mismo que
+    // "no eres el dueño". Ver src/services/gameOwnershipService.js.
+    if (err instanceof OwnershipUnavailableError) {
+        logger.warn('No se pudo verificar la propiedad del juego', {
+            requestId: req.requestId,
+            path: req.originalUrl,
+            detail: err.cause?.message ?? err.message,
+        });
+        const retryAfterSeconds = err.retryAfterSeconds ?? 5;
+        res.set('Retry-After', String(retryAfterSeconds));
+        return send(res, 503, err.code, err.message, { retryAfterSeconds });
     }
 
     if (err instanceof UpstreamError) {

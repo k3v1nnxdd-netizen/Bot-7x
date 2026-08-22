@@ -6,6 +6,8 @@ const usersRoute = require('./api/routes/users');
 const outfitsRoute = require('./api/routes/outfits');
 const metricsRoute = require('./api/routes/metrics');
 const adminGroupsRoute = require('./api/routes/adminGroups');
+const licenseRoute = require('./api/routes/license');
+const catalogRoute = require('./api/routes/catalog');
 const { requireApiKey } = require('./security/apiKey');
 const { requireAdminKey } = require('./security/adminKey');
 const { rateLimit } = require('./security/rateLimit');
@@ -28,15 +30,16 @@ function createApp() {
     // un unico cubo — es decir, dejaria de limitar.
     app.set('trust proxy', true);
 
-    // NO hay parser de body A NIVEL DE APP, y sigue siendo intencional: la
-    // API de outfits es enteramente de lectura y todos sus endpoints son GET.
-    // No añadir un parser ahi elimina de raiz toda una familia de problemas
-    // (bodies gigantes, JSON malformado, content-type inesperado) en vez de
-    // tener que acotarla con limites y manejadores de error.
+    // NO hay parser de body A NIVEL DE APP, y sigue siendo intencional: los
+    // endpoints de outfits son todos GET, y no añadir un parser ahi elimina de
+    // raiz toda una familia de problemas (bodies gigantes, JSON malformado,
+    // content-type inesperado) en vez de tener que acotarla con limites y
+    // manejadores de error.
     //
-    // El unico que necesita cuerpo es POST /admin/groups, y por eso su parser
-    // va montado DENTRO de ese router (con limite de 4kb), no aqui: /v1 no
-    // gana ninguna superficie nueva por que exista la administracion.
+    // Los DOS unicos que necesitan cuerpo montan el suyo DENTRO de su propio
+    // router, con su propio limite: POST /admin/groups (4kb) y POST
+    // /v1/license/verify (2kb). Asi cada uno paga solo el coste de lo que usa
+    // y las rutas de outfits no ganan superficie por que existan.
 
     // /health va PRIMERO, deliberadamente por delante del logger, del
     // limitador y de la API key: Railway lo consulta sin cabeceras y no puede
@@ -53,6 +56,18 @@ function createApp() {
     v1.use('/users', usersRoute);
     v1.use('/outfits', outfitsRoute);
     v1.use('/metrics', metricsRoute);
+
+    // Verificacion de licencia del juego. Va en /v1 y NO en /admin porque el
+    // secreto que presenta es el token de la propia licencia, no la clave de
+    // administracion: `x-admin-key` gobierna quien tiene licencia y no puede
+    // acabar dentro de un script distribuido a servidores de Roblox.
+    v1.use('/license', licenseRoute);
+
+    // Inteligencia de catalogo. Ademas de la x-api-key de /v1 exige el TOKEN de
+    // licencia (ver src/security/licenseGuard.js): la key del juego viaja
+    // dentro del .rbxl que se vende, asi que por si sola no puede abrir lo que
+    // precisamente se ha sacado del .rbxl para protegerlo.
+    v1.use('/catalog', catalogRoute);
 
     app.use('/v1', rateLimit, requireApiKey, latencyMiddleware, v1);
 

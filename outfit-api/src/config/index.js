@@ -74,6 +74,24 @@ const ttl = {
     assetBundles: intFromEnv('TTL_ASSET_BUNDLES_MS', 24 * 60 * 60_000),
     catalogDetails: intFromEnv('TTL_CATALOG_DETAILS_MS', 60 * 60_000),
     negative: intFromEnv('TTL_NEGATIVE_MS', 5 * 60_000),
+
+    // De quien es una experiencia de Roblox (verificacion de licencia). 6 h
+    // porque un juego cambia de dueño practicamente nunca — y las dos veces
+    // que pasa al año, esperar unas horas no rompe nada.
+    //
+    // Esta cache hace dos trabajos, y el segundo es el importante: ademas de
+    // ahorrar dos llamadas a Roblox por servidor que arranca, es lo que
+    // mantiene la verificacion en pie cuando Roblox tiene un mal rato. Un
+    // juego ya visto se sigue verificando con lo que Roblox dijo hace un rato
+    // en vez de quedarse sin respuesta.
+    gameOwnership: intFromEnv('TTL_GAME_OWNERSHIP_MS', 6 * 60 * 60_000),
+
+    // Composicion de un bundle (que assets lo forman). Estructural: no cambia
+    // nunca una vez publicado, igual que la pertenencia asset -> bundle. De ahi
+    // las 24 h, y de ahi que este SEPARADA del precio del bundle, que si se
+    // mueve y se cachea con el TTL de catalogo (1 h). Meterlos en la misma
+    // entrada obligaria a repreguntar la composicion cada hora sin motivo.
+    bundleDetails: intFromEnv('TTL_BUNDLE_DETAILS_MS', 24 * 60 * 60_000),
 };
 
 // Guardia anti-abuso de NUESTRA API, por IP de origen. El default es
@@ -160,6 +178,23 @@ const maxBundleLookupsPerRequest = intFromEnv('MAX_BUNDLE_LOOKUPS_PER_REQUEST', 
 // 100 garantiza que un outfit entero siempre entre en UN solo lote.
 const maxCatalogBatchSize = intFromEnv('MAX_CATALOG_BATCH_SIZE', 100);
 
+// ── Limites de POST /v1/catalog/batch ───────────────────────────────────────
+// Un outfit real ronda los 20 assets; estos topes dejan 3x de margen y a la
+// vez garantizan que UNA peticion nuestra nunca se parta en dos lotes de
+// Roblox: 80 items caben de sobra en los 120 que admite items/details
+// (comprobado en vivo: 121 -> 400 "Invalid count").
+const catalogBatch = {
+    maxAssetIds: intFromEnv('CATALOG_BATCH_MAX_ASSETS', 64),
+    maxBundleIds: intFromEnv('CATALOG_BATCH_MAX_BUNDLES', 32),
+    maxTotalIds: intFromEnv('CATALOG_BATCH_MAX_TOTAL', 80),
+
+    // Busquedas inversas asset -> bundle por peticion. Es el UNICO endpoint de
+    // Roblox sin lote (una llamada por asset), asi que este es el tope que de
+    // verdad protege la cuota. Solo se gasta en tipos que pueden venir en un
+    // bundle (partes del cuerpo, Dynamic Heads, Mood): 1-3 en un outfit tipico.
+    maxReverseLookups: intFromEnv('CATALOG_BATCH_MAX_REVERSE_LOOKUPS', 8),
+};
+
 // ── Postgres ────────────────────────────────────────────────────────────────
 // La inyecta Railway al enlazar el servicio con la base; en local sale del
 // .env. Nunca hay ninguna cadena de conexion escrita en el codigo: sin esta
@@ -235,5 +270,6 @@ module.exports = {
     outfitTypes,
     maxBundleLookupsPerRequest,
     maxCatalogBatchSize,
+    catalogBatch,
     serviceName: 'outfit-api',
 };

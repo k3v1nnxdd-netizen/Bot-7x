@@ -1,0 +1,611 @@
+'use strict';
+
+const http = require('http');
+const crypto = require('crypto');
+const { createSuite, captureStdout } = require('./harness');
+const { createApp } = require('../app');
+const config = require('../config');
+const ownRateLimit = require('../security/rateLimit');
+const db = require('../db/pool');
+const roblox = require('../roblox/client');
+const cache = require('../cache/cacheStore');
+const licenseToken = require('../security/licenseToken');
+const { UpstreamError, UpstreamRateLimitedError, NotFoundError } = require('../roblox/errors');
+
+// Tests de POST /v1/license/verify por HTTP real, SIN base de datos y SIN
+// Roblox: `db.query` y las dos llamadas de propiedad se sustituyen por dobles.
+//
+// EL TEST QUE JUSTIFICA ESTE ARCHIVO es el del cliente que miente. El comprador
+// tiene el .rbxl y puede editar el script para mandar el `creatorId` que quiera;
+// lo que se comprueba aqui es que dara igual, porque la propiedad de la
+// experiencia no se lee del cuerpo de la peticion: se le pregunta a Roblox.
+//
+// Y el reverso, que es el que de verdad protege el negocio: un juego que NO es
+// del grupo con licencia sigue siendo denegado aunque declare que si lo es.
+
+const GROUP_ID = '35216530';        // el grupo con licencia
+const OTRO_GRUPO = '77112233';      // un grupo cualquiera, sin licencia
+const PLACE_ID = '1234567890';      // el place que dice el juego
+const UNIVERSE_ID = '5432109876';   // el universo REAL de ese place, segun Roblox
+
+function request(port, method, path, { headers = {}, body, raw, sinReset = false } = {}) {
+    if (!sinReset) ownRateLimit.reset();
+    const payload = raw !== undefined ? raw : body !== undefined ? JSON.stringify(body) : null;
+    return new Promise((resolve, reject) => {
+        const req = http.request({ host: '127.0.0.1', port, path, method, headers }, res => {
+            let data = '';
+            res.on('data', chunk => { data += chunk; });
+            res.on('end', () => {
+                let parsed = null;
+                try { parsed = JSON.parse(data); } catch { /* respuesta no-JSON */ }
+                resolve({ status: res.statusCode, headers: res.headers, body: parsed, raw: data });
+            });
+        });
+        req.on('error', reject);
+        if (payload !== null) req.write(payload);
+        req.end();
+    });
+}
+
+module.exports = async function run() {
+    const suite = createSuite('licenseVerify');
+    const { test, assert } = suite;
+
+    const OUTFIT = config.apiKey;
+    const ADMIN = config.adminApiKey;
+    const juegoHeaders = { 'content-type': 'application/json', 'x-api-key': OUTFIT };
+
+    const TOKEN = licenseToken.generateToken();
+    const HASH = crypto.createHash('sha256').update(TOKEN, 'utf8').digest('hex');
+
+    // ── Doble de la base ─────────────────────────────────────────────────────
+    const queryOriginal = db.query;
+    let calls = [];
+    let responder = () => ({ rows: [], rowCount: 0 });
+
+    db.query = async (text, params = []) => {
+        calls.push({ text, params });
+        return responder(text, params);
+    };
+
+    const licenciaEn = fila => {
+        calls = [];
+        responder = () => ({ rows: fila ? [fila] : [], rowCount: fila ? 1 : 0 });
+    };
+
+    const filaActiva = (overrides = {}) => ({
+        group_id: GROUP_ID,
+        active: true,
+        license_token_hash: HASH,
+        ...overrides,
+    });
+
+    // ── Doble de Roblox ──────────────────────────────────────────────────────
+    // Sustituye las DOS llamadas reales. La cache se limpia en cada montaje:
+    // la propiedad se cachea por placeId, y sin limpiarla un test se comeria
+    // la respuesta del anterior.
+    const universoOriginal = roblox.getUniverseIdForPlace;
+    const dueñoOriginal = roblox.getUniverseOwner;
+    let robloxCalls = [];
+
+    // `duenio` = lo que Roblox dice que es la verdad. `fallo` = un error de la
+    // capa saliente, para probar que un Roblox caido no deniega a nadie.
+    function robloxDice({ universeId = UNIVERSE_ID, duenio = { type: 'Group', id: GROUP_ID }, fallo = null, falloEnDueño = null } = {}) {
+        cache.reset();
+        robloxCalls = [];
+
+        roblox.getUniverseIdForPlace = async placeId => {
+            robloxCalls.push({ llamada: 'place->universe', placeId });
+            if (fallo) throw fallo;
+            return universeId;
+        };
+
+        roblox.getUniverseOwner = async universoPedido => {
+            robloxCalls.push({ llamada: 'universe->owner', universeId: universoPedido });
+            if (falloEnDueño) throw falloEnDueño;
+            return {
+                universeId: universoPedido,
+                rootPlaceId: PLACE_ID,
+                name: 'Juego de prueba',
+                creatorType: duenio.type,
+                creatorId: duenio.id,
+                creatorName: 'Nombre del dueño',
+            };
+        };
+    }
+
+    // Lo que manda el juego. `creatorType`/`creatorId` son justamente lo que un
+    // .rbxl editado puede falsificar, asi que por defecto van con el valor
+    // honesto y cada test los retuerce a placer.
+    const cuerpo = (overrides = {}) => ({
+        token: TOKEN,
+        creatorType: 'Group',
+        creatorId: Number(GROUP_ID),
+        gameId: Number(UNIVERSE_ID),
+        placeId: Number(PLACE_ID),
+        ...overrides,
+    });
+
+    const verificar = (port, body, headers = juegoHeaders) =>
+        request(port, 'POST', '/v1/license/verify', { headers, body });
+
+    const app = createApp();
+    const server = await new Promise(resolve => {
+        const s = app.listen(0, '127.0.0.1', () => resolve(s));
+    });
+    const port = server.address().port;
+
+    // ═══ LO QUE MOTIVO ESTA RUTA: EL CLIENTE NO DEMUESTRA NADA ═══════════════
+
+    test('un creatorId FALSIFICADO no consigue autorizar un juego ajeno', async () => {
+        // La licencia es del grupo 35216530. El juego que llama pertenece DE
+        // VERDAD a otro grupo, pero su script declara ser del grupo con
+        // licencia. Es exactamente el ataque: editar el .rbxl y mentir.
+        licenciaEn(filaActiva());
+        robloxDice({ duenio: { type: 'Group', id: OTRO_GRUPO } });
+
+        const res = await verificar(port, cuerpo({ creatorId: Number(GROUP_ID), creatorType: 'Group' }));
+
+        assert.strictEqual(res.status, 403, 'mentir sobre el creatorId no puede autorizar nada');
+        assert.deepStrictEqual(res.body, { ok: false, motivo: 'grupo_no_coincide' });
+        assert.strictEqual(
+            robloxCalls.length, 2,
+            'la propiedad se resuelve preguntandole a Roblox, no leyendo el cuerpo'
+        );
+    });
+
+    test('un creatorId falso TAMPOCO estropea una licencia legitima', async () => {
+        // El reverso: el juego SI es del grupo con licencia, pero su script
+        // declara otra cosa (mal configurado, o probando). Como el dato
+        // declarado no decide, se autoriza igual.
+        licenciaEn(filaActiva());
+        robloxDice({ duenio: { type: 'Group', id: GROUP_ID } });
+
+        const res = await verificar(port, cuerpo({ creatorId: 999999999, creatorType: 'User' }));
+
+        assert.strictEqual(res.status, 200);
+        assert.deepStrictEqual(res.body, { ok: true, groupId: GROUP_ID });
+    });
+
+    test('la decision usa el universo que resuelve Roblox, no el gameId declarado', async () => {
+        licenciaEn(filaActiva());
+        robloxDice({ universeId: UNIVERSE_ID, duenio: { type: 'Group', id: GROUP_ID } });
+
+        await verificar(port, cuerpo());
+
+        // El segundo salto se hace con el universo que devolvio Roblox a partir
+        // del place, NO con el gameId que venia en el JSON.
+        const segunda = robloxCalls.find(c => c.llamada === 'universe->owner');
+        assert.strictEqual(segunda.universeId, UNIVERSE_ID);
+        assert.strictEqual(robloxCalls[0].llamada, 'place->universe', 'se parte SIEMPRE del placeId');
+    });
+
+    test('el creatorId declarado no llega a la comparacion ni siquiera si falta', async () => {
+        // Sin creatorType/creatorId en el cuerpo, la verificacion funciona
+        // igual: son informativos desde que la propiedad se comprueba.
+        licenciaEn(filaActiva());
+        robloxDice({ duenio: { type: 'Group', id: GROUP_ID } });
+
+        const res = await verificar(port, { token: TOKEN, gameId: Number(UNIVERSE_ID), placeId: Number(PLACE_ID) });
+
+        assert.strictEqual(res.status, 200);
+        assert.strictEqual(res.body.ok, true);
+    });
+
+    test('una declaracion falsa se registra como aviso, aunque la decision no cambie', async () => {
+        const logger = require('../observability/logger');
+        const infoOriginal = logger.info;
+        const warnOriginal = logger.warn;
+        const registrado = [];
+        logger.info = (mensaje, datos) => registrado.push({ nivel: 'info', mensaje, datos });
+        logger.warn = (mensaje, datos) => registrado.push({ nivel: 'warn', mensaje, datos });
+
+        try {
+            licenciaEn(filaActiva());
+            robloxDice({ duenio: { type: 'Group', id: GROUP_ID } });
+            await verificar(port, cuerpo({ creatorId: 999999999 }));
+        } finally {
+            logger.info = infoOriginal;
+            logger.warn = warnOriginal;
+        }
+
+        const linea = registrado.find(l => l.nivel === 'warn');
+        assert.ok(linea, 'un cliente que declara un dueño distinto del real merece un aviso');
+        assert.match(linea.mensaje, /declaracion falsa/i);
+        assert.strictEqual(linea.datos.dueñoRealId, GROUP_ID, 'el log guarda lo REAL...');
+        assert.strictEqual(linea.datos.creatorIdDeclarado, '999999999', '...junto a lo declarado');
+        assert.ok(!JSON.stringify(linea).includes(TOKEN), 'y sigue sin registrar el token');
+    });
+
+    // ═══ Coherencia entre placeId y gameId ═══════════════════════════════════
+
+    test('si el placeId no pertenece al gameId declarado -> juego_no_coincide', async () => {
+        licenciaEn(filaActiva());
+        // Roblox dice que ese place vive en OTRO universo del declarado.
+        robloxDice({ universeId: '111111111', duenio: { type: 'Group', id: GROUP_ID } });
+
+        const res = await verificar(port, cuerpo({ gameId: Number(UNIVERSE_ID) }));
+
+        assert.strictEqual(res.status, 403);
+        assert.deepStrictEqual(res.body, { ok: false, motivo: 'juego_no_coincide' });
+    });
+
+    test('un place que Roblox no reconoce -> juego_desconocido', async () => {
+        licenciaEn(filaActiva());
+        robloxDice({ fallo: new NotFoundError('place_not_found', 'no existe') });
+
+        const res = await verificar(port, cuerpo());
+
+        assert.strictEqual(res.status, 403);
+        assert.deepStrictEqual(res.body, { ok: false, motivo: 'juego_desconocido' });
+    });
+
+    // ═══ Roblox caido: 503, NUNCA una denegacion ═════════════════════════════
+
+    test('Roblox caido -> 503 con Retry-After, NO un 403', async () => {
+        // Es la regla que impide que un mal rato de Roblox eche a todos los
+        // clientes legitimos de sus propios juegos. "No lo se ahora mismo" no
+        // es lo mismo que "no eres el dueño".
+        for (const fallo of [
+            new UpstreamError('Roblox no responde', new Error('ECONNRESET')),
+            new UpstreamRateLimitedError('Roblox nos limito', 12),
+        ]) {
+            licenciaEn(filaActiva());
+            robloxDice({ fallo });
+
+            let res;
+            await captureStdout(async () => { res = await verificar(port, cuerpo()); });
+
+            assert.strictEqual(res.status, 503, `${fallo.name} deberia dar 503`);
+            assert.strictEqual(res.body.error.code, 'verificacion_no_disponible');
+            assert.ok(Number(res.headers['retry-after']) >= 1, 'y decir cuando reintentar');
+            assert.ok(res.body.ok === undefined, 'no es una denegacion: no lleva ok:false');
+        }
+    });
+
+    test('un fallo al resolver el DUEÑO tambien es 503, no una denegacion', async () => {
+        licenciaEn(filaActiva());
+        robloxDice({ falloEnDueño: new UpstreamError('games.roblox.com caido', new Error('ETIMEDOUT')) });
+
+        let res;
+        await captureStdout(async () => { res = await verificar(port, cuerpo()); });
+
+        assert.strictEqual(res.status, 503);
+        assert.strictEqual(res.body.error.code, 'verificacion_no_disponible');
+    });
+
+    test('con la propiedad ya cacheada, un Roblox caido NO impide verificar', async () => {
+        // La cache no es solo velocidad: es lo que sostiene la verificacion
+        // durante un bache de Roblox. Un juego ya visto se sigue verificando.
+        licenciaEn(filaActiva());
+        robloxDice({ duenio: { type: 'Group', id: GROUP_ID } });
+
+        const primera = await verificar(port, cuerpo());
+        assert.strictEqual(primera.status, 200);
+        assert.strictEqual(robloxCalls.length, 2, 'la primera vez se pregunta a Roblox');
+
+        // Ahora Roblox deja de responder — pero SIN limpiar la cache.
+        roblox.getUniverseIdForPlace = async () => { throw new UpstreamError('caido', new Error('x')); };
+        roblox.getUniverseOwner = async () => { throw new UpstreamError('caido', new Error('x')); };
+
+        const segunda = await verificar(port, cuerpo());
+        assert.strictEqual(segunda.status, 200, 'lo ya resuelto sigue sirviendo');
+        assert.deepStrictEqual(segunda.body, { ok: true, groupId: GROUP_ID });
+    });
+
+    test('la propiedad se resuelve UNA vez por place, no en cada servidor que arranca', async () => {
+        licenciaEn(filaActiva());
+        robloxDice({ duenio: { type: 'Group', id: GROUP_ID } });
+
+        for (let i = 0; i < 5; i++) await verificar(port, cuerpo());
+
+        assert.strictEqual(robloxCalls.length, 2, 'cinco verificaciones, dos llamadas a Roblox');
+    });
+
+    // ═══ Separacion de secretos ══════════════════════════════════════════════
+
+    test('la ADMIN_API_KEY no abre /v1/license/verify', async () => {
+        licenciaEn(filaActiva());
+        robloxDice({});
+        const res = await verificar(port, cuerpo(), { 'content-type': 'application/json', 'x-admin-key': ADMIN });
+
+        assert.strictEqual(res.status, 401, 'la clave de administracion no sirve para verificar');
+        assert.strictEqual(res.body.error.code, 'unauthorized');
+        assert.strictEqual(calls.length, 0, 'un no autorizado no llega a costar una consulta');
+        assert.strictEqual(robloxCalls.length, 0, 'ni una llamada a Roblox');
+    });
+
+    test('sin x-api-key -> 401 y ni una consulta', async () => {
+        licenciaEn(filaActiva());
+        robloxDice({});
+        const res = await verificar(port, cuerpo(), { 'content-type': 'application/json' });
+
+        assert.strictEqual(res.status, 401);
+        assert.strictEqual(calls.length, 0);
+    });
+
+    // ═══ Autorizacion concedida ══════════════════════════════════════════════
+
+    test('token valido + activa + dueño real coincide -> 200 ok:true', async () => {
+        licenciaEn(filaActiva());
+        robloxDice({ duenio: { type: 'Group', id: GROUP_ID } });
+
+        const res = await verificar(port, cuerpo());
+
+        assert.strictEqual(res.status, 200);
+        assert.deepStrictEqual(res.body, { ok: true, groupId: GROUP_ID }, 'la respuesta es exactamente {ok, groupId}');
+    });
+
+    test('la consulta busca por HASH, parametrizada, y el token no aparece en ella', async () => {
+        licenciaEn(filaActiva());
+        robloxDice({});
+        await verificar(port, cuerpo());
+
+        assert.strictEqual(calls.length, 1, 'verificar es UNA consulta por clave unica');
+        const { text, params } = calls[0];
+        assert.match(text, /WHERE license_token_hash = \$1/i);
+        assert.deepStrictEqual(params, [HASH], 'a la base va el hash, no el token');
+        assert.ok(!text.includes(TOKEN) && !params.includes(TOKEN), 'el token JAMAS viaja a la base');
+    });
+
+    test('los ids llegan como numero o como cadena, indistintamente', async () => {
+        for (const comoTexto of [false, true]) {
+            licenciaEn(filaActiva());
+            robloxDice({ duenio: { type: 'Group', id: GROUP_ID } });
+            const res = await verificar(port, cuerpo(comoTexto
+                ? { gameId: UNIVERSE_ID, placeId: PLACE_ID }
+                : { gameId: Number(UNIVERSE_ID), placeId: Number(PLACE_ID) }));
+            assert.strictEqual(res.status, 200, `deberia autorizar con ids ${comoTexto ? 'texto' : 'numero'}`);
+        }
+    });
+
+    // ═══ Los motivos de denegacion ═══════════════════════════════════════════
+
+    test('token desconocido -> 403 token_invalido, sin preguntar a Roblox', async () => {
+        licenciaEn(null);
+        robloxDice({});
+        const res = await verificar(port, cuerpo({ token: licenseToken.generateToken() }));
+
+        assert.strictEqual(res.status, 403);
+        assert.deepStrictEqual(res.body, { ok: false, motivo: 'token_invalido' });
+        assert.strictEqual(robloxCalls.length, 0, 'sin credencial no se gasta una llamada a Roblox');
+    });
+
+    test('token mal formado -> 403 token_invalido, IDENTICO y sin tocar nada', async () => {
+        licenciaEn(null);
+        robloxDice({});
+        const conocido = await verificar(port, cuerpo({ token: licenseToken.generateToken() }));
+
+        for (const malo of ['no-es-un-token', '7xl_corto', 'x'.repeat(200), '7xl_' + 'á'.repeat(43)]) {
+            licenciaEn(filaActiva());
+            robloxDice({});
+            const res = await verificar(port, cuerpo({ token: malo }));
+
+            assert.strictEqual(res.status, 403, `"${malo.slice(0, 12)}" deberia denegar`);
+            assert.deepStrictEqual(
+                res.body, conocido.body,
+                'un token mal formado tiene que ser indistinguible de uno desconocido'
+            );
+            assert.strictEqual(calls.length, 0, 'y no llega a costar una consulta');
+        }
+    });
+
+    test('licencia desactivada -> 403 licencia_inactiva, sin preguntar a Roblox', async () => {
+        licenciaEn(filaActiva({ active: false }));
+        robloxDice({});
+        const res = await verificar(port, cuerpo());
+
+        assert.strictEqual(res.status, 403);
+        assert.deepStrictEqual(res.body, { ok: false, motivo: 'licencia_inactiva' });
+        assert.strictEqual(robloxCalls.length, 0, 'una licencia retirada se corta antes de gastar red');
+    });
+
+    test('el dueño REAL es un usuario, no un grupo -> 403 no_es_grupo', async () => {
+        // Y da igual lo que declare el cliente: aunque diga "Group", Roblox
+        // dice "User" y es Roblox quien manda.
+        licenciaEn(filaActiva());
+        robloxDice({ duenio: { type: 'User', id: '1' } });
+
+        const res = await verificar(port, cuerpo({ creatorType: 'Group' }));
+
+        assert.strictEqual(res.status, 403);
+        assert.deepStrictEqual(res.body, { ok: false, motivo: 'no_es_grupo' });
+    });
+
+    test('el juego es de OTRO grupo -> 403 grupo_no_coincide', async () => {
+        licenciaEn(filaActiva());
+        robloxDice({ duenio: { type: 'Group', id: OTRO_GRUPO } });
+
+        const res = await verificar(port, cuerpo({ creatorId: Number(OTRO_GRUPO) }));
+
+        assert.strictEqual(res.status, 403);
+        assert.deepStrictEqual(res.body, { ok: false, motivo: 'grupo_no_coincide' });
+    });
+
+    test('el orden de la cadena es token -> licencia -> propiedad', async () => {
+        // Una licencia inactiva Y un juego ajeno responden por lo que se
+        // comprueba ANTES. Si el orden se invirtiera, el mensaje mandaria a
+        // mirar al sitio equivocado — y ademas se gastaria una llamada a
+        // Roblox para atender a alguien sin licencia.
+        licenciaEn(filaActiva({ active: false }));
+        robloxDice({ duenio: { type: 'Group', id: OTRO_GRUPO } });
+        const inactiva = await verificar(port, cuerpo());
+        assert.strictEqual(inactiva.body.motivo, 'licencia_inactiva');
+        assert.strictEqual(robloxCalls.length, 0);
+
+        licenciaEn(null);
+        robloxDice({});
+        const sinToken = await verificar(port, cuerpo({ token: licenseToken.generateToken(), creatorId: 1 }));
+        assert.strictEqual(sinToken.body.motivo, 'token_invalido');
+    });
+
+    // ═══ Peticiones mal formadas: 400, no 403 ════════════════════════════════
+
+    test('faltan campos obligatorios -> 400 invalid_request sin tocar nada', async () => {
+        const casos = [
+            { body: {}, motivo: 'cuerpo vacio' },
+            { body: cuerpo({ token: undefined }), motivo: 'sin token' },
+            { body: cuerpo({ gameId: undefined }), motivo: 'sin gameId' },
+            { body: cuerpo({ placeId: undefined }), motivo: 'sin placeId' },
+            { body: cuerpo({ placeId: 'abc' }), motivo: 'placeId no numerico' },
+            { body: cuerpo({ placeId: 0 }), motivo: 'placeId cero' },
+            { body: cuerpo({ gameId: -5 }), motivo: 'gameId negativo' },
+            { body: cuerpo({ placeId: 1.5 }), motivo: 'placeId decimal' },
+            { body: cuerpo({ token: 123 }), motivo: 'token que no es texto' },
+            { body: cuerpo({ creatorType: 7 }), motivo: 'creatorType que no es texto' },
+            { body: cuerpo({ creatorId: 'abc' }), motivo: 'creatorId presente pero no numerico' },
+            { body: [], motivo: 'el cuerpo no es un objeto' },
+        ];
+
+        for (const { body, motivo } of casos) {
+            licenciaEn(filaActiva());
+            robloxDice({});
+            const res = await verificar(port, body);
+
+            assert.strictEqual(res.status, 400, `deberia rechazar: ${motivo}`);
+            assert.strictEqual(res.body.error.code, 'invalid_request');
+            assert.strictEqual(calls.length, 0, `no puede consultar la base con entrada invalida (${motivo})`);
+            assert.strictEqual(robloxCalls.length, 0, `ni llamar a Roblox (${motivo})`);
+        }
+    });
+
+    test('sin Content-Type json -> 400; JSON roto -> 400; cuerpo enorme -> 413', async () => {
+        licenciaEn(filaActiva());
+        robloxDice({});
+
+        const sinTipo = await request(port, 'POST', '/v1/license/verify', {
+            headers: { 'x-api-key': OUTFIT }, raw: JSON.stringify(cuerpo()),
+        });
+        assert.strictEqual(sinTipo.status, 400);
+
+        const roto = await request(port, 'POST', '/v1/license/verify', { headers: juegoHeaders, raw: '{"token":' });
+        assert.strictEqual(roto.status, 400);
+        assert.strictEqual(roto.body.error.code, 'invalid_request');
+
+        const enorme = await request(port, 'POST', '/v1/license/verify', {
+            headers: juegoHeaders, raw: JSON.stringify(cuerpo({ relleno: 'x'.repeat(5_000) })),
+        });
+        assert.strictEqual(enorme.status, 413);
+        assert.strictEqual(calls.length, 0);
+    });
+
+    // ═══ El token no se filtra por ningun lado ═══════════════════════════════
+
+    test('el token no aparece en NINGUNA respuesta', async () => {
+        const respuestas = [];
+
+        licenciaEn(filaActiva());
+        robloxDice({ duenio: { type: 'Group', id: GROUP_ID } });
+        respuestas.push(await verificar(port, cuerpo()));
+
+        licenciaEn(filaActiva({ active: false }));
+        robloxDice({});
+        respuestas.push(await verificar(port, cuerpo()));
+
+        licenciaEn(null);
+        robloxDice({});
+        respuestas.push(await verificar(port, cuerpo()));
+
+        licenciaEn(filaActiva());
+        robloxDice({ duenio: { type: 'Group', id: OTRO_GRUPO } });
+        respuestas.push(await verificar(port, cuerpo()));
+
+        for (const res of respuestas) {
+            assert.ok(!res.raw.includes(TOKEN), 'ni concedida ni denegada puede devolver el token');
+            assert.ok(!res.raw.includes(HASH), 'ni su hash');
+        }
+    });
+
+    test('el log lleva lo real, lo declarado y el juego — y NUNCA el token', async () => {
+        const logger = require('../observability/logger');
+        const infoOriginal = logger.info;
+        const registrado = [];
+        logger.info = (mensaje, datos) => registrado.push({ mensaje, datos });
+
+        try {
+            licenciaEn(filaActiva());
+            robloxDice({ duenio: { type: 'Group', id: OTRO_GRUPO } });
+            await verificar(port, cuerpo({ creatorId: Number(OTRO_GRUPO) }));
+        } finally {
+            logger.info = infoOriginal;
+        }
+
+        const linea = registrado.find(l => l.mensaje === 'Verificacion de licencia');
+        assert.ok(linea, 'toda verificacion tiene que dejar rastro');
+
+        const volcado = JSON.stringify(linea);
+        assert.ok(!volcado.includes(TOKEN), 'EL TOKEN NO PUEDE ACABAR EN EL LOG');
+        assert.ok(!volcado.includes(HASH), 'ni su hash');
+
+        assert.strictEqual(linea.datos.ok, false);
+        assert.strictEqual(linea.datos.motivo, 'grupo_no_coincide');
+        assert.strictEqual(linea.datos.gameId, UNIVERSE_ID, 'gameId existe justamente para esto');
+        assert.strictEqual(linea.datos.placeId, PLACE_ID);
+        assert.strictEqual(linea.datos.dueñoRealId, OTRO_GRUPO, 'y queda constancia del dueño real');
+    });
+
+    // ═══ Que nada de esto toca el resto de la API ════════════════════════════
+
+    test('la ruta esta detras del limitador por IP', async () => {
+        licenciaEn(filaActiva());
+        robloxDice({ duenio: { type: 'Group', id: GROUP_ID } });
+        ownRateLimit.reset();
+        const { maxPerWindow } = ownRateLimit.getMetrics();
+
+        for (let i = 0; i < maxPerWindow; i++) {
+            const res = await request(port, 'POST', '/v1/license/verify', { headers: juegoHeaders, body: cuerpo(), sinReset: true });
+            assert.strictEqual(res.status, 200, `la peticion ${i + 1} debia pasar`);
+        }
+
+        const res = await request(port, 'POST', '/v1/license/verify', { headers: juegoHeaders, body: cuerpo(), sinReset: true });
+        assert.strictEqual(res.status, 429);
+        ownRateLimit.reset();
+    });
+
+    test('las rutas de outfits siguen sin parser de body', async () => {
+        licenciaEn(filaActiva());
+        robloxDice({});
+        const escritura = await request(port, 'POST', '/v1/users', { headers: juegoHeaders, body: cuerpo() });
+
+        assert.strictEqual(escritura.status, 404, 'la verificacion no le ha dado superficie de escritura a /v1');
+        assert.strictEqual(escritura.body.error.code, 'route_not_found');
+
+        const metrics = await request(port, 'GET', '/v1/metrics', { headers: { 'x-api-key': OUTFIT } });
+        assert.strictEqual(metrics.status, 200, '/v1 sigue funcionando igual');
+        assert.strictEqual(calls.length, 0, 'la API de outfits no consulta la base para nada');
+    });
+
+    test('GET /v1/license/verify no existe: es POST o nada', async () => {
+        licenciaEn(filaActiva());
+        const res = await request(port, 'GET', '/v1/license/verify', { headers: { 'x-api-key': OUTFIT } });
+        assert.strictEqual(res.status, 404);
+        assert.strictEqual(res.body.error.code, 'route_not_found');
+    });
+
+    test('base caida -> 503, NO un 403 que negaria una licencia valida', async () => {
+        calls = [];
+        robloxDice({});
+        responder = () => {
+            const err = new Error('fallo simulado (ECONNREFUSED)');
+            err.code = 'ECONNREFUSED';
+            throw err;
+        };
+
+        let res;
+        await captureStdout(async () => { res = await verificar(port, cuerpo()); });
+
+        assert.strictEqual(res.status, 503);
+        assert.strictEqual(res.body.error.code, 'database_unavailable');
+        assert.ok(!res.raw.includes(TOKEN));
+    });
+
+    const ok = await suite.run();
+
+    db.query = queryOriginal;
+    roblox.getUniverseIdForPlace = universoOriginal;
+    roblox.getUniverseOwner = dueñoOriginal;
+    cache.reset();
+    ownRateLimit.reset();
+    await new Promise(resolve => server.close(resolve));
+    return ok;
+};

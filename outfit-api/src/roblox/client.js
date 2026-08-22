@@ -214,8 +214,11 @@ async function getBundlesForAsset(assetId) {
 // 403 en cada llamada.
 let catalogCsrfToken = null;
 
-function postCatalogDetails(assetIds) {
-    const body = { items: assetIds.map(id => ({ itemType: 'Asset', id })) };
+// `items` ya viene con la forma que espera Roblox: [{ itemType, id }]. Se
+// acepta asi, y no como lista de assetIds, porque el endpoint admite Assets y
+// Bundles MEZCLADOS y esa es justo la propiedad que aprovecha /v1/catalog/batch.
+function postCatalogDetails(items) {
+    const body = { items };
     const headers = { 'Content-Type': 'application/json' };
     if (catalogCsrfToken) headers['x-csrf-token'] = catalogCsrfToken;
 
@@ -246,33 +249,206 @@ function postCatalogDetails(assetIds) {
 //
 // Devuelve Map<assetId, registro>. Quien llama decide que hacer con los que
 // falten; aqui no se inventa ninguno.
-async function getCatalogDetails(assetIds) {
-    const details = new Map();
-    if (assetIds.length === 0) return details;
+// EL LOTE ADMITE ASSETS Y BUNDLES MEZCLADOS. Comprobado en vivo: mandando
+// [{Asset,139607570},{Bundle,192},{Bundle,201}] vuelven los tres en una sola
+// respuesta. Eso permite resolver TODO un outfit — piezas sueltas y packs — con
+// una peticion, que es la razon de ser de /v1/catalog/batch.
+//
+// Tope real del endpoint: 120 items. Con 121 responde 400 "Invalid count"
+// (comprobado). Los limites de /v1/catalog/batch estan por debajo a proposito,
+// para que una peticion nuestra nunca se parta en dos lotes.
+//
+// Devuelve Map<"Asset:123"|"Bundle:192", registro>: la clave lleva el tipo
+// porque un assetId y un bundleId pueden coincidir en numero y son cosas
+// distintas.
+function normalizeCatalogItem(item) {
+    const restrictions = Array.isArray(item.itemRestrictions) ? item.itemRestrictions : [];
+    return {
+        available: true,
+        name: item.name ?? null,
+        itemType: item.itemType ?? null,
+        assetTypeId: item.assetType ?? null,   // numero; solo en itemType Asset
+        bundleTypeId: item.bundleType ?? null, // numero; solo en itemType Bundle
+        restrictions,
+        // "Limited" y "LimitedUnique" son los dos valores que Roblox usa
+        // para un objeto de edicion limitada. Se derivan de lo que manda,
+        // no de una suposicion nuestra.
+        isLimited: restrictions.includes('Limited') || restrictions.includes('LimitedUnique'),
+        offSale: item.isOffSale ?? null,
+        price: item.price ?? null,
+        lowestPrice: item.lowestPrice ?? null,
+        lowestResalePrice: item.lowestResalePrice ?? null,
+        hasResellers: item.hasResellers ?? null,
+        collectibleItemId: item.collectibleItemId ?? null,
+        creatorType: item.creatorType ?? null,
+        creatorTargetId: item.creatorTargetId ?? null,
+        creatorName: item.creatorName ?? null,
+    };
+}
 
-    const response = await rateLimiter.run('catalogDetails', () => postCatalogDetails(assetIds));
+const catalogKey = (itemType, id) => `${itemType}:${id}`;
+
+async function getCatalogItemDetails(items) {
+    const details = new Map();
+    if (items.length === 0) return details;
+
+    const response = await rateLimiter.run('catalogDetails', () => postCatalogDetails(items));
 
     for (const item of (response.data?.data ?? [])) {
-        const restrictions = Array.isArray(item.itemRestrictions) ? item.itemRestrictions : [];
-        details.set(item.id, {
+        details.set(catalogKey(item.itemType ?? 'Asset', item.id), normalizeCatalogItem(item));
+    }
+
+    return details;
+}
+
+// Firma historica, intacta: Map<assetId (NUMERO), registro> con las mismas
+// claves de siempre. La usa attachCatalogStatus en outfitService.js y no puede
+// cambiar de forma; por dentro reutiliza el lote mixto para no tener dos
+// caminos que puedan desalinearse.
+async function getCatalogDetails(assetIds) {
+    const mixto = await getCatalogItemDetails(assetIds.map(id => ({ itemType: 'Asset', id })));
+
+    const details = new Map();
+    for (const assetId of assetIds) {
+        const registro = mixto.get(catalogKey('Asset', assetId));
+        if (!registro) continue; // ausente = Roblox ya no tiene ficha; lo decide quien llama
+        details.set(assetId, {
             available: true,
-            restrictions,
-            // "Limited" y "LimitedUnique" son los dos valores que Roblox usa
-            // para un objeto de edicion limitada. Se derivan de lo que manda,
-            // no de una suposicion nuestra.
-            isLimited: restrictions.includes('Limited') || restrictions.includes('LimitedUnique'),
-            offSale: item.isOffSale ?? null,
-            price: item.price ?? null,
-            lowestPrice: item.lowestPrice ?? null,
-            lowestResalePrice: item.lowestResalePrice ?? null,
-            hasResellers: item.hasResellers ?? null,
-            creatorType: item.creatorType ?? null,
-            creatorTargetId: item.creatorTargetId ?? null,
-            creatorName: item.creatorName ?? null,
+            restrictions: registro.restrictions,
+            isLimited: registro.isLimited,
+            offSale: registro.offSale,
+            price: registro.price,
+            lowestPrice: registro.lowestPrice,
+            lowestResalePrice: registro.lowestResalePrice,
+            hasResellers: registro.hasResellers,
+            creatorType: registro.creatorType,
+            creatorTargetId: registro.creatorTargetId,
+            creatorName: registro.creatorName,
         });
     }
 
     return details;
+}
+
+// ── 4b. detalles de bundles POR LOTES ────────────────────────────────────────
+
+// GET https://catalog.roblox.com/v1/bundles/details?bundleIds=192,201
+//
+// Tope real: 100 bundles. Con 101 responde 400 "Cannot request so many bundles
+// at once" (comprobado en vivo).
+//
+// ES EL UNICO SITIO QUE DA LA COMPOSICION del bundle — `items[]` con los assets
+// que lo forman —, y esa lista es justo lo que permite que Roblox compruebe la
+// propiedad de UN bundle en vez de la de seis assets sueltos. Trae ademas
+// precio y datos de reventa (`collectibleItemDetail`), asi que un bundle se
+// resuelve entero sin llamadas extra.
+//
+// Lo que NO trae es `itemRestrictions`, asi que "limitado" para un bundle sale
+// del lote mixto de items/details, no de aqui.
+async function getBundleDetails(bundleIds) {
+    const details = new Map();
+    if (bundleIds.length === 0) return details;
+
+    const response = await rateLimiter.run('bundleDetails', () => http_.get(
+        `https://catalog.roblox.com/v1/bundles/details?bundleIds=${bundleIds.join(',')}`
+    ), { notFoundCode: 'bundle_not_found' });
+
+    // Aqui la respuesta es un ARRAY pelado, no un { data: [...] } como el
+    // resto de endpoints de Roblox.
+    const data = Array.isArray(response.data) ? response.data : [];
+
+    for (const bundle of data) {
+        const collectible = bundle.collectibleItemDetail ?? null;
+        details.set(String(bundle.id), {
+            available: true,
+            name: bundle.name ?? null,
+            bundleType: bundle.bundleType ?? null, // aqui SI es texto ("BodyParts", "DynamicHead")
+            // Solo los Asset: un bundle lista tambien su UserOutfit, que no es
+            // algo que un jugador posea ni pueda llevar puesto.
+            assetIds: (Array.isArray(bundle.items) ? bundle.items : [])
+                .filter(item => item.type === 'Asset' && item.id != null)
+                .map(item => String(item.id)),
+            price: bundle.product?.priceInRobux ?? null,
+            forSale: bundle.product?.isForSale ?? null,
+            noPriceText: bundle.product?.noPriceText ?? null,
+            collectibleItemId: collectible?.collectibleItemId ?? null,
+            lowestPrice: collectible?.lowestPrice ?? null,
+            lowestResalePrice: collectible?.lowestResalePrice ?? null,
+            hasResellers: collectible?.hasResellers ?? null,
+            saleStatus: collectible?.saleStatus ?? null,
+            creatorType: bundle.creator?.type ?? null,
+            creatorTargetId: bundle.creator?.id != null ? String(bundle.creator.id) : null,
+            creatorName: bundle.creator?.name ?? null,
+        });
+    }
+
+    return details;
+}
+
+// ── 5 y 6. De quien es REALMENTE una experiencia ─────────────────────────────
+//
+// Estas dos llamadas existen por un motivo de seguridad muy concreto: el
+// cliente que llama a /v1/license/verify tiene el .rbxl en su ordenador y puede
+// editar el script, asi que CUALQUIER dato que mande sobre a quien pertenece su
+// juego es una afirmacion suya, no un hecho. Preguntandoselo a Roblox, la
+// propiedad deja de ser algo que el llamador declara y pasa a ser algo que se
+// comprueba.
+//
+// Van en dos pasos porque Roblox no ofrece uno solo que resuelva placeId ->
+// propietario sin autenticacion. El primero ademas sirve para otra cosa: es lo
+// que permite comprobar que el placeId y el gameId que manda el juego se
+// corresponden de verdad entre si.
+
+// GET https://apis.roblox.com/universes/v1/places/{placeId}/universe
+// -> { "universeId": 383310974 }
+//
+// OJO CON EL "NO EXISTE": comprobado en vivo, un placeId inventado NO devuelve
+// 404 — devuelve 200 con { "universeId": null }. Si eso no se tratara aqui,
+// aguas abajo llegaria un `null` disfrazado de exito y acabaria comparandose
+// contra el grupo de la licencia.
+async function getUniverseIdForPlace(placeId) {
+    const response = await rateLimiter.run('placeUniverse', () => http_.get(
+        `https://apis.roblox.com/universes/v1/places/${placeId}/universe`
+    ), { notFoundCode: 'place_not_found' });
+
+    const universeId = response.data?.universeId;
+    if (universeId === null || universeId === undefined) {
+        throw new NotFoundError('place_not_found', 'Roblox no reconoce ese placeId');
+    }
+
+    // A texto, como todo id de Roblox en este servicio: por encima de 2^53
+    // JavaScript deja de representarlos con exactitud, y una comparacion de
+    // propiedad que pierda precision es peor que no hacerla.
+    return String(universeId);
+}
+
+// GET https://games.roblox.com/v1/games?universeIds={universeId}
+// -> { data: [{ id, rootPlaceId, name, creator: { id, name, type } }] }
+//
+// `creator.type` es "Group" o "User", y `creator.id` el id del grupo o del
+// usuario. ESTA es la fuente de verdad de la autorizacion: lo que Roblox dice
+// sobre quien es dueño del universo, no lo que dice el script del cliente.
+async function getUniverseOwner(universeId) {
+    const response = await rateLimiter.run('universeInfo', () => http_.get(
+        `https://games.roblox.com/v1/games?universeIds=${universeId}`
+    ), { notFoundCode: 'universe_not_found' });
+
+    // Con un universeId inexistente Roblox responde 200 con data: [], igual
+    // que el endpoint de usernames. Mismo tratamiento: "no existe" tiene una
+    // sola forma en este servicio, venga como venga.
+    const juego = response.data?.data?.[0];
+    if (!juego?.id) {
+        throw new NotFoundError('universe_not_found', 'Roblox no reconoce ese universo');
+    }
+
+    return {
+        universeId: String(juego.id),
+        rootPlaceId: juego.rootPlaceId != null ? String(juego.rootPlaceId) : null,
+        name: juego.name ?? null,
+        creatorType: juego.creator?.type ?? null,   // 'Group' | 'User'
+        creatorId: juego.creator?.id != null ? String(juego.creator.id) : null,
+        creatorName: juego.creator?.name ?? null,
+    };
 }
 
 module.exports = {
@@ -281,5 +457,10 @@ module.exports = {
     getOutfitDetailsRaw,
     getBundlesForAsset,
     getCatalogDetails,
+    getCatalogItemDetails,
+    getBundleDetails,
+    getUniverseIdForPlace,
+    getUniverseOwner,
     normalizeOutfitList, // puro; exportado para los tests
+    catalogKey,          // puro; la clave "Asset:123" / "Bundle:192"
 };

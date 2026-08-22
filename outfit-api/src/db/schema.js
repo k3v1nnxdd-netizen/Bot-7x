@@ -73,6 +73,27 @@ const DDL = [
             // no-op a partir de la segunda pasada, asi que puede ejecutarse en
             // cada arranque como el resto del esquema.
             'UPDATE group_whitelist SET linked_at = created_at WHERE linked_at IS NULL',
+
+            // Credencial de la licencia. Se guarda el SHA-256 del token, NUNCA
+            // el token: si esta tabla se filtra (una copia de seguridad, un
+            // volcado en un ticket), con los hashes nadie puede suplantar a un
+            // cliente. Ver src/security/licenseToken.js.
+            //
+            // NULL significa "esta licencia todavia no tiene token", que es el
+            // estado de todas las que existian antes de esto. No pueden
+            // verificar hasta que se les emita uno, y el alta lo emite sola.
+            'ALTER TABLE group_whitelist ADD COLUMN IF NOT EXISTS license_token_hash TEXT',
+
+            // Un token identifica a UN grupo. El indice unico lo garantiza en
+            // la base y no solo en el codigo: si algun dia dos altas
+            // concurrentes generaran el mismo hash (astronomicamente
+            // improbable con 256 bits, pero es que "improbable" no es
+            // "imposible"), la segunda falla en vez de crear una credencial
+            // ambigua que autorizaria a dos grupos distintos.
+            //
+            // En Postgres un indice UNIQUE admite tantos NULL como quieras, asi
+            // que las licencias antiguas sin token no chocan entre si.
+            'CREATE UNIQUE INDEX IF NOT EXISTS group_whitelist_token_hash_key ON group_whitelist (license_token_hash)',
         ],
     },
 ];

@@ -91,6 +91,9 @@ function fail(label, detalle) {
         deactivated_at: { data_type: 'timestamp with time zone', is_nullable: 'YES', column_default: null },
         deactivated_by: { data_type: 'text', is_nullable: 'YES', column_default: null },
         deactivation_reason: { data_type: 'text', is_nullable: 'YES', column_default: null },
+        // Guarda el SHA-256 del token, nunca el token. NULL = licencia sin
+        // credencial todavia (las anteriores a esta funcionalidad).
+        license_token_hash: { data_type: 'text', is_nullable: 'YES', column_default: null },
     };
 
     try {
@@ -133,6 +136,17 @@ function fail(label, detalle) {
         pk.length === 1 && pk[0].columna === 'group_id'
             ? ok('clave primaria', 'group_id')
             : fail('clave primaria', JSON.stringify(pk));
+
+        // El indice unico del token: es lo que impide en la BASE (no solo en
+        // el codigo) que una misma credencial acabe autorizando a dos grupos.
+        const { rows: indices } = await db.query(
+            `SELECT indexname FROM pg_indexes
+              WHERE schemaname = current_schema() AND tablename = $1 AND indexname = $2`,
+            [TABLA, 'group_whitelist_token_hash_key']
+        );
+        indices.length === 1
+            ? ok('indice unico de license_token_hash', 'group_whitelist_token_hash_key')
+            : fail('indice unico de license_token_hash', 'no existe');
     } catch (err) {
         fail('inspeccion del esquema', err.message);
     }
@@ -219,10 +233,57 @@ function fail(label, detalle) {
             ? ok('addGroup() guarda comprador, administrador y fecha de enlace')
             : fail('addGroup() guarda los datos de la licencia', JSON.stringify(alta));
 
+        // ── La credencial de la licencia ─────────────────────────────────────
+        alta.tokenIssued === true && /^7xl_[A-Za-z0-9_-]{43}$/.test(alta.token ?? '')
+            ? ok('addGroup() emite un token en el alta nueva')
+            : fail('addGroup() emite token', JSON.stringify({ tokenIssued: alta.tokenIssued }));
+
+        // Lo que quedo GUARDADO tiene que ser el hash, y el token no puede
+        // estar en la tabla por ningun lado. Esto solo lo puede confirmar
+        // mirando la fila de verdad, que es justo lo que hace este archivo.
+        const crypto = require('crypto');
+        const hashEsperado = crypto.createHash('sha256').update(alta.token, 'utf8').digest('hex');
+        const { rows: guardado } = await db.query(
+            'SELECT license_token_hash FROM group_whitelist WHERE group_id = $1',
+            [ID_PRUEBA]
+        );
+        guardado[0]?.license_token_hash === hashEsperado
+            ? ok('en la base esta el SHA-256 del token, no el token')
+            : fail('hash guardado', JSON.stringify(guardado[0]));
+
+        const { rows: rastro } = await db.query(
+            'SELECT count(*)::int AS n FROM group_whitelist WHERE group_id = $1 AND $2 = ANY(ARRAY[license_token_hash, group_name, roblox_username, discord_user_id])',
+            [ID_PRUEBA, alta.token]
+        );
+        rastro[0].n === 0
+            ? ok('el token en claro no aparece en ninguna columna de la fila')
+            : fail('token en claro en la tabla', `aparece en ${rastro[0].n} fila(s)`);
+
+        const porToken = await whitelist.findByTokenHash(hashEsperado);
+        porToken?.groupId === ID_PRUEBA && porToken.active === true
+            ? ok('findByTokenHash() resuelve la licencia por su hash')
+            : fail('findByTokenHash()', JSON.stringify(porToken));
+
+        (await whitelist.findByTokenHash(crypto.createHash('sha256').update('otro-token').digest('hex'))) === null
+            ? ok('findByTokenHash() con un hash desconocido devuelve null')
+            : fail('findByTokenHash() desconocido', 'devolvio algo');
+
         const repetida = await whitelist.addGroup(ID_PRUEBA);
         repetida.created === false && repetida.createdAt === alta.createdAt
             ? ok('addGroup() repetido es idempotente y conserva el alta original')
             : fail('addGroup() repetido', JSON.stringify(repetida));
+
+        repetida.tokenIssued === false && repetida.token === null
+            ? ok('repetir el alta NO cambia el token del cliente')
+            : fail('el alta repetida cambio el token', JSON.stringify({ tokenIssued: repetida.tokenIssued }));
+
+        const { rows: trasRepetir } = await db.query(
+            'SELECT license_token_hash FROM group_whitelist WHERE group_id = $1',
+            [ID_PRUEBA]
+        );
+        trasRepetir[0]?.license_token_hash === hashEsperado
+            ? ok('y el hash guardado sigue siendo el mismo')
+            : fail('el hash cambio al repetir el alta', JSON.stringify(trasRepetir[0]));
 
         // Sin metadatos en la segunda llamada, el COALESCE tiene que dejar los
         // que ya habia: un alta suelta no puede vaciar la ficha de un cliente.
@@ -263,6 +324,10 @@ function fail(label, detalle) {
         readmision.active === true && readmision.createdAt === alta.createdAt
             ? ok('addGroup() readmite conservando la fecha de alta original')
             : fail('readmision', JSON.stringify(readmision));
+
+        readmision.tokenIssued === false
+            ? ok('readmitir tampoco cambia el token: el juego del cliente sigue funcionando')
+            : fail('la readmision emitio un token nuevo', JSON.stringify({ tokenIssued: readmision.tokenIssued }));
 
         readmision.deactivationReason === null && readmision.deactivatedAt === null &&
         readmision.linkedAt !== alta.linkedAt

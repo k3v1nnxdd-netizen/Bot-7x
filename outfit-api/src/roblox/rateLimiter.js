@@ -94,6 +94,18 @@ const buckets = {
     outfitDetails: makeBucket('outfitDetails'),
     assetBundles: makeBucket('assetBundles'),
     catalogDetails: makeBucket('catalogDetails'),
+
+    // Propiedad real de una experiencia (verificacion de licencia). Buckets
+    // propios y no compartidos con los de outfits a proposito: si Roblox
+    // aprieta el limite del catalogo, eso no puede dejar sin verificar a los
+    // juegos con licencia, y al reves tampoco.
+    placeUniverse: makeBucket('placeUniverse'),
+    universeInfo: makeBucket('universeInfo'),
+
+    // Detalles de bundles por lote (composicion + precio), para
+    // /v1/catalog/batch. Bucket propio y no el de `catalogDetails`: si Roblox
+    // aprieta uno de los dos, el otro sigue atendiendo.
+    bundleDetails: makeBucket('bundleDetails'),
 };
 
 function retryAfterSecondsFrom(until) {

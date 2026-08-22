@@ -1,6 +1,7 @@
 'use strict';
 
 const http = require('http');
+const crypto = require('crypto');
 const { createSuite, captureStdout } = require('./harness');
 const { createApp } = require('../app');
 const config = require('../config');
@@ -89,6 +90,31 @@ module.exports = async function run() {
             throw err;
         };
     };
+
+    // Doble del UPSERT que SI imita lo que hace el COALESCE del token, que es
+    // justo lo que decide si se emite credencial o no:
+    //
+    //   hashPrevio = null -> la fila se queda con el hash que llegó en $6
+    //                        (alta nueva, o licencia antigua que no tenia).
+    //   hashPrevio = '..' -> la fila conserva el suyo e ignora el nuevo
+    //                        (reactivacion: la credencial no cambia).
+    //
+    // Sin esto no se podria probar la diferencia, que es lo unico que importa
+    // de este endpoint desde que existen los tokens.
+    const respondeUpsert = ({ hashPrevio = null, inserted = true, extra = {} } = {}) => {
+        calls = [];
+        responder = (text, params) => ({
+            rows: [{
+                ...fila(),
+                ...extra,
+                license_token_hash: hashPrevio ?? params[5],
+                inserted,
+            }],
+            rowCount: 1,
+        });
+    };
+
+    const sha256 = valor => crypto.createHash('sha256').update(valor, 'utf8').digest('hex');
 
     const fila = (overrides = {}) => ({
         group_id: GROUP_ID,
@@ -204,7 +230,7 @@ module.exports = async function run() {
     // ── Alta ─────────────────────────────────────────────────────────────────
 
     test('POST agrega un grupo nuevo -> 201 y SQL parametrizado', async () => {
-        responde([{ ...fila(), inserted: true }]);
+        respondeUpsert({ inserted: true });
         const res = await request(port, 'POST', '/admin/groups', {
             headers: jsonHeaders(admin),
             body: {
@@ -217,7 +243,9 @@ module.exports = async function run() {
         });
 
         assert.strictEqual(res.status, 201);
-        assert.deepStrictEqual(res.body, { ...licencia(), created: true, authorized: true });
+        const { token, tokenIssued, ...licenciaDevuelta } = res.body;
+        assert.deepStrictEqual(licenciaDevuelta, { ...licencia(), created: true, authorized: true });
+        assert.strictEqual(tokenIssued, true, 'un alta nueva emite credencial');
 
         assert.strictEqual(calls.length, 1, 'un alta es UNA consulta, no un select + insert');
         const { text, params } = calls[0];
@@ -225,14 +253,110 @@ module.exports = async function run() {
         assert.match(text, /ON CONFLICT \(group_id\) DO UPDATE/i);
         assert.match(text, /SET active = true/i);
         assert.ok(text.includes('$1'), 'el valor debe ir como parametro');
-        assert.deepStrictEqual(params, [GROUP_ID, DISCORD_ID, ROBLOX_USER, GROUP_NAME, ADMIN_ID]);
+        assert.deepStrictEqual(
+            params.slice(0, 5),
+            [GROUP_ID, DISCORD_ID, ROBLOX_USER, GROUP_NAME, ADMIN_ID]
+        );
         for (const valor of [GROUP_ID, DISCORD_ID, ROBLOX_USER, GROUP_NAME, ADMIN_ID]) {
             assert.ok(!text.includes(valor), `${valor} JAMAS puede aparecer dentro del texto de la consulta`);
         }
     });
 
+    // ── El token de licencia ────────────────────────────────────────────────
+
+    test('un alta nueva emite un token y lo devuelve UNA sola vez', async () => {
+        respondeUpsert({ inserted: true });
+        const res = await request(port, 'POST', '/admin/groups', {
+            headers: jsonHeaders(admin),
+            body: { groupId: GROUP_ID },
+        });
+
+        assert.strictEqual(res.status, 201);
+        assert.strictEqual(res.body.tokenIssued, true);
+        assert.match(
+            res.body.token,
+            /^7xl_[A-Za-z0-9_-]{43}$/,
+            'el token es un secreto de 256 bits en base64url, con prefijo reconocible'
+        );
+    });
+
+    test('a la base va el SHA-256 del token, JAMAS el token', async () => {
+        respondeUpsert({ inserted: true });
+        const res = await request(port, 'POST', '/admin/groups', {
+            headers: jsonHeaders(admin),
+            body: { groupId: GROUP_ID },
+        });
+
+        const { text, params } = calls[0];
+        const hashEnviado = params[5];
+
+        assert.match(hashEnviado, /^[0-9a-f]{64}$/, 'lo que se guarda es un SHA-256 en hexadecimal');
+        assert.strictEqual(
+            hashEnviado,
+            sha256(res.body.token),
+            'y es exactamente el hash del token que se devolvio: no dos secretos distintos'
+        );
+        assert.ok(!params.includes(res.body.token), 'el token en claro no puede viajar como parametro');
+        assert.ok(!text.includes(res.body.token), 'ni dentro del texto de la consulta');
+        assert.ok(!JSON.stringify(calls).includes(res.body.token), 'ni en ninguna otra parte de la consulta');
+    });
+
+    test('reactivar una licencia NO cambia su token', async () => {
+        // La fila ya tenia credencial: el COALESCE la conserva y el token que
+        // se genero en esta llamada se descarta sin salir del servicio.
+        const HASH_PREVIO = sha256('token-que-ya-tenia-el-cliente');
+        respondeUpsert({ hashPrevio: HASH_PREVIO, inserted: false });
+
+        const res = await request(port, 'POST', '/admin/groups', {
+            headers: jsonHeaders(admin),
+            body: { groupId: GROUP_ID },
+        });
+
+        assert.strictEqual(res.status, 200);
+        assert.strictEqual(res.body.tokenIssued, false, 'no se emite credencial nueva');
+        assert.strictEqual(res.body.token, null, 'y no se puede devolver la vieja: solo se guarda su hash');
+        assert.match(
+            calls[0].text,
+            /license_token_hash = COALESCE\(group_whitelist\.license_token_hash, EXCLUDED\.license_token_hash\)/i,
+            'es el COALESCE el que garantiza que el juego del cliente siga funcionando tras reactivar'
+        );
+    });
+
+    test('una licencia antigua sin token adopta uno al reactivarse', async () => {
+        // Las licencias anteriores a esta funcionalidad tienen el hash a NULL.
+        // No es "cambiarles" el token: es que no tenian ninguno y sin el no
+        // podrian verificar nunca.
+        respondeUpsert({ hashPrevio: null, inserted: false });
+
+        const res = await request(port, 'POST', '/admin/groups', {
+            headers: jsonHeaders(admin),
+            body: { groupId: GROUP_ID },
+        });
+
+        assert.strictEqual(res.status, 200, 'sigue sin ser un alta nueva');
+        assert.strictEqual(res.body.created, false);
+        assert.strictEqual(res.body.tokenIssued, true, 'pero si estrena credencial');
+        assert.match(res.body.token, /^7xl_/);
+    });
+
+    test('ninguna otra ruta devuelve el token ni su hash', async () => {
+        responde([fila({ license_token_hash: sha256('secreto') })]);
+
+        const respuestas = await Promise.all([
+            request(port, 'GET', `/admin/groups/${GROUP_ID}`, { headers: admin }),
+            request(port, 'GET', '/admin/groups', { headers: admin }),
+            request(port, 'DELETE', `/admin/groups/${GROUP_ID}`, { headers: admin }),
+        ]);
+
+        for (const res of respuestas) {
+            assert.ok(!res.raw.includes(sha256('secreto')), 'el hash guardado no sale en ninguna respuesta');
+            assert.ok(!res.raw.includes('license_token_hash'), 'ni el nombre de la columna');
+            assert.ok(!res.raw.includes('"token"'), 'el token solo existe en la respuesta del alta');
+        }
+    });
+
     test('POST sin metadatos manda null y NO borra los datos ya guardados', async () => {
-        responde([{ ...fila(), inserted: false }]);
+        respondeUpsert({ inserted: false });
         const res = await request(port, 'POST', '/admin/groups', {
             headers: jsonHeaders(admin),
             body: { groupId: GROUP_ID },
@@ -240,7 +364,7 @@ module.exports = async function run() {
 
         assert.strictEqual(res.status, 200);
         assert.deepStrictEqual(
-            calls[0].params,
+            calls[0].params.slice(0, 5),
             [GROUP_ID, null, null, null, null],
             'lo que no se manda viaja como null, no como cadena vacia'
         );

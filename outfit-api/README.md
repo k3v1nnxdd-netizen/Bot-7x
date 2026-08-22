@@ -18,6 +18,8 @@ Todo lo que cuelga de `/v1` exige la cabecera `x-api-key`. `/health` no. Lo que 
 | `GET` | `/v1/users/by-username/:username/outfits?…` | Resuelve **y** lista en una sola llamada. |
 | `GET` | `/v1/outfits/:outfitId?catalog=1&bundles=1` | Contenido completo del outfit. |
 | `GET` | `/v1/metrics` | Observabilidad interna. Protegida. |
+| `POST` | `/v1/catalog/batch` | Inteligencia de catálogo de un outfit entero. **`x-api-key` + token de licencia.** |
+| `POST` | `/v1/license/verify` | ¿Puede este juego usar el sistema? **`x-api-key` + token de licencia.** |
 | `POST` | `/admin/groups` | Autoriza un grupo. **`x-admin-key`.** |
 | `GET` | `/admin/groups` | Lista los grupos autorizados. **`x-admin-key`.** |
 | `GET` | `/admin/groups/:groupId` | ¿Está autorizado este grupo? **`x-admin-key`.** |
@@ -127,6 +129,7 @@ Formato único: `{ "error": { "code", "message" } }`.
 | HTTP | `code` | Significado |
 |---|---|---|
 | 400 | `invalid_request` | Parámetro inválido. |
+| 503 | `verificacion_no_disponible` | No se pudo comprobar la propiedad del juego con Roblox. Reintentar. |
 | 401 | `unauthorized` | Falta o es incorrecta `x-api-key` (o `x-admin-key` en `/admin`). |
 | 404 | `user_not_found` / `outfit_not_found` | No existe en Roblox. |
 | 404 | `group_not_found` | Ese grupo no está en la whitelist (solo `DELETE`). |
@@ -297,6 +300,260 @@ CREATE TABLE IF NOT EXISTS group_whitelist (
 
 ---
 
+## Catálogo por lotes — `POST /v1/catalog/batch`
+
+La **inteligencia de catálogo** de un outfit entero en una sola petición: nombre, precio, tipo, fuera de venta, limitado, reventa, a qué bundle pertenece cada asset, qué es una Dynamic Head, cuál es su Mood, qué es Korblox y qué es Headless — y, sobre todo, **qué tiene que comprobar el juego** para saber si el jugador lo posee.
+
+### Doble puerta: `x-api-key` **y** token de licencia
+
+```
+POST /v1/catalog/batch
+x-api-key: <OUTFIT_API_KEY>
+Content-Type: application/json
+
+{
+  "token": "7xl_…",
+  "gameId": "5432109876",
+  "placeId": "1234567890",
+  "assetIds": ["11308945948", "11308935548", "607702162"],
+  "bundleIds": ["192"],
+  "resolveBundles": true
+}
+```
+
+`x-api-key` **no basta**, y es deliberado: esa clave viaja dentro del `.rbxl` que se vende, así que todo el que compre el sistema —o le robe una copia— la tiene. Sirve para decir «esto viene de un juego que usa el sistema», no «este juego ha pagado». Para lo segundo está el token, que es único por licencia y revocable de uno en uno.
+
+La comprobación es **exactamente la misma cadena de `/v1/license/verify`**, reutilizada sin duplicar una línea (`src/security/licenseGuard.js` → `licenseService.verify`): token → licencia activa → **propiedad real del juego resuelta contra Roblox**. Un `creatorId` falsificado en el `.rbxl` no abre el catálogo. La propiedad sale de la caché de 6 h, así que abrir un outfit **no** vuelve a preguntarle a Roblox de quién es la experiencia.
+
+Una licencia sin autorización responde `403 { "ok": false, "motivo": "…" }` — misma forma que `/v1/license/verify`, para que el juego no aprenda dos formatos.
+
+### Límites
+
+| | Máximo |
+|---|---|
+| `assetIds` | 64 |
+| `bundleIds` | 32 |
+| `assetIds + bundleIds` | 80 |
+| Búsquedas inversas por petición | 8 |
+| Cuerpo | 8 KB |
+
+80 ítems caben de sobra en los 120 que admite `items/details`, así que **una petición nuestra nunca se parte en dos lotes de Roblox**. Pasarse → `400 invalid_request` antes de tocar caché o red.
+
+### Respuesta
+
+```jsonc
+{
+  "resolvedAt": "2026-08-22T18:04:11.482Z",
+  "partial": false,
+  "counts": { "assets": 3, "bundles": 2, "reverseLookups": 2 },
+
+  "assets": [{
+    "assetId": "11308945948",
+    "found": true,
+    "name": "Check It - Head",
+    "assetType": { "id": 79, "name": "DynamicHead" },
+    "price": null, "offSale": true, "limited": false, "restrictions": [],
+    "resale": { "lowestPrice": null, "lowestResalePrice": null, "hasResellers": null, "collectibleItemId": null },
+    "creator": { "type": "User", "id": "1", "name": "Roblox" },
+    "bundleIds": ["968"],
+    "special": "dynamicHead",
+    "ownedVia": { "kind": "Bundle", "id": "968" }
+  }],
+
+  "bundles": [{
+    "bundleId": "192",
+    "found": true,
+    "name": "Korblox Deathspeaker",
+    "bundleType": "BodyParts",
+    "price": 17000, "forSale": true, "limited": false,
+    "assetIds": ["139607570", "139607625", "139607673", "139607718", "139607770", "139610147"],
+    "special": "korblox"
+  }],
+
+  "ownershipChecks": [
+    { "kind": "Bundle", "id": "968", "special": "dynamicHead", "covers": ["11308945948", "11308935548"] },
+    { "kind": "Bundle", "id": "192", "special": "korblox",     "covers": ["139607718"] },
+    { "kind": "Asset",  "id": "607702162", "special": null,    "covers": ["607702162"] }
+  ],
+
+  "unresolved": { "assetIds": [], "bundleIds": [], "reverseTruncated": 0 }
+}
+```
+
+**Todos los ids son STRING** en petición, respuesta y lógica interna. Se aceptan como número por comodidad del cliente y se normalizan en la frontera: un id de Roblox cabe hoy en un entero seguro de JavaScript, pero el margen se estrecha cada año y una comparación que pierda precisión es imposible de depurar después.
+
+`found: false` (Roblox ya no tiene ficha: borrado, moderado, fuera del catálogo) conserva **todas** las claves con `null`. `null` significa «no se sabe»; `false` significa «Roblox dijo que no». Nunca se inventa un cero.
+
+### Lo único que le queda a Roblox
+
+```lua
+for _, check in ipairs(res.ownershipChecks) do
+    local owned = (check.kind == "Bundle")
+        and MarketplaceService:PlayerOwnsBundleAsync(player, tonumber(check.id))
+        or  MarketplaceService:PlayerOwnsAssetAsync(player, tonumber(check.id))
+    for _, assetId in ipairs(check.covers) do estado[assetId] = owned end
+end
+```
+
+`ownershipChecks` es la lista **mínima y deduplicada**: la API colapsa N assets en 1 bundle. Una Dynamic Head y su Mood son **una** comprobación, no dos; las seis piezas de Korblox son **una**, no seis. Medido: un outfit de 20 assets con Dynamic Head + Korblox pasa de 20 comprobaciones a **19**, y de ~20 `GetProductInfoAsync` repartidos por 8 servicios a **cero**.
+
+### Cuántas llamadas a Roblox cuesta
+
+Medido con un outfit realista (20 assets: 1 Dynamic Head + 1 Mood + 1 pierna de Korblox + 17 accesorios):
+
+| | Llamadas a Roblox |
+|---|---|
+| Outfit **frío** | **6** — `items/details(20)` + 3 inversas + `bundles/details(2)` + `items/details(2 bundles)` |
+| Outfit **caliente** | **0** |
+| Otro outfit que comparte 17 piezas | **1** (solo la pieza nueva) |
+
+Tres olas, y ni una llamada de más:
+
+1. **`items/details`** (lote mixto Asset+Bundle, ≤120) → metadatos, precio, offsale, limitado, reventa.
+2. **`assets/{id}/bundles`** → el único endpoint sin lote, así que **solo se lanza para tipos que pueden venir en un bundle** (partes del cuerpo, Dynamic Heads y Moods). Un sombrero jamás gasta una llamada aquí. En un outfit típico son 1-3.
+3. **`bundles/details`** (lote, ≤100) → composición del bundle + precio + reventa.
+
+Todo se cachea **por ítem y de forma global**, nunca por outfit ni por jugador: dos jugadores con el mismo sombrero comparten entrada, y con `singleFlight` 200 servidores abriendo el mismo outfit frío producen **una** resolución, no 200. Las claves `asset:catalog:*` y `asset:bundles:*` son **las mismas** que usa `/v1/outfits?catalog=1&bundles=1`: resolver un asset aquí lo deja resuelto allí y al revés.
+
+| Caché | TTL | Por qué |
+|---|---|---|
+| `asset:catalog:{id}` | 1 h | el precio se mueve despacio |
+| `asset:bundles:{id}` | 24 h | la pertenencia a bundle no cambia nunca |
+| `bundle:details:{id}` | 24 h | la composición es estructural |
+| `bundle:catalog:{id}` | 1 h | el precio del bundle sí se mueve |
+
+### Casos especiales
+
+| Caso | Cómo se detecta | `special` | `ownedVia` |
+|---|---|---|---|
+| Dynamic Head | `assetType.id === 79` | `dynamicHead` | su bundle |
+| Mood Animation | `assetType.id === 78` | `moodAnimation` | **el mismo bundle** que la cabeza |
+| Korblox | pertenece al bundle `192` | `korblox` | `Bundle 192` |
+| Headless | pertenece al bundle `201` | `headless` | `Bundle 201` |
+| Parte del cuerpo | `assetType.id` ∈ 27–31 | `bodyPart` | su bundle si lo tiene |
+
+Korblox y Headless llevan además un **registro curado** (`src/catalog/specialBundles.js`) porque la búsqueda inversa es incompleta —ya está documentado en este repo que «Man - Torso» devuelve `[]`, y se comprobó en vivo que la cabeza de Headless tampoco resuelve bundle—. Para los dos objetos más caros que un jugador puede llevar puesto, «casi siempre acierta» no vale. La búsqueda inversa sigue teniendo prioridad cuando responde; el registro es la red de seguridad.
+
+### Fallos: parcial, y nunca un vacío mentiroso
+
+- **Algo se resolvió** → `200` con `partial: true` y la lista exacta de lo que faltó en `unresolved`. El juego pinta lo que tiene.
+- **No se resolvió nada y no había caché** → `503 upstream_unavailable` con `Retry-After`. Un `200` con la lista vacía le diría al juego «estos items no existen», que es falso: dejaría al jugador viendo un armario roto por un bache de Roblox.
+- **Falla solo la búsqueda inversa** → el outfit se entrega igual; los assets afectados salen con `ownedVia` de tipo `Asset`, que es lo único que se sabe con certeza.
+
+---
+
+## Verificación de licencia — `POST /v1/license/verify`
+
+Lo que el **juego** pregunta al arrancar: *¿este servidor puede usar el sistema?*
+
+Cuelga de `/v1`, así que va detrás de `x-api-key` y del limitador por IP como el resto de lo que consume Roblox. **`ADMIN_API_KEY` no se acepta aquí y no debe aparecer nunca en un script de Roblox**: esa clave decide quién tiene licencia, y un script se distribuye a servidores que no controlamos. Lo que el juego presenta es su propio token, que solo le sirve a él y se puede revocar sin tocar nada más.
+
+```
+POST /v1/license/verify
+x-api-key: <OUTFIT_API_KEY>
+Content-Type: application/json
+
+{ "token": "7xl_…", "gameId": 5432109876, "placeId": 1234567890,
+  "creatorType": "Group", "creatorId": 35216530 }
+```
+
+```json
+200 { "ok": true, "groupId": "35216530" }
+403 { "ok": false, "motivo": "grupo_no_coincide" }
+```
+
+### La propiedad NO la declara el cliente: la resuelve la API
+
+El comprador tiene el `.rbxl` en su ordenador. Puede abrir el script, cambiar cualquier número y mandar lo que quiera. **Todo lo que el juego afirma sobre a quién pertenece es una declaración suya, no un hecho** — usarla para autorizar equivale a preguntarle a alguien si tiene permiso y creerle.
+
+Por eso `creatorId` y `creatorType` son **opcionales y puramente informativos**. La propiedad se averigua preguntándosela a Roblox:
+
+```
+placeId (lo declara el juego)
+   │
+   ├─► GET apis.roblox.com/universes/v1/places/{placeId}/universe
+   │      → universeId REAL
+   │      → ¿coincide con el gameId declarado?  si no: juego_no_coincide
+   │
+   └─► GET games.roblox.com/v1/games?universeIds={universeId REAL}
+          → creator REAL { type: "Group"|"User", id }
+          → ese id es el que se compara con el group_id de la licencia
+```
+
+El único dato del cliente que entra en la decisión es `placeId`, y **no como prueba de propiedad sino como puntero**: «mira este sitio y dime tú de quién es».
+
+### La cadena, en este orden exacto
+
+| # | Comprobación | Si falla |
+|---|---|---|
+| 1 | El token existe y su hash coincide con el guardado | `token_invalido` |
+| 2 | La licencia está activa | `licencia_inactiva` |
+| 3 | Roblox reconoce el `placeId` | `juego_desconocido` |
+| 4 | El universo real de ese place **es** el `gameId` declarado | `juego_no_coincide` |
+| 5 | El dueño **real** es un grupo (no un usuario) | `no_es_grupo` |
+| 6 | Ese grupo **real** es el de la licencia | `grupo_no_coincide` |
+
+Los pasos 3-6 van **después** del token a propósito: primero se demuestra quién eres y solo después se mira si eso encaja con dónde estás. Al revés, cualquiera podría sondear la propiedad de juegos ajenos sin presentar credencial — y además se gastaría una llamada a Roblox para atender a alguien sin licencia.
+
+Un `creatorId` declarado que no coincida con el real **no cambia la decisión** (ya se tomó con datos reales) pero se registra como **aviso** en el log: es la firma de un `.rbxl` editado.
+
+### Hasta dónde llega esto, y hasta dónde no
+
+**Lo que resuelve:** nadie puede inventarse un dueño. Un `creatorId` falso en el JSON es irrelevante porque el resultado no sale del JSON. Para pasar por el grupo X hay que estar dentro de un universo que **Roblox** diga que es de X.
+
+**Lo que no resuelve, dicho claramente:** `placeId` sigue siendo un dato que manda el cliente. Quien tenga el token de una licencia puede mandar el `placeId` real del cliente legítimo —es público— y la cadena dará que sí. Ningún esquema basado solo en un JSON de `HttpService` puede impedirlo, porque **Roblox no firma nada que demuestre desde qué servidor se está llamando**. Lo que se gana es que la mentira ahora tiene que ser *consistente con datos públicos de Roblox* en vez de ser una cifra inventada, y que el robo del `.rbxl` deja rastro en el log.
+
+Para cerrar el resto haría falta una de estas dos, y ninguna es gratis:
+
+- **Atar la licencia a un `universeId` concreto** al emitirla. El pirata tendría que ejecutar dentro del universo del cliente legítimo, donde el dueño del grupo controla quién publica.
+- **Intercambio con Open Cloud**: la API entrega un nonce y el juego debe devolverlo por un canal que exija credenciales del propio cliente (DataStore/MessagingService vía Open Cloud). Es la única forma de probar identidad de verdad, y obliga al cliente a dar una API key suya.
+
+### Otras respuestas
+
+- **400** `{"error":{"code":"invalid_request",…}}` — la petición está mal formada (falta `token`, `gameId` o `placeId`, o un id que no es número). Es un bug del script que llama, no una denegación, y por eso se distingue.
+- **503** `verificacion_no_disponible` — **Roblox no responde** (caído, limitándonos, o con el breaker abierto). Lleva `Retry-After`.
+- **503** `database_unavailable` — Postgres no responde.
+
+**Ni Roblox caído ni Postgres caído producen jamás un 403.** Es la regla que impide que un mal rato de un tercero eche a todos los clientes legítimos de sus propios juegos: «ahora mismo no lo sé, reintenta» no es lo mismo que «no eres el dueño». Para el juego, la lógica es: `200` → autorizado; `403` → denegado de verdad, con motivo; **cualquier otro código** → temporal, reintentar con backoff y mantener el último estado conocido.
+
+La resolución de propiedad se **cachea por `placeId` 6 h** (`TTL_GAME_OWNERSHIP_MS`), con single-flight: 200 servidores del mismo juego arrancando a la vez producen **una** resolución, no 200. Esa caché es además lo que sostiene la verificación durante un bache de Roblox — un juego ya visto se sigue verificando con lo que Roblox dijo hace un rato, que para «de quién es este universo» sigue siendo verdad.
+
+Un token con forma imposible responde **exactamente igual** que uno desconocido (`token_invalido`, sin llegar a consultar la base ni a Roblox). Distinguirlos solo ayudaría a quien está probando tokens.
+
+**El token nunca se registra**, ni entero, ni en trozos, ni su hash. `gameId` y `placeId` sí, junto al dueño real y al declarado: es lo que convierte el log en algo útil cuando alguien reclama.
+
+### Desde Roblox (Lua)
+
+```lua
+local HttpService = game:GetService("HttpService")
+
+local respuesta = HttpService:RequestAsync({
+    Url = "https://<tu-servicio>.up.railway.app/v1/license/verify",
+    Method = "POST",
+    Headers = { ["Content-Type"] = "application/json", ["x-api-key"] = OUTFIT_API_KEY },
+    Body = HttpService:JSONEncode({
+        token   = LICENSE_TOKEN,   -- el que se entregó al dar de alta
+        gameId  = game.GameId,     -- universeId; se contrasta con el place
+        placeId = game.PlaceId,    -- el puntero que usa la API para preguntar a Roblox
+        -- Opcionales, solo informativos: la API NO los usa para decidir.
+        creatorType = tostring(game.CreatorType.Name),
+        creatorId   = game.CreatorId,
+    }),
+})
+
+local datos = HttpService:JSONDecode(respuesta.Body)
+
+if respuesta.StatusCode == 200 and datos.ok then
+    print("Licencia OK para el grupo " .. datos.groupId)
+elseif respuesta.StatusCode == 403 then
+    warn("Sin licencia: " .. tostring(datos.motivo))   -- denegación definitiva
+else
+    warn("No se pudo verificar ahora mismo, reintentando...")  -- 5xx: temporal
+end
+```
+
+---
+
 ## Administración de licencias
 
 Cuatro endpoints sobre `group_whitelist`, protegidos por **`ADMIN_API_KEY`** en la cabecera **`x-admin-key`**.
@@ -319,6 +576,20 @@ Cuatro decisiones que conviene conocer antes de consumirlos:
 - **`DELETE` desactiva, no borra.** Conserva la fila y la fecha de alta, que es lo que hace falta el día que alguien reclame un pago. Con `?purge=1` sí se borra de verdad.
 - **La licencia guarda a quién pertenece.** Además del grupo, la fila lleva el usuario de Discord enlazado, el usuario de Roblox del comprador, quién dio el alta y cuándo, y —si se retiró— por qué y quién. Todo eso viaja en la misma respuesta de los cuatro endpoints, con la **misma forma** siempre.
 
+### Credencial de la licencia (token)
+
+Cada licencia lleva un **token propio**: 256 bits aleatorios con prefijo `7xl_`, que vive dentro del juego del cliente y solo le sirve a él.
+
+**De la base nunca se puede sacar un token.** Se guarda su **SHA-256** en `license_token_hash` y nada más. Si esta tabla se filtrara —una copia mal guardada, un volcado en un ticket— con los hashes nadie puede suplantar a ningún cliente.
+
+- **Alta nueva** → se genera un token, se guarda su hash y el token en claro **se devuelve una sola vez** en la respuesta del `POST`. No hay forma de volver a consultarlo.
+- **Reactivación** → **no se cambia el token**. El juego del cliente sigue funcionando sin tocar una línea. La respuesta trae `token: null` y `tokenIssued: false`.
+- **Licencia antigua sin token** (las anteriores a esto) → adopta uno la próxima vez que se dé de alta. No es cambiárselo: es que no tenía ninguno.
+
+SHA-256 a secas y **no** bcrypt/argon2 a propósito: eso es lo correcto para contraseñas, que las elige una persona y tienen poquísima entropía. Aquí son 256 bits aleatorios —no hay diccionario que probar— y esta ruta se llama desde el juego en caliente, así que un hash lento solo compraría latencia. El hash determinista es además lo que permite **buscar por clave única** en vez de leer la tabla entera comparando fila a fila.
+
+Un índice `UNIQUE` sobre `license_token_hash` garantiza en la base —y no solo en el código— que una credencial no pueda autorizar a dos grupos.
+
 ### Qué guarda cada licencia
 
 | Campo | Columna | Qué es |
@@ -332,6 +603,7 @@ Cuatro decisiones que conviene conocer antes de consumirlos:
 | `groupName` | `group_name` | Nombre del grupo tal como estaba en Roblox al darlo de alta. |
 | `addedBy` | `added_by` | Quién hizo el alta o la reactivación. |
 | `deactivatedAt` / `deactivatedBy` / `deactivationReason` | ídem | Rastro de la baja. Se limpia al reactivar. |
+| *(nunca se expone)* | `license_token_hash` | SHA-256 del token. **No sale en ninguna respuesta**, ni siquiera en `/admin`. |
 
 **Todas las columnas nuevas son opcionales y `NULL`-ables**, y el esquema se amplía con `ADD COLUMN IF NOT EXISTS` (ver `src/db/schema.js`): las licencias que ya existían **no se tocan** y siguen funcionando con esos campos a `null`. Un `POST` que no manda un dato **no borra** el que hubiera (`COALESCE(EXCLUDED.x, tabla.x)`), así que un `curl` suelto no puede vaciar la ficha de un cliente; mandarlo sí lo actualiza.
 
@@ -393,7 +665,7 @@ Invoke-RestMethod -Method Delete -Uri "$BASE/admin/groups/35216530?reason=Reembo
 ### Cómo comprobar que todo esto está bien
 
 ```bash
-npm test                  # 142 tests sin red ni base de datos (incluye /admin entero)
+npm test                  # 216 tests sin red ni base de datos (incluye /admin y la verificacion de licencia)
 npm run db:check          # contra el Postgres real: conexión, tabla, columnas, PK,
                           # y el alta/consulta/baja/purga completos del servicio
 ```
@@ -412,7 +684,7 @@ npm install
 cp .env.example .env      # y pon una OUTFIT_API_KEY
 npm start                 # escucha en 3100
 
-npm test                  # 142 tests, sin red ni base de datos
+npm test                  # 216 tests, sin red ni base de datos
 npm run test:live         # verificación end-to-end contra la API real de Roblox
 npm run db:check          # verificación contra el Postgres real (necesita DATABASE_URL)
 ```

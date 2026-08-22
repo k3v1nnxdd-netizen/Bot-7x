@@ -3,6 +3,7 @@
 const db = require('../db/pool');
 const { translateDbError } = require('../db/errors');
 const { NotFoundError } = require('../roblox/errors');
+const licenseToken = require('../security/licenseToken');
 
 // Toda la logica de la whitelist de grupos, y el UNICO modulo que sabe como
 // esta guardada. Las rutas de src/api/routes/adminGroups.js validan, llaman
@@ -34,6 +35,11 @@ const { NotFoundError } = require('../roblox/errors');
 // no habla con Postgres, solo con esta API, y su almacenamiento en disco no
 // sobrevive a un redeploy de Railway. La licencia y quien la compro son el
 // mismo hecho y tienen que vivir en la misma fila.
+// `license_token_hash` NO esta en esta lista a proposito, y no es un descuido:
+// esta constante alimenta el RETURNING de todas las operaciones y de ahi sale
+// lo que acaba en las respuestas HTTP. Manteniendo el hash fuera, ninguna ruta
+// puede filtrarlo por olvido — el unico sitio que lo lee es findByTokenHash(),
+// que lo pide explicitamente y no devuelve nada mas.
 const COLUMNS = `group_id, active, created_at, linked_at,
                  discord_user_id, roblox_username, group_name, added_by,
                  deactivated_at, deactivated_by, deactivation_reason`;
@@ -87,13 +93,39 @@ async function run(text, params) {
 // Los tres campos de la baja se limpian SIEMPRE: si el grupo vuelve a estar
 // activo, el motivo por el que se le retiro la licencia ya no describe su
 // estado y dejarlo ahi solo serviria para confundir al siguiente que mire.
+// EL TOKEN. Se genera SIEMPRE uno nuevo antes de la consulta, aunque casi
+// nunca se use, porque la alternativa seria leer primero para ver si ya hay
+// uno y escribir despues — dos viajes y una carrera entre ellos. Generar 32
+// bytes aleatorios no cuesta nada y deja la operacion en una sola sentencia
+// atomica.
+//
+// Quien decide si ese token nuevo se queda es el COALESCE del ON CONFLICT:
+//
+//   licencia NUEVA                  -> se guarda el hash del token nuevo.
+//   licencia EXISTENTE con token    -> se conserva el suyo. Reactivar NO
+//                                      cambia la credencial: el juego del
+//                                      cliente sigue funcionando sin tocar
+//                                      una linea de codigo.
+//   licencia EXISTENTE sin token    -> adopta el nuevo. No es "cambiarle" el
+//                                      token a nadie: son las licencias
+//                                      anteriores a que esto existiera, y sin
+//                                      credencial no podrian verificar nunca.
+//
+// Y como saber cual de los tres casos ocurrio, sin una segunda consulta: el
+// RETURNING trae el hash que quedo en la fila. Si es el que acabamos de
+// calcular, el token en claro que tenemos en memoria es el bueno y hay que
+// entregarlo; si no, la fila conservo otro y el token generado se descarta sin
+// haber salido de esta funcion.
 async function addGroup(groupId, meta = {}) {
     const { discordUserId = null, robloxUsername = null, groupName = null, addedBy = null } = meta;
 
+    const token = licenseToken.generateToken();
+    const tokenHash = licenseToken.hashToken(token);
+
     const { rows } = await run(
         `INSERT INTO group_whitelist
-                (group_id, discord_user_id, roblox_username, group_name, added_by, linked_at)
-              VALUES ($1, $2, $3, $4, $5, NOW())
+                (group_id, discord_user_id, roblox_username, group_name, added_by, linked_at, license_token_hash)
+              VALUES ($1, $2, $3, $4, $5, NOW(), $6)
          ON CONFLICT (group_id) DO UPDATE
                  SET active = true,
                      discord_user_id = COALESCE(EXCLUDED.discord_user_id, group_whitelist.discord_user_id),
@@ -103,13 +135,25 @@ async function addGroup(groupId, meta = {}) {
                      linked_at       = NOW(),
                      deactivated_at = NULL,
                      deactivated_by = NULL,
-                     deactivation_reason = NULL
-           RETURNING ${COLUMNS}, (xmax = 0) AS inserted`,
-        [groupId, discordUserId, robloxUsername, groupName, addedBy]
+                     deactivation_reason = NULL,
+                     license_token_hash = COALESCE(group_whitelist.license_token_hash, EXCLUDED.license_token_hash)
+           RETURNING ${COLUMNS}, license_token_hash, (xmax = 0) AS inserted`,
+        [groupId, discordUserId, robloxUsername, groupName, addedBy, tokenHash]
     );
 
     const row = rows[0];
-    return { ...toGroup(row), created: row.inserted === true };
+    const emitido = row.license_token_hash === tokenHash;
+
+    return {
+        ...toGroup(row),
+        created: row.inserted === true,
+        // El token en claro sale de aqui UNA vez y no se guarda en ningun
+        // sitio. Si no se emitio, ni siquiera se menciona: `null` es la unica
+        // respuesta honesta a "¿cual es el token de esta licencia?" cuando
+        // solo tenemos su hash.
+        tokenIssued: emitido,
+        token: emitido ? token : null,
+    };
 }
 
 // Baja. Por defecto DESACTIVA (active = false) en lugar de borrar, y no es
@@ -165,6 +209,33 @@ function isAuthorized(group) {
     return group !== null && group.active === true;
 }
 
+// Busqueda POR HASH DE TOKEN, para /v1/license/verify. Devuelve un objeto
+// minimo — id de grupo, si esta activa y el hash guardado — y NADA mas.
+//
+// Que devuelva tan poco es la decision importante de esta funcion. Lo que
+// consume esto es una ruta que contesta a un juego de Roblox, es decir, a
+// codigo que corre en servidores ajenos; no tiene por que enterarse de quien
+// compro la licencia, cuando, ni quien la dio de alta. Si esta funcion
+// devolviera la fila entera, tarde o temprano alguien reenviaria un campo de
+// mas en la respuesta.
+//
+// El hash SI vuelve, y es a proposito: la ruta lo necesita para confirmar la
+// coincidencia en tiempo constante (ver licenseToken.matchesHash). Un
+// `WHERE = $1` lo resuelve Postgres con su indice, que no es una comparacion
+// pensada para resistir medicion de tiempos.
+async function findByTokenHash(tokenHash) {
+    const { rows } = await run(
+        `SELECT group_id, active, license_token_hash
+           FROM group_whitelist
+          WHERE license_token_hash = $1`,
+        [tokenHash]
+    );
+
+    const row = rows[0];
+    if (!row) return null;
+    return { groupId: row.group_id, active: row.active, tokenHash: row.license_token_hash };
+}
+
 // Listado paginado. El total sale de la MISMA consulta con una funcion de
 // ventana en vez de un segundo SELECT count(*): dos consultas separadas
 // pueden ver estados distintos si alguien escribe entre medias, y ademas
@@ -201,4 +272,4 @@ async function listGroups({ includeInactive = false, limit = 100, offset = 0 } =
     };
 }
 
-module.exports = { addGroup, removeGroup, getGroup, listGroups, isAuthorized };
+module.exports = { addGroup, removeGroup, getGroup, listGroups, isAuthorized, findByTokenHash };

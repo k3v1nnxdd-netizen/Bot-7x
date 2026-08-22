@@ -290,8 +290,141 @@ function parseGroupRemovalQuery(query) {
     };
 }
 
+// ── Verificacion de licencia (POST /v1/license/verify) ──────────────────────
+//
+// Lo que manda el juego de Roblox. Se valida la FORMA aqui y se decide la
+// AUTORIZACION en src/services/licenseService.js, y esa separacion importa:
+//
+//   - forma invalida (falta un campo, un id que no es un numero) -> 400
+//     invalid_request. Es un fallo del script que llama, y decirselo claro es
+//     lo que le permite arreglarlo.
+//   - token que no autoriza -> 403 con motivo. Es una respuesta legitima a una
+//     peticion bien hecha, no un error del cliente.
+//
+// El TOKEN se valida aqui solo como "es una cadena no vacia y de tamaño
+// razonable". Que tenga la forma correcta NO se comprueba en esta capa a
+// proposito: un token mal formado tiene que responder exactamente igual que
+// uno desconocido (403 token_invalido), y un 400 lo delataria como distinto.
+function parseLicenseVerifyBody(body) {
+    if (body === undefined || body === null || typeof body !== 'object' || Array.isArray(body)) {
+        throw new ValidationError(
+            'Manda un cuerpo JSON con {"token","creatorType","creatorId","gameId","placeId"} ' +
+            'y la cabecera Content-Type: application/json'
+        );
+    }
+
+    if (typeof body.token !== 'string' || body.token.trim() === '') {
+        throw new ValidationError('token es obligatorio');
+    }
+    if (body.token.length > 256) {
+        throw new ValidationError('token no tiene un tamaño valido');
+    }
+
+    // creatorType y creatorId son OPCIONALES desde que la propiedad se resuelve
+    // contra Roblox. Y es coherente: son datos que el .rbxl puede falsificar,
+    // asi que ya no deciden nada. Se aceptan si vienen — el script existente
+    // los sigue mandando — para registrarlos y poder comparar lo declarado con
+    // lo real, que es como se detecta un cliente manipulado.
+    let creatorType = null;
+    if (body.creatorType !== undefined && body.creatorType !== null) {
+        if (typeof body.creatorType !== 'string' || body.creatorType.length > 32) {
+            throw new ValidationError('creatorType debe ser texto ("Group" o "User")');
+        }
+        creatorType = body.creatorType.trim() || null;
+    }
+
+    return {
+        token: body.token.trim(),
+        creatorType,
+        creatorId: body.creatorId === undefined || body.creatorId === null
+            ? null
+            : parseRobloxNumericId(body.creatorId, 'creatorId'),
+
+        // Estos dos SI son obligatorios: `placeId` es el puntero con el que se
+        // le pregunta a Roblox de quien es la experiencia, y `gameId` es lo que
+        // se contrasta con el universo real de ese place. Sin ellos no hay
+        // nada que comprobar.
+        gameId: parseRobloxNumericId(body.gameId, 'gameId'),
+        placeId: parseRobloxNumericId(body.placeId, 'placeId'),
+    };
+}
+
+// Id numerico de Roblox tal como lo manda un script de Lua: normalmente un
+// NUMERO (game.CreatorId), a veces ya una cadena. Se normaliza a texto porque
+// asi esta guardado group_id — un id de Roblox moderno supera el entero seguro
+// de JavaScript, y compararlos como numeros perderia precision justo en los
+// ids mas nuevos.
+function parseRobloxNumericId(raw, label) {
+    if (typeof raw === 'number') {
+        if (!Number.isSafeInteger(raw) || raw <= 0) {
+            throw new ValidationError(`${label} debe ser un entero positivo`);
+        }
+        return String(raw);
+    }
+    return parseGroupId(raw, label);
+}
+
+// ── Catalogo por lotes (POST /v1/catalog/batch) ─────────────────────────────
+//
+// TODOS LOS IDS SALEN DE AQUI COMO TEXTO, aunque lleguen como numero. Un id de
+// Roblox cabe hoy en un entero seguro de JavaScript, pero el margen se estrecha
+// cada año y una comparacion que pierda precision es imposible de depurar
+// despues. Se normalizan una vez, en la frontera, y de ahi para dentro todo el
+// servicio habla de cadenas — igual que ya se hace con group_id.
+function parseIdList(raw, label, max) {
+    if (raw === undefined || raw === null) return [];
+    if (!Array.isArray(raw)) {
+        throw new ValidationError(`${label} debe ser una lista de ids`);
+    }
+    if (raw.length > max) {
+        throw new ValidationError(`${label} admite como maximo ${max} ids por peticion (llegaron ${raw.length})`);
+    }
+
+    // Se deduplica DESPUES de validar cada uno: si el juego manda un id
+    // invalido repetido, tiene que enterarse igual.
+    return [...new Set(raw.map((valor, i) => parseRobloxNumericId(valor, `${label}[${i}]`)))];
+}
+
+function parseCatalogBatchBody(body) {
+    if (body === undefined || body === null || typeof body !== 'object' || Array.isArray(body)) {
+        throw new ValidationError(
+            'Manda un cuerpo JSON con {"token","gameId","placeId","assetIds":[...]} ' +
+            'y la cabecera Content-Type: application/json'
+        );
+    }
+
+    const { maxAssetIds, maxBundleIds, maxTotalIds } = config.catalogBatch;
+
+    const assetIds = parseIdList(body.assetIds, 'assetIds', maxAssetIds);
+    const bundleIds = parseIdList(body.bundleIds, 'bundleIds', maxBundleIds);
+
+    if (assetIds.length === 0 && bundleIds.length === 0) {
+        throw new ValidationError('Manda al menos un id en assetIds o en bundleIds');
+    }
+    if (assetIds.length + bundleIds.length > maxTotalIds) {
+        throw new ValidationError(
+            `assetIds + bundleIds no puede pasar de ${maxTotalIds} ids por peticion`
+        );
+    }
+
+    // Booleano de verdad, no "1"/"true": esto viene en un cuerpo JSON, donde el
+    // tipo existe. La forma laxa es para las query strings, que no lo tienen.
+    let resolveBundles = true;
+    if (body.resolveBundles !== undefined) {
+        if (typeof body.resolveBundles !== 'boolean') {
+            throw new ValidationError('resolveBundles debe ser true o false');
+        }
+        resolveBundles = body.resolveBundles;
+    }
+
+    return { assetIds, bundleIds, resolveBundles };
+}
+
 module.exports = {
     ValidationError,
+    parseCatalogBatchBody,
+    parseLicenseVerifyBody,
+    parseRobloxNumericId,
     parseUsername,
     parseUserId,
     parseOutfitId,

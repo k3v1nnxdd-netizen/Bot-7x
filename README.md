@@ -35,6 +35,28 @@ TOKEN=tu_token_aqui
 - Comandos slash: `/pagos` y `/precios`
 - Todos los embeds en color negro (#000000)
 
+## Licencias de grupos (solo owner)
+
+Cuatro comandos que gestionan la whitelist de grupos de Roblox a través de **outfit-api**. El bot **no** toca Postgres: todo pasa por `/admin/groups` (ver `utils/outfitApi.js`).
+
+| Comando | Opciones | Visibilidad |
+|---|---|---|
+| `/addgroup` | `group_id` (req.), `discord_user` (req.), `roblox_user` (req.) | Pública |
+| `/deletegroup` | `group_id` (req.), `motivo` (opc.) | Pública |
+| `/checkgroup` | `group_id` (req.) | Pública |
+| `/groups` | — | **Efímera** (solo quien la ejecuta) |
+
+Requiere dos variables de entorno (ya definidas en Railway):
+
+```
+OUTFIT_API_URL=https://<servicio-outfit-api>.up.railway.app
+OUTFIT_ADMIN_API_KEY=<la ADMIN_API_KEY de outfit-api>
+```
+
+Sin ellas el bot arranca igual y avisa por consola; los cuatro comandos responden que el sistema no está configurado. `OUTFIT_ADMIN_API_KEY` solo se lee en `utils/outfitApi.js`, viaja únicamente en la cabecera `x-admin-key` y no aparece en ningún mensaje ni log.
+
+`/addgroup` comprueba **primero** contra Roblox que el Group ID existe: si no existe, se detiene y no crea ninguna licencia.
+
 ## Ejecutar
 
 ```bash

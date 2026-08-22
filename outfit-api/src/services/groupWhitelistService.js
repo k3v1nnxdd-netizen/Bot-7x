@@ -23,14 +23,37 @@ const { NotFoundError } = require('../roblox/errors');
 // `active` distingue "nunca estuvo autorizado" de "lo estuvo y se le retiro",
 // y eso importa: al readmitir un grupo se conserva su `created_at` original,
 // asi que la fecha de alta sigue siendo real y no la del ultimo repunte.
-const COLUMNS = 'group_id, active, created_at';
+//
+// DOS FECHAS, Y NO ES REDUNDANCIA: `created_at` es el alta original (jamas se
+// reescribe) y `linked_at` el ultimo enlace o reactivacion. Una responde
+// "desde cuando es cliente" y la otra "desde cuando esta vigente lo que hay
+// ahora". Con una sola no se puede contar la historia de una readmision.
+//
+// Los datos del comprador (discord_user_id, roblox_username) y del
+// administrador (added_by) se guardan aqui y no en el bot a proposito: el bot
+// no habla con Postgres, solo con esta API, y su almacenamiento en disco no
+// sobrevive a un redeploy de Railway. La licencia y quien la compro son el
+// mismo hecho y tienen que vivir en la misma fila.
+const COLUMNS = `group_id, active, created_at, linked_at,
+                 discord_user_id, roblox_username, group_name, added_by,
+                 deactivated_at, deactivated_by, deactivation_reason`;
+
+const iso = value => (value instanceof Date ? value.toISOString() : value ?? null);
 
 function toGroup(row) {
     if (!row) return null;
     return {
         groupId: row.group_id,
         active: row.active,
-        createdAt: row.created_at instanceof Date ? row.created_at.toISOString() : row.created_at,
+        createdAt: iso(row.created_at),
+        linkedAt: iso(row.linked_at),
+        discordUserId: row.discord_user_id ?? null,
+        robloxUsername: row.roblox_username ?? null,
+        groupName: row.group_name ?? null,
+        addedBy: row.added_by ?? null,
+        deactivatedAt: iso(row.deactivated_at),
+        deactivatedBy: row.deactivated_by ?? null,
+        deactivationReason: row.deactivation_reason ?? null,
     };
 }
 
@@ -55,13 +78,34 @@ async function run(text, params) {
 // ACTUALIZADA en un ON CONFLICT: en una fila recien insertada xmax vale 0.
 // Sirve para responder 201 (creado) o 200 (ya existia) con la verdad, en vez
 // de tener que hacer un SELECT previo que ademas seria una carrera.
-async function addGroup(groupId) {
+//
+// COALESCE(EXCLUDED.x, tabla.x) en cada dato: lo que el llamador MANDA pisa lo
+// guardado — readmitir con otro comprador tiene que actualizar el comprador —
+// pero lo que NO manda se conserva, de modo que una llamada suelta sin
+// metadatos (un curl, el juego mañana) no puede vaciar la ficha de un cliente.
+//
+// Los tres campos de la baja se limpian SIEMPRE: si el grupo vuelve a estar
+// activo, el motivo por el que se le retiro la licencia ya no describe su
+// estado y dejarlo ahi solo serviria para confundir al siguiente que mire.
+async function addGroup(groupId, meta = {}) {
+    const { discordUserId = null, robloxUsername = null, groupName = null, addedBy = null } = meta;
+
     const { rows } = await run(
-        `INSERT INTO group_whitelist (group_id)
-              VALUES ($1)
-         ON CONFLICT (group_id) DO UPDATE SET active = true
+        `INSERT INTO group_whitelist
+                (group_id, discord_user_id, roblox_username, group_name, added_by, linked_at)
+              VALUES ($1, $2, $3, $4, $5, NOW())
+         ON CONFLICT (group_id) DO UPDATE
+                 SET active = true,
+                     discord_user_id = COALESCE(EXCLUDED.discord_user_id, group_whitelist.discord_user_id),
+                     roblox_username = COALESCE(EXCLUDED.roblox_username, group_whitelist.roblox_username),
+                     group_name      = COALESCE(EXCLUDED.group_name,      group_whitelist.group_name),
+                     added_by        = COALESCE(EXCLUDED.added_by,        group_whitelist.added_by),
+                     linked_at       = NOW(),
+                     deactivated_at = NULL,
+                     deactivated_by = NULL,
+                     deactivation_reason = NULL
            RETURNING ${COLUMNS}, (xmax = 0) AS inserted`,
-        [groupId]
+        [groupId, discordUserId, robloxUsername, groupName, addedBy]
     );
 
     const row = rows[0];
@@ -73,15 +117,22 @@ async function addGroup(groupId) {
 // autorizado alguna vez, que es lo que hace falta para resolver una disputa
 // sobre un pago. `purge` existe para el borrado de verdad, cuando lo que se
 // quiere es que no quede rastro (una prueba, un alta por error).
-async function removeGroup(groupId, { purge = false } = {}) {
+//
+// El motivo y el autor de la baja se escriben en la MISMA sentencia que la
+// desactivacion: si fueran dos, un fallo entre ellas dejaria una licencia
+// retirada sin explicacion, que es justo el estado que esto evita.
+async function removeGroup(groupId, { purge = false, reason = null, actorId = null } = {}) {
     const { rows } = purge
         ? await run(`DELETE FROM group_whitelist WHERE group_id = $1 RETURNING ${COLUMNS}`, [groupId])
         : await run(
             `UPDATE group_whitelist
-                SET active = false
+                SET active = false,
+                    deactivated_at = NOW(),
+                    deactivated_by = $2,
+                    deactivation_reason = $3
               WHERE group_id = $1
           RETURNING ${COLUMNS}`,
-            [groupId]
+            [groupId, actorId, reason]
         );
 
     if (rows.length === 0) {
@@ -107,7 +158,7 @@ async function getGroup(groupId) {
     return toGroup(rows[0]);
 }
 
-// Atajo pensado para lo que vendra despues (el juego preguntando "¿este grupo
+// Atajo pensado para lo que vendra despues (el juego preguntando "este grupo
 // puede usar el sistema?"). Aqui ya, para que esa decision tenga UN solo sitio
 // donde vivir en lugar de repetirse en cada llamador.
 function isAuthorized(group) {
@@ -122,12 +173,16 @@ function isAuthorized(group) {
 // El filtro por `active` tambien va parametrizado ($1): construir el WHERE
 // concatenando segun el flag seria empezar a montar SQL con cadenas, que es
 // exactamente el habito que hace falta no coger.
+//
+// Los ACTIVOS van primero en el orden: el panel del bot pide vigentes y
+// retiradas en la misma respuesta, asi que la primera pagina tiene que traer
+// lo que se consulta a diario y no bajas antiguas.
 async function listGroups({ includeInactive = false, limit = 100, offset = 0 } = {}) {
     const { rows } = await run(
         `SELECT ${COLUMNS}, (count(*) OVER ())::int AS total
            FROM group_whitelist
           WHERE ($1::boolean OR active)
-       ORDER BY created_at DESC, group_id
+       ORDER BY active DESC, created_at DESC, group_id
           LIMIT $2 OFFSET $3`,
         [includeInactive, limit, offset]
     );

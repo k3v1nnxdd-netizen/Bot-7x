@@ -50,6 +50,22 @@ async function safeDeferReply(interaction, options = {}) {
     }
 }
 
+// Acknowledges a component interaction WITHOUT changing the message yet, so
+// the caller can take longer than Discord's 3 s window to build the new
+// content (e.g. /groups paging, which re-queries the license API on every
+// click). Same never-throw contract as the rest.
+async function safeDeferUpdate(interaction) {
+    try {
+        if (!interaction || interaction.replied || interaction.deferred) return false;
+        await interaction.deferUpdate();
+        return true;
+    } catch (err) {
+        if (isGone(err)) return false;
+        log('deferUpdate', err);
+        return false;
+    }
+}
+
 async function safeReply(interaction, options) {
     try {
         if (!interaction) return false;
@@ -121,6 +137,7 @@ async function safeMessageEdit(message, options) {
 module.exports = {
     isGone,          // exported so handlers can filter their own error catches
     safeDeferReply,
+    safeDeferUpdate,
     safeReply,
     safeEditReply,
     safeFollowUp,

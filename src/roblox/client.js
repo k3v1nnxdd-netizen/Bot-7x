@@ -121,6 +121,60 @@ async function isUserInGroup(userId, groupId) {
     return res.data?.data?.some(g => g.group?.id === Number(groupId)) ?? false;
 }
 
+// Public group profile: name, member count, owner. Used by the license
+// commands (/addgroup, /checkgroup) to prove a group id is REAL before it ever
+// reaches outfit-api — a license for a group that doesn't exist is a support
+// ticket waiting to happen, and Roblox is the only authority on that.
+//
+// Deliberately NOT wrapped in retry(): Roblox answers a non-existent group id
+// with 400 ("Group is invalid or does not exist"), and retrying a definitive
+// "no" three times would just spend this bucket's tokens to reach the same
+// answer 2.4s later. The bucket already retries what IS worth retrying
+// (429/5xx/network) on its own — see rateLimiter.js's run().
+//
+// A missing group throws Error('not_found'), the same marker
+// getUserByUsername already uses, so callers classify one way for both.
+async function getGroupInfo(groupId) {
+    let res;
+    try {
+        res = await limitedGroupsRequest(() => api.get(`https://groups.roblox.com/v1/groups/${groupId}`));
+    } catch (err) {
+        const status = err?.response?.status;
+        // 400 is Roblox's answer for "that group id isn't a group", not a
+        // malformed request on our side (the id was validated before getting
+        // here). 404 is included because it's the answer this endpoint
+        // *should* give and has given for some ids.
+        if (status === 400 || status === 404) throw new Error('not_found');
+        throw err;
+    }
+
+    observeGroupsLimit(res.headers);
+    const group = res.data;
+    if (!group?.id) throw new Error('not_found');
+
+    return {
+        id: String(group.id),
+        name: group.name ?? null,
+        description: group.description ?? '',
+        memberCount: group.memberCount ?? null,
+        ownerName: group.owner?.username ?? null,
+        ownerId: group.owner?.userId != null ? String(group.owner.userId) : null,
+    };
+}
+
+// Group icon, from the same thumbnails service the avatar images come from.
+// Returns null instead of throwing when Roblox has no icon ready (state
+// "Pending"/"Blocked") — a license must never fail to be granted because a
+// picture wasn't available, so every caller treats this as decoration.
+async function getGroupIcon(groupId) {
+    const res = await limitedThumbnailRequest(() => api.get(
+        `https://thumbnails.roblox.com/v1/groups/icons?groupIds=${groupId}&size=420x420&format=Png&isCircular=false`
+    ));
+    observeThumbnailLimit(res.headers);
+    const entry = res.data?.data?.[0];
+    return entry?.state === 'Completed' ? entry.imageUrl ?? null : null;
+}
+
 // Asset ids the user currently has equipped (their outfit). THE route that
 // triggered this whole rate-limiter rework: documented at ~40 req/60s, but
 // observed live tightened to 6 req/3600s — see rateLimiter.js's
@@ -291,6 +345,8 @@ module.exports = {
     getAvatarImage,
     getHeadshot,
     isUserInGroup,
+    getGroupInfo,
+    getGroupIcon,
     getWornAssetIds,
     getAssetDetails,
     getBundlesForComponentAsset,

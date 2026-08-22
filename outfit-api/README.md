@@ -301,6 +301,8 @@ CREATE TABLE IF NOT EXISTS group_whitelist (
 
 Cuatro endpoints sobre `group_whitelist`, protegidos por **`ADMIN_API_KEY`** en la cabecera **`x-admin-key`**.
 
+**Quién los consume:** el bot de Discord, con `/addgroup`, `/deletegroup`, `/checkgroup` y `/groups` (ver `handlers/groupLicenses.js` y `utils/outfitApi.js` en la raíz del repo). El bot **no** se conecta a Postgres: todo pasa por aquí, que es lo que mantiene un único sitio donde se decide quién tiene licencia.
+
 **Dos secretos separados, y no es ceremonia.** `OUTFIT_API_KEY` vive dentro de un script de Roblox distribuido a servidores que no controlamos: hay que darla por filtrable. Si esa misma clave sirviera para administrar, cualquiera que la extrajera del juego podría autorizarse a sí mismo. Por eso van en **variables distintas y cabeceras distintas**: ninguna de las dos abre la puerta de la otra, y el servicio protesta por consola al arrancar si las configuras iguales. Están fuera de `/v1` por la misma razón: `/v1` es el contrato que consume Roblox, esto es un panel interno.
 
 | Método | Ruta | Respuesta |
@@ -308,13 +310,32 @@ Cuatro endpoints sobre `group_whitelist`, protegidos por **`ADMIN_API_KEY`** en 
 | `POST` | `/admin/groups` | `201` si es alta nueva, `200` si ya estaba (idempotente). |
 | `GET` | `/admin/groups?includeInactive=&limit=&offset=` | Listado paginado con `total` y `hasMore`. |
 | `GET` | `/admin/groups/:groupId` | `200` siempre, con `authorized` booleano. |
-| `DELETE` | `/admin/groups/:groupId?purge=1` | Desactiva (o borra con `purge=1`). `404` si no está. |
+| `DELETE` | `/admin/groups/:groupId?purge=1&reason=&actor=` | Desactiva (o borra con `purge=1`). `404` si no está. |
 
-Tres decisiones que conviene conocer antes de consumirlos:
+Cuatro decisiones que conviene conocer antes de consumirlos:
 
 - **Dar de alta dos veces no es un error.** `POST` es un UPSERT: si el grupo ya existe lo **reactiva** conservando su `created_at` original, y responde `200` con `created: false` en vez de `201`. Readmitir a un cliente es la operación normal, no un caso raro.
 - **`GET /admin/groups/:groupId` de un grupo que no está devuelve `200`, no `404`.** La pregunta es «¿está autorizado?», y «no» es una respuesta válida, no un recurso ausente. Trae `authorized` (el booleano que se usa) y `found` aparte, para poder distinguir «nunca estuvo» de «se le retiró la licencia».
 - **`DELETE` desactiva, no borra.** Conserva la fila y la fecha de alta, que es lo que hace falta el día que alguien reclame un pago. Con `?purge=1` sí se borra de verdad.
+- **La licencia guarda a quién pertenece.** Además del grupo, la fila lleva el usuario de Discord enlazado, el usuario de Roblox del comprador, quién dio el alta y cuándo, y —si se retiró— por qué y quién. Todo eso viaja en la misma respuesta de los cuatro endpoints, con la **misma forma** siempre.
+
+### Qué guarda cada licencia
+
+| Campo | Columna | Qué es |
+|---|---|---|
+| `groupId` | `group_id` | Id del grupo de Roblox, como texto. Clave primaria. |
+| `active` | `active` | Si la licencia está vigente ahora mismo. |
+| `createdAt` | `created_at` | **Alta original.** No se reescribe nunca, ni al readmitir. |
+| `linkedAt` | `linked_at` | **Último enlace o reactivación.** Se actualiza en cada `POST`. |
+| `discordUserId` | `discord_user_id` | Usuario de Discord al que está enlazada. |
+| `robloxUsername` | `roblox_username` | Usuario de Roblox del comprador. |
+| `groupName` | `group_name` | Nombre del grupo tal como estaba en Roblox al darlo de alta. |
+| `addedBy` | `added_by` | Quién hizo el alta o la reactivación. |
+| `deactivatedAt` / `deactivatedBy` / `deactivationReason` | ídem | Rastro de la baja. Se limpia al reactivar. |
+
+**Todas las columnas nuevas son opcionales y `NULL`-ables**, y el esquema se amplía con `ADD COLUMN IF NOT EXISTS` (ver `src/db/schema.js`): las licencias que ya existían **no se tocan** y siguen funcionando con esos campos a `null`. Un `POST` que no manda un dato **no borra** el que hubiera (`COALESCE(EXCLUDED.x, tabla.x)`), así que un `curl` suelto no puede vaciar la ficha de un cliente; mandarlo sí lo actualiza.
+
+`groupName` se guarda además de consultarse en vivo por una razón concreta: el listado de 50 licencias del bot se pinta con **una** llamada a esta API y **cero** a Roblox.
 
 ### Ejemplos
 
@@ -322,24 +343,34 @@ Tres decisiones que conviene conocer antes de consumirlos:
 ADMIN="tu-ADMIN_API_KEY"
 BASE="https://<tu-servicio>.up.railway.app"
 
-# Agregar (201 la primera vez, 200 las siguientes)
+# Agregar (201 la primera vez, 200 las siguientes).
+# Solo groupId es obligatorio; el resto son los datos de la licencia.
 curl -X POST "$BASE/admin/groups" \
   -H "x-admin-key: $ADMIN" -H "Content-Type: application/json" \
-  -d '{"groupId":"35216530"}'
-# {"groupId":"35216530","active":true,"createdAt":"2026-08-21T18:04:11.482Z","created":true,"authorized":true}
+  -d '{"groupId":"35216530","discordUserId":"996310284803248158",
+       "robloxUsername":"CompradorRblx","groupName":"Mi Grupo",
+       "addedBy":"996310284803248158"}'
+# {"groupId":"35216530","active":true,"createdAt":"2026-08-21T18:04:11.482Z",
+#  "linkedAt":"2026-08-21T18:04:11.482Z","discordUserId":"996310284803248158",
+#  "robloxUsername":"CompradorRblx","groupName":"Mi Grupo","addedBy":"996310284803248158",
+#  "deactivatedAt":null,"deactivatedBy":null,"deactivationReason":null,
+#  "created":true,"authorized":true}
 
 # Comprobar si está autorizado
 curl "$BASE/admin/groups/35216530" -H "x-admin-key: $ADMIN"
-# {"groupId":"35216530","authorized":true,"found":true,"active":true,"createdAt":"2026-08-21T18:04:11.482Z"}
+# {"groupId":"35216530","authorized":true,"found":true,"active":true, ...misma forma...}
 
 # Listar (solo activos; añade ?includeInactive=1 para ver también las bajas)
-curl "$BASE/admin/groups" -H "x-admin-key: $ADMIN"
-# {"total":1,"count":1,"limit":100,"offset":0,"includeInactive":false,"hasMore":false,
-#  "groups":[{"groupId":"35216530","active":true,"createdAt":"2026-08-21T18:04:11.482Z"}]}
+curl "$BASE/admin/groups?includeInactive=1" -H "x-admin-key: $ADMIN"
+# {"total":1,"count":1,"limit":100,"offset":0,"includeInactive":true,"hasMore":false,
+#  "groups":[{"groupId":"35216530","active":true,"groupName":"Mi Grupo", ...}]}
 
-# Retirar la licencia (la fila se conserva, active pasa a false)
-curl -X DELETE "$BASE/admin/groups/35216530" -H "x-admin-key: $ADMIN"
-# {"groupId":"35216530","active":false,"createdAt":"...","authorized":false,"purged":false}
+# Retirar la licencia (la fila se conserva, active pasa a false).
+# reason y actor quedan guardados con la baja.
+curl -X DELETE "$BASE/admin/groups/35216530?reason=Reembolso&actor=996310284803248158" \
+  -H "x-admin-key: $ADMIN"
+# {"groupId":"35216530","active":false,"createdAt":"...","deactivationReason":"Reembolso",
+#  "deactivatedBy":"996310284803248158","authorized":false,"purged":false}
 
 # Borrar la fila de verdad
 curl -X DELETE "$BASE/admin/groups/35216530?purge=1" -H "x-admin-key: $ADMIN"
@@ -351,17 +382,18 @@ En PowerShell:
 $H = @{ "x-admin-key" = "tu-ADMIN_API_KEY" }
 $BASE = "https://<tu-servicio>.up.railway.app"
 
+$body = '{"groupId":"35216530","discordUserId":"996310284803248158","robloxUsername":"CompradorRblx","groupName":"Mi Grupo","addedBy":"996310284803248158"}'
 Invoke-RestMethod -Method Post -Uri "$BASE/admin/groups" -Headers $H `
-  -ContentType "application/json" -Body '{"groupId":"35216530"}'
+  -ContentType "application/json" -Body $body
 Invoke-RestMethod -Uri "$BASE/admin/groups/35216530" -Headers $H
-Invoke-RestMethod -Uri "$BASE/admin/groups" -Headers $H
-Invoke-RestMethod -Method Delete -Uri "$BASE/admin/groups/35216530" -Headers $H
+Invoke-RestMethod -Uri "$BASE/admin/groups?includeInactive=1" -Headers $H
+Invoke-RestMethod -Method Delete -Uri "$BASE/admin/groups/35216530?reason=Reembolso" -Headers $H
 ```
 
 ### Cómo comprobar que todo esto está bien
 
 ```bash
-npm test                  # 136 tests sin red ni base de datos (incluye /admin entero)
+npm test                  # 142 tests sin red ni base de datos (incluye /admin entero)
 npm run db:check          # contra el Postgres real: conexión, tabla, columnas, PK,
                           # y el alta/consulta/baja/purga completos del servicio
 ```
@@ -380,7 +412,7 @@ npm install
 cp .env.example .env      # y pon una OUTFIT_API_KEY
 npm start                 # escucha en 3100
 
-npm test                  # 136 tests, sin red ni base de datos
+npm test                  # 142 tests, sin red ni base de datos
 npm run test:live         # verificación end-to-end contra la API real de Roblox
 npm run db:check          # verificación contra el Postgres real (necesita DATABASE_URL)
 ```

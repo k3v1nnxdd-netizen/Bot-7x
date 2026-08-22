@@ -202,6 +202,94 @@ function parseGroupListQuery(query) {
     };
 }
 
+// ── Datos de la licencia ────────────────────────────────────────────────────
+//
+// Todo lo que sigue es OPCIONAL: `undefined`, `null` y cadena vacia se
+// traducen a `null` en vez de a un 400. Es deliberado y tiene dos motivos.
+// Primero, las licencias dadas de alta antes de que existieran estos campos no
+// los tienen y la API tiene que poder seguir hablando de ellas. Segundo, quien
+// exige que el comprador venga completo es el BOT — que es quien conoce a los
+// usuarios de Discord y valida el grupo contra Roblox antes de llamar —, y
+// duplicar aqui esa regla como obligatoria dejaria la API inutilizable desde
+// un curl para el caso legitimo de "autoriza este grupo y ya rellenare".
+
+// Un id de Discord es un snowflake: entero de 64 bits en decimal. Se guarda
+// como TEXT (misma razon que group_id: JavaScript no llega a 2^64 sin perder
+// precision) y se valida la forma para que no acabe una mencion rota, un
+// `<@123>` sin desenvolver o un nombre de usuario en la columna.
+const DISCORD_ID_PATTERN = /^[0-9]{15,25}$/;
+
+function parseDiscordId(raw, label) {
+    if (raw === undefined || raw === null || raw === '') return null;
+    const value = typeof raw === 'number' ? String(raw) : raw;
+    if (typeof value !== 'string' || !DISCORD_ID_PATTERN.test(value.trim())) {
+        throw new ValidationError(`${label} debe ser un id de Discord (solo digitos)`);
+    }
+    return value.trim();
+}
+
+function parseOptionalUsername(raw, label) {
+    if (raw === undefined || raw === null || raw === '') return null;
+    if (typeof raw !== 'string') {
+        throw new ValidationError(`${label} debe ser el nombre de usuario de Roblox`);
+    }
+    try {
+        return parseUsername(raw);
+    } catch {
+        // Se reemplaza el mensaje para que nombre el campo real: el de
+        // parseUsername habla del "nombre de usuario" a secas, que en esta
+        // ruta seria ambiguo (hay dos usuarios en juego, el de Roblox y el de
+        // Discord).
+        throw new ValidationError(`${label} debe tener entre 3 y 20 caracteres alfanumericos o guion bajo`);
+    }
+}
+
+// Texto libre que ESCRIBE UNA PERSONA (el nombre del grupo tal como lo puso su
+// dueño en Roblox, el motivo de una baja). Se acota la longitud y se eliminan
+// los caracteres de control: van a acabar en un embed de Discord y en el log
+// de acceso, y un salto de linea o un \r ahi permite falsificar la forma de
+// una linea de log. El resto del texto se respeta tal cual — un nombre de
+// grupo lleva espacios, acentos y emojis con todo el derecho.
+// eslint-disable-next-line no-control-regex
+const CONTROL_CHARS = /[\u0000-\u001F\u007F]/g;
+
+function parseFreeText(raw, label, maxLength) {
+    if (raw === undefined || raw === null || raw === '') return null;
+    if (typeof raw !== 'string') {
+        throw new ValidationError(`${label} debe ser texto`);
+    }
+    const value = raw.replace(CONTROL_CHARS, ' ').trim();
+    if (value === '') return null;
+    if (value.length > maxLength) {
+        throw new ValidationError(`${label} no puede pasar de ${maxLength} caracteres`);
+    }
+    return value;
+}
+
+// Metadatos del alta, tal como los manda el bot en el cuerpo del POST.
+function parseGroupMeta(body) {
+    return {
+        discordUserId: parseDiscordId(body.discordUserId, 'discordUserId'),
+        robloxUsername: parseOptionalUsername(body.robloxUsername, 'robloxUsername'),
+        // 50 es el maximo de Roblox para el nombre de un grupo; el margen
+        // cubre un cambio suyo sin que se caiga un alta por dos caracteres.
+        groupName: parseFreeText(body.groupName, 'groupName', 64),
+        addedBy: parseDiscordId(body.addedBy, 'addedBy'),
+    };
+}
+
+// Motivo y autor de la baja. Van por QUERY y no en el cuerpo porque un DELETE
+// con cuerpo es terreno resbaladizo: hay proxies y clientes HTTP que lo
+// descartan en silencio, y perder el motivo de una baja sin enterarse es
+// peor que escribirlo en la URL. Ninguno de los dos es un secreto.
+function parseGroupRemovalQuery(query) {
+    return {
+        purge: parseBooleanFlag(query.purge, 'purge'),
+        reason: parseFreeText(query.reason, 'reason', 300),
+        actorId: parseDiscordId(query.actor, 'actor'),
+    };
+}
+
 module.exports = {
     ValidationError,
     parseUsername,
@@ -212,4 +300,8 @@ module.exports = {
     parseBooleanFlag,
     parseGroupId,
     parseGroupListQuery,
+    parseDiscordId,
+    parseFreeText,
+    parseGroupMeta,
+    parseGroupRemovalQuery,
 };

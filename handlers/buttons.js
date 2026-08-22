@@ -16,6 +16,7 @@ const { requestReview }  = require('../utils/reviewFlow');
 const { sendOrderCompletionSummary } = require('../utils/orderNotify');
 const { startSeguidoresTicket, handleSeguidoresButton } = require('./seguidoresFlow');
 const { handleCheckGroupButton } = require('./checkGroupFlow');
+const { handleGroupsPageButton } = require('./groupLicenses');
 const config             = require('../config');
 
 // ── Countdown timers per ticket channel ───────────────────────────────────────
@@ -419,7 +420,16 @@ async function handleButton(interaction) {
     const isSeg    = interaction.customId.startsWith('seg_');
     const isCg     = interaction.customId.startsWith('cg_');
     const isReview = interaction.customId.startsWith('review_rate:');
-    const fn = isSeg ? handleSeguidoresButton : isCg ? handleCheckGroupButton : isReview ? onReviewRate : HANDLERS[interaction.customId];
+    // Paging of the /groups license listing. Its message is ephemeral and
+    // owner-only, and the handler re-checks the owner itself — the customId
+    // carries the page number and nothing else, so a forged one can only ask
+    // for a different page of a list its clicker was already allowed to see.
+    const isGroupList = interaction.customId.startsWith('gl_groups:');
+    const fn = isSeg ? handleSeguidoresButton
+        : isCg ? handleCheckGroupButton
+        : isReview ? onReviewRate
+        : isGroupList ? handleGroupsPageButton
+        : HANDLERS[interaction.customId];
     if (!fn) return;
 
     try {

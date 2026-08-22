@@ -30,6 +30,50 @@ const DDL = [
                 created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
             )
         `,
+
+        // Datos de la licencia (quien la compro, quien la dio de alta, cuando
+        // se enlazo por ultima vez). Van como ALTER y NO dentro del CREATE de
+        // arriba porque la tabla ya existe en produccion: una base ya creada
+        // no vuelve a ejecutar el CREATE nunca, asi que ampliarlo ahi solo
+        // serviria para una instalacion nueva y dejaria a la real sin las
+        // columnas. Con ADD COLUMN IF NOT EXISTS las licencias existentes se
+        // conservan intactas y la ampliacion se puede repetir mil veces.
+        //
+        // Todas son NULLABLE a proposito. Las licencias dadas de alta antes de
+        // este cambio no tienen comprador ni administrador asociados, y un NOT
+        // NULL con relleno inventado convertiria "no se sabe" en un dato
+        // falso. NULL significa exactamente lo que paso: se autorizo antes de
+        // que se guardara esta informacion.
+        //
+        // Todo TEXT, incluidos los ids de Discord, por la misma razon que
+        // group_id: son enteros de 64 bits que JavaScript no representa sin
+        // perder precision, y guardarlos tal como llegan elimina de raiz una
+        // familia entera de bugs de conversion.
+        columnas: [
+            'ALTER TABLE group_whitelist ADD COLUMN IF NOT EXISTS discord_user_id TEXT',
+            'ALTER TABLE group_whitelist ADD COLUMN IF NOT EXISTS roblox_username TEXT',
+            'ALTER TABLE group_whitelist ADD COLUMN IF NOT EXISTS group_name TEXT',
+            'ALTER TABLE group_whitelist ADD COLUMN IF NOT EXISTS added_by TEXT',
+
+            // Fecha del ULTIMO enlace o reactivacion, distinta de created_at
+            // (el alta original, que nunca se reescribe). Las dos hacen falta:
+            // una responde "desde cuando es cliente" y la otra "desde cuando
+            // esta vigente esta licencia".
+            'ALTER TABLE group_whitelist ADD COLUMN IF NOT EXISTS linked_at TIMESTAMPTZ',
+
+            // Rastro de la baja, para poder responder "¿por que se le retiro?"
+            // meses despues sin depender de que alguien recuerde el ticket.
+            'ALTER TABLE group_whitelist ADD COLUMN IF NOT EXISTS deactivated_at TIMESTAMPTZ',
+            'ALTER TABLE group_whitelist ADD COLUMN IF NOT EXISTS deactivated_by TEXT',
+            'ALTER TABLE group_whitelist ADD COLUMN IF NOT EXISTS deactivation_reason TEXT',
+
+            // Relleno idempotente para las filas anteriores a la columna: su
+            // enlace real fue su alta. Sin esto quedarian con linked_at NULL y
+            // el panel tendria que inventarse una fecha. El WHERE lo hace
+            // no-op a partir de la segunda pasada, asi que puede ejecutarse en
+            // cada arranque como el resto del esquema.
+            'UPDATE group_whitelist SET linked_at = created_at WHERE linked_at IS NULL',
+        ],
     },
 ];
 
@@ -42,6 +86,7 @@ const DDL = [
 const YA_EXISTE = new Set([
     '23505', // unique_violation en un indice del catalogo
     '42P07', // duplicate_table
+    '42701', // duplicate_column: el mismo solape, pero en un ADD COLUMN
 ]);
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -81,7 +126,7 @@ async function ensureSchema() {
         try {
             const tables = [];
 
-            for (const { nombre, sql } of DDL) {
+            for (const { nombre, sql, columnas = [] } of DDL) {
                 // Se mira ANTES para poder distinguir en el log "la acabo de
                 // crear" de "ya estaba": lo primero deberia verse una unica
                 // vez en la vida del proyecto, y lo segundo en cada arranque.
@@ -102,7 +147,24 @@ async function ensureSchema() {
                     throw new Error(`la tabla ${nombre} sigue sin existir despues del CREATE`);
                 }
 
-                tables.push({ nombre, creada: !existiaAntes });
+                // Ampliaciones idempotentes de la tabla, DESPUES de garantizar
+                // que existe. Misma tolerancia que el CREATE: en un redeploy
+                // de Railway conviven dos instancias unos segundos y pueden
+                // ejecutar el mismo ADD COLUMN a la vez; que otra llegara
+                // primero es exactamente el resultado que se buscaba.
+                for (const alteracion of columnas) {
+                    try {
+                        await db.query(alteracion);
+                    } catch (err) {
+                        if (!YA_EXISTE.has(err?.code)) throw err;
+                        logger.info('Otra instancia aplico la misma ampliacion a la vez', {
+                            tabla: nombre,
+                            code: err.code,
+                        });
+                    }
+                }
+
+                tables.push({ nombre, creada: !existiaAntes, ampliaciones: columnas.length });
             }
 
             const creadas = tables.filter(t => t.creada).map(t => t.nombre);

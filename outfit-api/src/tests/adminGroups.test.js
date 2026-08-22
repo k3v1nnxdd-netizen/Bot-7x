@@ -22,6 +22,14 @@ const db = require('../db/pool');
 
 const GROUP_ID = '35216530';
 const CREATED_AT = new Date('2026-01-15T10:30:00.000Z');
+// Fecha del ultimo enlace, distinta del alta a proposito: los dos campos
+// existen justo para poder contar una readmision, y si en los tests valieran
+// lo mismo un cruce entre ellos pasaria desapercibido.
+const LINKED_AT = new Date('2026-02-01T09:00:00.000Z');
+const DISCORD_ID = '996310284803248158';
+const ADMIN_ID = '346085763638886400';
+const ROBLOX_USER = 'CompradorRblx';
+const GROUP_NAME = 'Mi Grupo';
 
 // El limitador por IP tiene un tope de 25 en el runner (ver src/tests/run.js)
 // y aqui se hacen bastantes mas peticiones desde 127.0.0.1, asi que se
@@ -86,6 +94,33 @@ module.exports = async function run() {
         group_id: GROUP_ID,
         active: true,
         created_at: CREATED_AT,
+        linked_at: LINKED_AT,
+        discord_user_id: DISCORD_ID,
+        roblox_username: ROBLOX_USER,
+        group_name: GROUP_NAME,
+        added_by: ADMIN_ID,
+        deactivated_at: null,
+        deactivated_by: null,
+        deactivation_reason: null,
+        ...overrides,
+    });
+
+    // La licencia tal como sale por HTTP. Se declara una sola vez para que
+    // cada test afirme sobre el objeto COMPLETO: si un endpoint se dejara un
+    // campo por el camino, el bot pintaria un "undefined" en un mensaje
+    // publico, y eso solo lo detecta comparar la forma entera.
+    const licencia = (overrides = {}) => ({
+        groupId: GROUP_ID,
+        active: true,
+        createdAt: CREATED_AT.toISOString(),
+        linkedAt: LINKED_AT.toISOString(),
+        discordUserId: DISCORD_ID,
+        robloxUsername: ROBLOX_USER,
+        groupName: GROUP_NAME,
+        addedBy: ADMIN_ID,
+        deactivatedAt: null,
+        deactivatedBy: null,
+        deactivationReason: null,
         ...overrides,
     });
 
@@ -172,25 +207,96 @@ module.exports = async function run() {
         responde([{ ...fila(), inserted: true }]);
         const res = await request(port, 'POST', '/admin/groups', {
             headers: jsonHeaders(admin),
-            body: { groupId: GROUP_ID },
+            body: {
+                groupId: GROUP_ID,
+                discordUserId: DISCORD_ID,
+                robloxUsername: ROBLOX_USER,
+                groupName: GROUP_NAME,
+                addedBy: ADMIN_ID,
+            },
         });
 
         assert.strictEqual(res.status, 201);
-        assert.deepStrictEqual(res.body, {
-            groupId: GROUP_ID,
-            active: true,
-            createdAt: CREATED_AT.toISOString(),
-            created: true,
-            authorized: true,
-        });
+        assert.deepStrictEqual(res.body, { ...licencia(), created: true, authorized: true });
 
         assert.strictEqual(calls.length, 1, 'un alta es UNA consulta, no un select + insert');
         const { text, params } = calls[0];
         assert.match(text, /INSERT INTO group_whitelist/i);
-        assert.match(text, /ON CONFLICT \(group_id\) DO UPDATE SET active = true/i);
+        assert.match(text, /ON CONFLICT \(group_id\) DO UPDATE/i);
+        assert.match(text, /SET active = true/i);
         assert.ok(text.includes('$1'), 'el valor debe ir como parametro');
-        assert.deepStrictEqual(params, [GROUP_ID]);
-        assert.ok(!text.includes(GROUP_ID), 'el id JAMAS puede aparecer dentro del texto de la consulta');
+        assert.deepStrictEqual(params, [GROUP_ID, DISCORD_ID, ROBLOX_USER, GROUP_NAME, ADMIN_ID]);
+        for (const valor of [GROUP_ID, DISCORD_ID, ROBLOX_USER, GROUP_NAME, ADMIN_ID]) {
+            assert.ok(!text.includes(valor), `${valor} JAMAS puede aparecer dentro del texto de la consulta`);
+        }
+    });
+
+    test('POST sin metadatos manda null y NO borra los datos ya guardados', async () => {
+        responde([{ ...fila(), inserted: false }]);
+        const res = await request(port, 'POST', '/admin/groups', {
+            headers: jsonHeaders(admin),
+            body: { groupId: GROUP_ID },
+        });
+
+        assert.strictEqual(res.status, 200);
+        assert.deepStrictEqual(
+            calls[0].params,
+            [GROUP_ID, null, null, null, null],
+            'lo que no se manda viaja como null, no como cadena vacia'
+        );
+        // El COALESCE es lo que convierte ese null en "deja lo que ya habia":
+        // un alta suelta desde curl no puede vaciar la ficha de un cliente.
+        assert.match(calls[0].text, /COALESCE\(EXCLUDED\.discord_user_id, group_whitelist\.discord_user_id\)/i);
+        assert.match(calls[0].text, /COALESCE\(EXCLUDED\.roblox_username, group_whitelist\.roblox_username\)/i);
+    });
+
+    test('POST limpia el rastro de la baja al reactivar', async () => {
+        // Si el grupo vuelve a estar activo, el motivo por el que se le retiro
+        // la licencia ya no describe su estado.
+        responde([{ ...fila(), inserted: false }]);
+        await request(port, 'POST', '/admin/groups', {
+            headers: jsonHeaders(admin),
+            body: { groupId: GROUP_ID },
+        });
+
+        const { text } = calls[0];
+        assert.match(text, /deactivated_at = NULL/i);
+        assert.match(text, /deactivated_by = NULL/i);
+        assert.match(text, /deactivation_reason = NULL/i);
+        assert.match(text, /linked_at\s+= NOW\(\)/i, 'reactivar SI actualiza la fecha de enlace');
+        assert.ok(!/created_at\s*=/i.test(text), 'la fecha de alta original no se toca nunca');
+    });
+
+    test('POST con datos de licencia invalidos -> 400 sin tocar la base', async () => {
+        const casos = [
+            { body: { groupId: GROUP_ID, discordUserId: 'no-es-un-id' }, motivo: 'discord no numerico' },
+            { body: { groupId: GROUP_ID, discordUserId: '123' }, motivo: 'snowflake demasiado corto' },
+            { body: { groupId: GROUP_ID, addedBy: '<@996310284803248158>' }, motivo: 'mencion sin desenvolver' },
+            { body: { groupId: GROUP_ID, robloxUsername: 'ab' }, motivo: 'usuario de Roblox de 2 letras' },
+            { body: { groupId: GROUP_ID, robloxUsername: 'con espacio' }, motivo: 'usuario con espacio' },
+            { body: { groupId: GROUP_ID, groupName: 'x'.repeat(65) }, motivo: 'nombre de grupo desmedido' },
+            { body: { groupId: GROUP_ID, groupName: { a: 1 } }, motivo: 'nombre que no es texto' },
+        ];
+
+        for (const { body, motivo } of casos) {
+            responde([]);
+            const res = await request(port, 'POST', '/admin/groups', { headers: jsonHeaders(admin), body });
+            assert.strictEqual(res.status, 400, `deberia rechazar: ${motivo}`);
+            assert.strictEqual(res.body.error.code, 'invalid_request');
+            assert.strictEqual(calls.length, 0, `no puede tocar la base con entrada invalida (${motivo})`);
+        }
+    });
+
+    test('POST normaliza el nombre del grupo antes de guardarlo', async () => {
+        responde([{ ...fila(), inserted: true }]);
+        await request(port, 'POST', '/admin/groups', {
+            headers: jsonHeaders(admin),
+            // Un salto de linea dentro del nombre acabaria en un embed y en el
+            // log de acceso, donde permite falsificar la forma de una linea.
+            raw: JSON.stringify({ groupId: GROUP_ID, groupName: '  Mi\nGrupo  ' }),
+        });
+
+        assert.strictEqual(calls[0].params[3], 'Mi Grupo');
     });
 
     test('POST sobre un grupo que ya existe -> 200 created:false (idempotente)', async () => {
@@ -227,7 +333,7 @@ module.exports = async function run() {
         });
 
         assert.strictEqual(res.status, 201);
-        assert.deepStrictEqual(calls[0].params, [GROUP_ID], 'a la base tiene que llegar SIEMPRE como texto');
+        assert.strictEqual(calls[0].params[0], GROUP_ID, 'a la base tiene que llegar SIEMPRE como texto');
     });
 
     test('POST con un groupId invalido -> 400 sin tocar la base', async () => {
@@ -297,16 +403,10 @@ module.exports = async function run() {
         const res = await request(port, 'GET', `/admin/groups/${GROUP_ID}`, { headers: admin });
 
         assert.strictEqual(res.status, 200);
-        assert.deepStrictEqual(res.body, {
-            groupId: GROUP_ID,
-            authorized: true,
-            found: true,
-            active: true,
-            createdAt: CREATED_AT.toISOString(),
-        });
+        assert.deepStrictEqual(res.body, { ...licencia(), authorized: true, found: true });
 
         const { text, params } = calls[0];
-        assert.match(text, /SELECT .* FROM group_whitelist WHERE group_id = \$1/i);
+        assert.match(text, /SELECT [\s\S]*FROM group_whitelist WHERE group_id = \$1/i);
         assert.deepStrictEqual(params, [GROUP_ID]);
     });
 
@@ -321,16 +421,38 @@ module.exports = async function run() {
         assert.strictEqual(res.body.authorized, false);
         assert.strictEqual(res.body.found, false);
         assert.strictEqual(res.body.createdAt, null);
+
+        // La forma es la MISMA que la de una licencia existente, con nulls: el
+        // bot pinta el embed de "sin licencia" leyendo los mismos campos, y con
+        // claves ausentes le saldrian "undefined" en un mensaje publico.
+        for (const campo of ['linkedAt', 'discordUserId', 'robloxUsername', 'groupName', 'addedBy',
+                             'deactivatedAt', 'deactivatedBy', 'deactivationReason']) {
+            assert.ok(campo in res.body, `falta el campo ${campo}`);
+            assert.strictEqual(res.body[campo], null, `${campo} deberia ser null`);
+        }
     });
 
     test('GET de un grupo dado de baja -> found:true pero authorized:false', async () => {
-        responde([fila({ active: false })]);
+        const BAJA = new Date('2026-03-02T18:00:00.000Z');
+        responde([fila({
+            active: false,
+            deactivated_at: BAJA,
+            deactivated_by: ADMIN_ID,
+            deactivation_reason: 'Reembolso',
+        })]);
         const res = await request(port, 'GET', `/admin/groups/${GROUP_ID}`, { headers: admin });
 
         assert.strictEqual(res.status, 200);
         assert.strictEqual(res.body.found, true, 'hay que poder distinguir "nunca estuvo" de "se le retiro"');
         assert.strictEqual(res.body.active, false);
         assert.strictEqual(res.body.authorized, false);
+
+        // Sin esto, /checkgroup podria decir "inactiva" pero no por que, que es
+        // justo la pregunta que se hace meses despues.
+        assert.strictEqual(res.body.deactivationReason, 'Reembolso');
+        assert.strictEqual(res.body.deactivatedBy, ADMIN_ID);
+        assert.strictEqual(res.body.deactivatedAt, BAJA.toISOString());
+        assert.strictEqual(res.body.createdAt, CREATED_AT.toISOString(), 'la baja no borra el alta original');
     });
 
     test('GET con un groupId invalido -> 400 sin tocar la base', async () => {
@@ -359,8 +481,18 @@ module.exports = async function run() {
         assert.deepStrictEqual(res.body.groups.map(g => g.groupId), [GROUP_ID, '77']);
         assert.ok(!('total' in res.body.groups[0]), 'el total de la ventana no debe colarse en cada fila');
 
+        // El listado trae al comprador: /groups pinta "grupo — @discord •
+        // robloxUser" sin una sola llamada extra por licencia.
+        assert.strictEqual(res.body.groups[0].discordUserId, DISCORD_ID);
+        assert.strictEqual(res.body.groups[0].robloxUsername, ROBLOX_USER);
+        assert.strictEqual(res.body.groups[0].groupName, GROUP_NAME);
+        // Una licencia antigua, sin esos datos, sale con nulls y no rompe nada.
+        assert.strictEqual(res.body.groups[1].discordUserId, null);
+        assert.strictEqual(res.body.groups[1].groupName, null);
+
         const { text, params } = calls[0];
         assert.match(text, /LIMIT \$2 OFFSET \$3/i, 'el listado se pagina siempre');
+        assert.match(text, /ORDER BY active DESC/i, 'las licencias vigentes van primero');
         assert.deepStrictEqual(params, [false, 100, 0], 'hasta el filtro por activo va parametrizado');
     });
 
@@ -407,9 +539,48 @@ module.exports = async function run() {
         assert.strictEqual(res.body.createdAt, CREATED_AT.toISOString(), 'la fecha de alta se conserva');
 
         const { text, params } = calls[0];
-        assert.match(text, /UPDATE group_whitelist\s+SET active = false\s+WHERE group_id = \$1/i);
+        assert.match(text, /UPDATE group_whitelist\s+SET active = false/i);
+        assert.match(text, /WHERE group_id = \$1/i);
         assert.ok(!/DELETE FROM/i.test(text), 'por defecto NO se borra: queda rastro de la licencia');
-        assert.deepStrictEqual(params, [GROUP_ID]);
+        assert.deepStrictEqual(params, [GROUP_ID, null, null], 'sin motivo ni autor, pero como parametros');
+    });
+
+    test('DELETE guarda motivo y autor en la MISMA sentencia que la baja', async () => {
+        responde([fila({
+            active: false,
+            deactivated_by: ADMIN_ID,
+            deactivation_reason: 'Chargeback',
+        })]);
+        const res = await request(port, 'DELETE', `/admin/groups/${GROUP_ID}?reason=Chargeback&actor=${ADMIN_ID}`, {
+            headers: admin,
+        });
+
+        assert.strictEqual(res.status, 200);
+        assert.strictEqual(res.body.deactivationReason, 'Chargeback');
+        assert.strictEqual(res.body.deactivatedBy, ADMIN_ID);
+
+        // Dos sentencias dejarian, si fallara la segunda, una licencia
+        // retirada sin explicacion — el estado que esto existe para evitar.
+        assert.strictEqual(calls.length, 1);
+        const { text, params } = calls[0];
+        assert.match(text, /deactivated_at = NOW\(\)/i);
+        assert.deepStrictEqual(params, [GROUP_ID, ADMIN_ID, 'Chargeback']);
+        assert.ok(!text.includes('Chargeback'), 'el motivo lo escribe una persona: jamas dentro del SQL');
+    });
+
+    test('DELETE con motivo o autor invalidos -> 400 sin tocar la base', async () => {
+        const casos = [
+            { query: `?reason=${'x'.repeat(301)}`, motivo: 'motivo interminable' },
+            { query: '?actor=pepito', motivo: 'autor que no es un id de Discord' },
+            { query: '?reason=a&reason=b', motivo: 'motivo repetido (llega como array)' },
+        ];
+
+        for (const { query, motivo } of casos) {
+            responde([]);
+            const res = await request(port, 'DELETE', `/admin/groups/${GROUP_ID}${query}`, { headers: admin });
+            assert.strictEqual(res.status, 400, `deberia rechazar: ${motivo}`);
+            assert.strictEqual(calls.length, 0);
+        }
     });
 
     test('DELETE ?purge=1 borra la fila de verdad', async () => {

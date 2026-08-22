@@ -45,6 +45,8 @@ if (RUN_BOT) {
     const { handleButton, clearTimers } = require('./handlers/buttons');
     const { handleModal }     = require('./handlers/modals');
     const { handleOutfit, handlePagos, handlePagoVerified, handleOffer, handleClose, handleTopCompradores } = require('./handlers/commands');
+    const { handleAddGroup, handleDeleteGroup, handleCheckGroup, handleGroups } = require('./handlers/groupLicenses');
+    const outfitApi           = require('./utils/outfitApi');
     const { handleMessage }   = require('./handlers/messages');
     const { handleMessageDelete } = require('./handlers/messageDelete');
     const { handleAntiScam }  = require('./handlers/antiScam');
@@ -147,7 +149,51 @@ if (RUN_BOT) {
                 name: 'topcompradores',
                 description: 'Muestra el ranking de los mayores compradores de Robux',
             },
+
+            // ── Licencias de grupos (outfit-api /admin/groups, solo owner) ──
+            // El gate real es el chequeo de OWNER_ID dentro de cada handler
+            // (handlers/groupLicenses.js), igual que /offer o /pagoverified:
+            // el registro del comando no decide permisos.
+            {
+                name: 'addgroup',
+                description: 'Agrega o reactiva la licencia de un grupo de Roblox (solo owner)',
+                options: [
+                    { name: 'group_id',     type: 3, description: 'ID del grupo de Roblox (ej: 35216530)',        required: true },
+                    { name: 'discord_user', type: 6, description: 'Usuario de Discord enlazado a la licencia',    required: true },
+                    { name: 'roblox_user',  type: 3, description: 'Usuario de Roblox del comprador',              required: true },
+                ],
+            },
+            {
+                name: 'deletegroup',
+                description: 'Desactiva la licencia de un grupo de Roblox (solo owner)',
+                options: [
+                    { name: 'group_id', type: 3, description: 'ID del grupo de Roblox',            required: true },
+                    { name: 'motivo',   type: 3, description: 'Motivo de la desactivación',        required: false },
+                ],
+            },
+            {
+                name: 'checkgroup',
+                description: 'Consulta si un grupo de Roblox tiene licencia (solo owner)',
+                options: [
+                    { name: 'group_id', type: 3, description: 'ID del grupo de Roblox', required: true },
+                ],
+            },
+            {
+                name: 'groups',
+                description: 'Lista todas las licencias de grupos (solo owner)',
+            },
         ]).catch(err => console.error('[bot] commands.set failed:', err));
+
+        // Aviso temprano y explicito: sin estas variables los cuatro comandos
+        // de licencias siguen respondiendo, pero solo para decir que el
+        // sistema no esta configurado. Mejor verlo en el arranque que
+        // descubrirlo al intentar dar de alta a un cliente.
+        if (!outfitApi.isConfigured()) {
+            console.warn(
+                '[bot] OUTFIT_API_URL u OUTFIT_ADMIN_API_KEY no estan definidas — ' +
+                '/addgroup, /deletegroup, /checkgroup y /groups no podran contactar con la API de licencias.'
+            );
+        }
 
         await ensurePanel(client).catch(err =>
             console.error('[bot] ensurePanel failed:', err)
@@ -206,6 +252,10 @@ if (RUN_BOT) {
             else if (interaction.isChatInputCommand() && interaction.commandName === 'offer')        await handleOffer(interaction);
             else if (interaction.isChatInputCommand() && interaction.commandName === 'connect')      await handleConnect(interaction);
             else if (interaction.isChatInputCommand() && interaction.commandName === 'topcompradores') await handleTopCompradores(interaction);
+            else if (interaction.isChatInputCommand() && interaction.commandName === 'addgroup')      await handleAddGroup(interaction);
+            else if (interaction.isChatInputCommand() && interaction.commandName === 'deletegroup')   await handleDeleteGroup(interaction);
+            else if (interaction.isChatInputCommand() && interaction.commandName === 'checkgroup')    await handleCheckGroup(interaction);
+            else if (interaction.isChatInputCommand() && interaction.commandName === 'groups')        await handleGroups(interaction);
             else if (interaction.isButton())           await handleButton(interaction);
             else if (interaction.isModalSubmit())      await handleModal(interaction);
             else if (interaction.isStringSelectMenu() && interaction.customId.startsWith('seg_')) await handleSeguidoresSelect(interaction);

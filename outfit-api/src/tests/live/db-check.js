@@ -75,10 +75,22 @@ function fail(label, detalle) {
         : fail('ensureSchema() repetido no rompe ni recrea', JSON.stringify(segunda));
 
     // ── 3. Forma de la tabla ─────────────────────────────────────────────────
+    // Las columnas de la licencia son todas NULLABLE y sin default: las
+    // licencias dadas de alta antes de que existieran no tienen comprador ni
+    // administrador, y un NOT NULL con relleno inventado convertiria "no se
+    // sabe" en un dato falso.
     const ESPERADO = {
         group_id: { data_type: 'text', is_nullable: 'NO', column_default: null },
         active: { data_type: 'boolean', is_nullable: 'NO', column_default: 'true' },
         created_at: { data_type: 'timestamp with time zone', is_nullable: 'NO', column_default: 'now()' },
+        linked_at: { data_type: 'timestamp with time zone', is_nullable: 'YES', column_default: null },
+        discord_user_id: { data_type: 'text', is_nullable: 'YES', column_default: null },
+        roblox_username: { data_type: 'text', is_nullable: 'YES', column_default: null },
+        group_name: { data_type: 'text', is_nullable: 'YES', column_default: null },
+        added_by: { data_type: 'text', is_nullable: 'YES', column_default: null },
+        deactivated_at: { data_type: 'timestamp with time zone', is_nullable: 'YES', column_default: null },
+        deactivated_by: { data_type: 'text', is_nullable: 'YES', column_default: null },
+        deactivation_reason: { data_type: 'text', is_nullable: 'YES', column_default: null },
     };
 
     try {
@@ -186,16 +198,37 @@ function fail(label, detalle) {
     const whitelist = require('../../services/groupWhitelistService');
     const { NotFoundError } = require('../../roblox/errors');
 
+    const META = {
+        discordUserId: '996310284803248158',
+        robloxUsername: 'PruebaRblx',
+        groupName: 'Grupo de prueba',
+        addedBy: '346085763638886400',
+    };
+
     try {
-        const alta = await whitelist.addGroup(ID_PRUEBA);
+        const alta = await whitelist.addGroup(ID_PRUEBA, META);
         alta.created === true && alta.active === true
             ? ok('addGroup() da de alta', `created=${alta.created} createdAt=${alta.createdAt}`)
             : fail('addGroup() da de alta', JSON.stringify(alta));
+
+        alta.discordUserId === META.discordUserId &&
+        alta.robloxUsername === META.robloxUsername &&
+        alta.groupName === META.groupName &&
+        alta.addedBy === META.addedBy &&
+        alta.linkedAt !== null
+            ? ok('addGroup() guarda comprador, administrador y fecha de enlace')
+            : fail('addGroup() guarda los datos de la licencia', JSON.stringify(alta));
 
         const repetida = await whitelist.addGroup(ID_PRUEBA);
         repetida.created === false && repetida.createdAt === alta.createdAt
             ? ok('addGroup() repetido es idempotente y conserva el alta original')
             : fail('addGroup() repetido', JSON.stringify(repetida));
+
+        // Sin metadatos en la segunda llamada, el COALESCE tiene que dejar los
+        // que ya habia: un alta suelta no puede vaciar la ficha de un cliente.
+        repetida.discordUserId === META.discordUserId && repetida.robloxUsername === META.robloxUsername
+            ? ok('addGroup() sin datos no borra los que ya estaban guardados')
+            : fail('addGroup() sin datos conserva lo guardado', JSON.stringify(repetida));
 
         const consulta = await whitelist.getGroup(ID_PRUEBA);
         whitelist.isAuthorized(consulta)
@@ -207,20 +240,34 @@ function fail(label, detalle) {
             ? ok('listGroups() lo lista y calcula el total', `total=${listado.total}`)
             : fail('listGroups()', JSON.stringify(listado).slice(0, 200));
 
-        const baja = await whitelist.removeGroup(ID_PRUEBA);
+        const baja = await whitelist.removeGroup(ID_PRUEBA, {
+            reason: 'verificacion automatica',
+            actorId: META.addedBy,
+        });
         baja.active === false && baja.purged === false
             ? ok('removeGroup() desactiva sin borrar')
             : fail('removeGroup() desactiva', JSON.stringify(baja));
+
+        baja.deactivationReason === 'verificacion automatica' &&
+        baja.deactivatedBy === META.addedBy &&
+        baja.deactivatedAt !== null
+            ? ok('removeGroup() deja constancia del motivo y de quien la retiro')
+            : fail('removeGroup() guarda motivo y autor', JSON.stringify(baja));
 
         const trasBaja = await whitelist.getGroup(ID_PRUEBA);
         trasBaja !== null && !whitelist.isAuthorized(trasBaja)
             ? ok('tras la baja: sigue en la tabla pero ya no autorizado')
             : fail('tras la baja', JSON.stringify(trasBaja));
 
-        const readmision = await whitelist.addGroup(ID_PRUEBA);
+        const readmision = await whitelist.addGroup(ID_PRUEBA, META);
         readmision.active === true && readmision.createdAt === alta.createdAt
             ? ok('addGroup() readmite conservando la fecha de alta original')
             : fail('readmision', JSON.stringify(readmision));
+
+        readmision.deactivationReason === null && readmision.deactivatedAt === null &&
+        readmision.linkedAt !== alta.linkedAt
+            ? ok('la readmision limpia el rastro de la baja y renueva el enlace')
+            : fail('readmision limpia la baja', JSON.stringify(readmision));
 
         const purga = await whitelist.removeGroup(ID_PRUEBA, { purge: true });
         purga.purged === true

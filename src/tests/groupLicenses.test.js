@@ -282,16 +282,11 @@ module.exports = async function run() {
 
     // ── /regeneratetoken ────────────────────────────────────────────────────
 
-    const rotado = gl.buildTokenEmbed({ token: TOKEN, groupId: GROUP_ID }, 'Mi Grupo', { rotado: true });
-    assert(
-        desc(rotado).includes(TOKEN) && desc(rotado).toLowerCase().includes('anterior'),
-        'el embed privado de una rotación avisa de que el token anterior ya no sirve'
-    );
-    assert(rotado.toJSON().color === 0x3498DB, 'la rotación tiene su propio color: ni alta ni baja');
-    assert(privadoJson.color === 0x2ECC71, 'y la emisión inicial conserva el verde del alta');
+    assert(privadoJson.color === 0x2ECC71, 'la emisión inicial conserva el verde del alta');
 
+    const TOKEN_ROTADO = '7xl_' + 'B'.repeat(43);
     const regenerado = gl.buildRegeneratedEmbed({
-        licencia: licencia(),
+        licencia: licencia({ token: TOKEN_ROTADO }),
         nombreGrupo: 'Mi Grupo',
         iconUrl: 'https://tr.rbxcdn.com/icono.png',
         actorId: ADMIN_ID,
@@ -315,18 +310,45 @@ module.exports = async function run() {
         'la fecha de alta NO cambia al rotar: la licencia es la misma, solo cambió la llave'
     );
 
-    // LA assert que más importa de este comando: el token nuevo no puede
-    // aparecer en el embed que ve todo el servidor.
+    // El token SÍ va en este embed: el comando se ejecuta dentro de un ticket
+    // privado, donde el comprador y el staff ya están delante. Es el único
+    // embed no efímero del sistema que lleva una credencial dentro.
     assert(
-        !serializado(regenerado).includes(TOKEN) && !/7xl_/.test(serializado(regenerado)),
-        'el embed PÚBLICO de la rotación no contiene el token, ni aunque venga en la licencia'
+        campo(regenerado, 'Token de licencia').includes(TOKEN_ROTADO),
+        'el embed de la rotación contiene el token nuevo'
     );
     assert(
-        !serializado(gl.buildRegeneratedEmbed({
-            licencia: licencia({ token: TOKEN, tokenIssued: true }),
-            nombreGrupo: 'Mi Grupo', iconUrl: null, actorId: ADMIN_ID,
-        })).includes(TOKEN),
-        'ni siquiera cuando la licencia que se le pasa trae el token dentro'
+        campo(regenerado, 'Token de licencia').includes('```'),
+        'en un bloque de código, para copiarlo de una pieza'
+    );
+    assert(
+        campo(regenerado, 'Token de licencia').includes(
+            'El token anterior ha sido invalidado. Guarda este token; será necesario para verificar la licencia del grupo.'
+        ),
+        'con el aviso exacto justo debajo del token'
+    );
+    assert(
+        regenerado.toJSON().fields.find(f => f.name === 'Token de licencia').inline === false,
+        'el campo del token ocupa el ancho completo: es lo único que hay que copiar'
+    );
+
+    // UN SOLO mensaje: todo lo que hay que saber está en este embed y no hay
+    // nada suelto fuera de él.
+    assert(
+        ['Regenerado por', 'Fecha', 'Alta original', 'Token de licencia']
+            .every(nombre => campo(regenerado, nombre) !== undefined) &&
+        desc(regenerado).includes(E.grupo) && desc(regenerado).includes(E.discord) && desc(regenerado).includes(E.roblox),
+        'el embed lleva grupo, Discord, Roblox, regenerado por, fecha, alta original y token'
+    );
+
+    // Sin token (no debería pasar, pero el builder es puro y hay que saber qué
+    // hace): lo dice en vez de imprimir "undefined" en un ticket.
+    const sinToken = gl.buildRegeneratedEmbed({
+        licencia: licencia({ token: null }), nombreGrupo: 'Mi Grupo', iconUrl: null, actorId: ADMIN_ID,
+    });
+    assert(
+        !/7xl_|undefined|null/.test(campo(sinToken, 'Token de licencia')),
+        'sin token no se imprime "undefined": se explica qué hacer'
     );
 
     // ── /deletegroup ────────────────────────────────────────────────────────
@@ -459,23 +481,31 @@ module.exports = async function run() {
 
     // ── Emojis: los del servidor, y solo donde Discord los pinta ────────────
 
-    // Solo los PUBLICOS: los efimeros llevan el token a proposito y se
-        // comprueban aparte.
-        const todosLosEmbeds = [alta, reactivada, conToken, regenerado, baja, sinMotivo, activa, inactiva, nunca, listado, vacio, truncado, sinComprador];
-    
-        // Los efimeros SI deben cumplir el resto de reglas de formato.
-        const efimeros = [privado, rotado];
-        assert(
-            efimeros.every(e => !UNICODE_EMOJI.test(serializado(e))),
-            "los embeds efimeros tampoco llevan emojis unicode"
-        );
-        assert(
-            efimeros.every(e => {
-                const j = e.toJSON();
-                return !EMOJI_SERVIDOR.test(j.title ?? "") && !EMOJI_SERVIDOR.test(j.footer?.text ?? "");
-            }),
-            "ni ponen emojis del servidor donde Discord no los renderiza"
-        );
+    // Los embeds que NO pueden llevar una credencial nunca. Fuera quedan los
+    // dos únicos que sí: el efímero de /addgroup y el de /regeneratetoken.
+    const todosLosEmbeds = [alta, reactivada, conToken, baja, sinMotivo, activa, inactiva, nunca, listado, vacio, truncado, sinComprador];
+
+    // Los que SÍ llevan token deben cumplir igualmente el resto de reglas.
+    const conCredencial = [privado, regenerado];
+    assert(
+        conCredencial.every(e => !UNICODE_EMOJI.test(serializado(e))),
+        "los embeds que llevan token tampoco llevan emojis unicode"
+    );
+    assert(
+        conCredencial.every(e => {
+            const j = e.toJSON();
+            return !EMOJI_SERVIDOR.test(j.title ?? "") && !EMOJI_SERVIDOR.test(j.footer?.text ?? "") &&
+                (j.fields ?? []).every(f => !EMOJI_SERVIDOR.test(f.name));
+        }),
+        "ni ponen emojis del servidor donde Discord no los renderiza"
+    );
+    assert(
+        conCredencial.every(e => {
+            const j = e.toJSON();
+            return (j.fields ?? []).every(f => f.value.length <= 1024) && (j.description?.length ?? 0) <= 4096;
+        }),
+        "y siguen dentro de los límites de Discord con el token dentro"
+    );
 
     assert(
         todosLosEmbeds.every(e => !UNICODE_EMOJI.test(serializado(e))),
@@ -504,9 +534,33 @@ module.exports = async function run() {
         todosLosEmbeds.every(e => !serializado(e).includes(SECRETO)),
         'ningún embed contiene la clave de administración'
     );
+    // Los DOS únicos embeds que pueden llevar una credencial son el efímero de
+    // /addgroup y el de /regeneratetoken, que se ejecuta en un ticket privado.
+    // Cualquier otro que la lleve es una filtración.
     assert(
         todosLosEmbeds.every(e => !/7xl_/.test(serializado(e))),
-        'ningún embed contiene un token de licencia, venga de donde venga'
+        'ningún otro embed contiene un token de licencia, venga de donde venga'
+    );
+    assert(
+        !/7xl_/.test(serializado(gl.buildCheckEmbed({
+            estado: { ...licencia({ token: TOKEN, tokenIssued: true }), authorized: true, found: true },
+            groupId: GROUP_ID, nombreGrupo: 'Mi Grupo', iconUrl: null, miembros: 10,
+        }))),
+        '/checkgroup no enseña el token ni aunque la licencia que reciba lo traiga'
+    );
+    assert(
+        !/7xl_/.test(serializado(gl.buildListEmbed({
+            groups: [licencia({ token: TOKEN, tokenIssued: true })],
+            total: 1, pagina: 0, paginas: 1, truncado: false,
+        }))),
+        '/groups tampoco, ni con el token dentro de cada licencia del listado'
+    );
+    assert(
+        !/7xl_/.test(serializado(gl.buildRemovedEmbed({
+            licencia: licencia({ token: TOKEN, active: false }),
+            nombreGrupo: 'Mi Grupo', iconUrl: null, actorId: ADMIN_ID, motivo: 'x',
+        }))),
+        '/deletegroup tampoco'
     );
     assert(
         todosLosEmbeds.every(e => !serializado(e).includes('railway.internal') && !serializado(e).includes(URL_INTERNA)),

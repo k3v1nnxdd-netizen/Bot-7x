@@ -212,23 +212,46 @@ const CREDENCIAL = {
 //
 // Todo va DENTRO del embed, incluido el token: nada de información suelta en
 // el contenido del mensaje.
-function buildTokenEmbed({ token, groupId }, nombreGrupo, { rotado = false } = {}) {
+function buildTokenEmbed({ token, groupId }, nombreGrupo) {
     return new EmbedBuilder()
-        .setColor(rotado ? AZUL : VERDE)
-        .setTitle(rotado ? 'Token regenerado — credencial nueva' : 'Token de licencia')
+        .setColor(VERDE)
+        .setTitle('Token de licencia')
         .setDescription(
             `${EMOJI.grupo} **${texto(nombreGrupo, 'Grupo sin nombre')}** · ${codigo(groupId)}\n\n` +
             '```\n' + token + '\n```\n' +
             'Se muestra **una sola vez**: la API guarda solo su hash (SHA-256), así que no hay forma de volver a consultarlo.\n' +
-            (rotado ? '**El token anterior ha quedado invalidado.** Entrégale este al cliente para que lo sustituya.\n' : '') +
             'Este mensaje solo lo ves tú. Entrégaselo al cliente por un canal privado.'
         )
         .setFooter({ text: FOOTER })
         .setTimestamp();
 }
 
-// Embed PUBLICO de la rotación. Dice qué se hizo y sobre qué licencia, y nada
-// más: ni el token nuevo, ni el viejo, ni rastro de ninguno.
+// Campo del token, con el aviso justo debajo. Va en el valor del campo y no en
+// la descripción para que quede visualmente separado del resto de la ficha:
+// es lo único de este embed que hay que copiar y guardar.
+function campoDeToken(token) {
+    if (!token) {
+        return 'No se pudo mostrar el token. Vuelve a ejecutar `/regeneratetoken`.';
+    }
+    return '```\n' + token + '\n```\n' +
+        'El token anterior ha sido invalidado. Guarda este token; será necesario para ' +
+        'verificar la licencia del grupo.';
+}
+
+// UN SOLO MENSAJE con todo: grupo, comprador, quién lo regeneró, cuándo, el
+// alta original y el token nuevo.
+//
+// EL TOKEN VA DENTRO DE ESTE EMBED A PROPÓSITO, y es lo contrario de lo que
+// hace /addgroup. El motivo es el sitio donde se usa cada uno: /regeneratetoken
+// se ejecuta dentro de un ticket privado, donde ya están solo el comprador y el
+// staff autorizado — que son exactamente las dos partes que necesitan el token.
+// Partirlo en un embed público y un efímero obligaría al administrador a
+// reenviárselo a mano al cliente, que es una copia más del secreto pasando por
+// otro sitio.
+//
+// La contrapartida hay que tenerla presente: este mensaje NO es efímero, así
+// que el token queda en el historial del canal donde se ejecute. Dentro de un
+// ticket privado es justo lo que se quiere; fuera de él, no.
 function buildRegeneratedEmbed({ licencia, nombreGrupo, iconUrl, actorId }) {
     return new EmbedBuilder()
         .setColor(AZUL)
@@ -249,6 +272,7 @@ function buildRegeneratedEmbed({ licencia, nombreGrupo, iconUrl, actorId }) {
             // La fecha de alta NO se toca al rotar: se enseña para dejar claro
             // que la licencia es la misma de siempre y solo cambió la llave.
             { name: 'Alta original',  value: fecha(licencia.createdAt),        inline: true },
+            { name: 'Token de licencia', value: campoDeToken(licencia.token),  inline: false },
         )
         .setFooter({ text: FOOTER })
         .setTimestamp();
@@ -574,31 +598,18 @@ async function handleRegenerateToken(interaction) {
     }
 
     const { info, icono } = await datosDeRoblox(groupId);
-    const nombreGrupo = info?.name ?? licencia.groupName;
 
-    // El token nuevo, primero y en privado. Si esto fallara, el token se
-    // perdería igual que el anterior — con la diferencia de que ahora sí hay
-    // forma de recuperarse: volver a ejecutar el comando.
-    const entregado = await safeFollowUp(interaction, {
-        embeds: [buildTokenEmbed(licencia, nombreGrupo, { rotado: true })],
-        ephemeral: true,
-    });
-
+    // UN SOLO mensaje, con el token dentro. Este comando se ejecuta en tickets
+    // privados, donde el comprador y el staff ya están delante: partirlo en un
+    // embed público y otro efímero obligaría a reenviar el token a mano.
     await safeEditReply(interaction, {
         embeds: [buildRegeneratedEmbed({
             licencia,
-            nombreGrupo,
+            nombreGrupo: info?.name ?? licencia.groupName,
             iconUrl: icono,
             actorId: interaction.user.id,
         })],
     });
-
-    if (!entregado) {
-        await safeFollowUp(interaction, {
-            content: '⚠️ No se pudo mostrarte el token nuevo. Vuelve a ejecutar `/regeneratetoken` para emitir otro.',
-            ephemeral: true,
-        });
-    }
 }
 
 // ── /deletegroup ─────────────────────────────────────────────────────────────

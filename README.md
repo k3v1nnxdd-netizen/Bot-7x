@@ -68,7 +68,9 @@ Se muestra **una sola vez**: la API solo guarda su SHA-256, así que no hay form
 
 **Si el token se pierde, `/regeneratetoken`.** Emite uno nuevo e **invalida el anterior en el acto**. Los tres argumentos son obligatorios y `discord_user` / `roblox_user` **no modifican la licencia**: son una confirmación de identidad que debe coincidir exactamente con lo enlazado, o no se regenera nada. Sin ellos, un dedo mal puesto en un id de nueve cifras dejaría a otro cliente fuera de su propio juego sin aviso.
 
-El token nuevo se entrega en un embed **efímero**; el embed público solo dice que se regeneró, para quién y cuándo.
+**Un solo mensaje, con el token dentro** (grupo, Discord enlazado, Roblox enlazado, regenerado por, fecha, alta original y token). Está pensado para ejecutarse **dentro de un ticket privado**, donde ya están solo el comprador y el staff autorizado — que son las dos partes que necesitan el token. Ese mensaje **no es efímero**: el token queda en el historial del canal donde se ejecute, así que no lo uses fuera de un ticket.
+
+`/addgroup` funciona distinto: ahí el token va en un mensaje **efímero** aparte, porque su embed sí se publica en canales abiertos.
 
 ## Ejecutar
 

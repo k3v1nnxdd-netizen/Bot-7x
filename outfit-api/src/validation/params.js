@@ -278,6 +278,34 @@ function parseGroupMeta(body) {
     };
 }
 
+// Confirmacion de identidad para rotar la credencial de una licencia.
+//
+// Los dos campos son OBLIGATORIOS, al contrario que en el alta. La diferencia
+// no es capricho: en el alta son datos que se guardan y pueden faltar, aqui son
+// una PRUEBA de que quien pide la rotacion sabe de que licencia habla. Rotar la
+// credencial del grupo equivocado deja a un cliente fuera de su propio juego
+// sin previo aviso, y entre dos ids de nueve cifras hay un dedo de distancia.
+function parseTokenRegenerationBody(body) {
+    if (body === undefined || body === null || typeof body !== 'object' || Array.isArray(body)) {
+        throw new ValidationError(
+            'Manda un cuerpo JSON con {"discordUserId":"...","robloxUsername":"..."} ' +
+            'y la cabecera Content-Type: application/json'
+        );
+    }
+
+    const discordUserId = parseDiscordId(body.discordUserId, 'discordUserId');
+    if (discordUserId === null) {
+        throw new ValidationError('discordUserId es obligatorio para confirmar la licencia');
+    }
+
+    const robloxUsername = parseOptionalUsername(body.robloxUsername, 'robloxUsername');
+    if (robloxUsername === null) {
+        throw new ValidationError('robloxUsername es obligatorio para confirmar la licencia');
+    }
+
+    return { discordUserId, robloxUsername };
+}
+
 // Motivo y autor de la baja. Van por QUERY y no en el cuerpo porque un DELETE
 // con cuerpo es terreno resbaladizo: hay proxies y clientes HTTP que lo
 // descartan en silencio, y perder el motivo de una baja sin enterarse es
@@ -437,4 +465,5 @@ module.exports = {
     parseFreeText,
     parseGroupMeta,
     parseGroupRemovalQuery,
+    parseTokenRegenerationBody,
 };

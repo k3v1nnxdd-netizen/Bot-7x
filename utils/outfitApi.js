@@ -72,7 +72,7 @@ function isConfigured() {
 // the administrator. Anything NOT in this list gets a message written here
 // instead — an unrecognised error is exactly when an upstream message is most
 // likely to leak something (a stack, a hostname, a pg detail).
-const MENSAJES_SEGUROS = new Set(['invalid_request', 'group_not_found']);
+const MENSAJES_SEGUROS = new Set(['invalid_request', 'group_not_found', 'confirmation_mismatch']);
 
 // The one and only place an axios error is allowed to be inspected. Returns an
 // OutfitApiError; never rethrows the original, never logs it.
@@ -187,6 +187,19 @@ function getGroup(groupId) {
     return pedir('get', `/admin/groups/${encodeURIComponent(groupId)}`);
 }
 
+// Rotates the license credential: a brand new token, the old one dead on the
+// spot. The two fields in the body do NOT modify the license — they are an
+// identity confirmation and must match what's already linked, or the API
+// refuses (409 confirmation_mismatch) without touching the row.
+//
+// The response carries the new token in the clear ONE time. It is never logged
+// here (see `pedir`, which logs only method/path/code/status).
+function regenerateToken(groupId, { discordUserId, robloxUsername }) {
+    return pedir('post', `/admin/groups/${encodeURIComponent(groupId)}/token`, {
+        data: { discordUserId, robloxUsername },
+    });
+}
+
 // Deactivates without deleting: the row (and its original date) survives, so
 // the license can still be accounted for months later.
 function removeGroup(groupId, { reason = null, actorId = null } = {}) {
@@ -230,6 +243,7 @@ module.exports = {
     addGroup,
     getGroup,
     removeGroup,
+    regenerateToken,
     listGroups,
     listAllGroups,
     // Exported for the tests: both are pure and cover the two things that

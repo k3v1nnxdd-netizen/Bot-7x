@@ -45,7 +45,9 @@ if (RUN_BOT) {
     const { handleButton, clearTimers } = require('./handlers/buttons');
     const { handleModal }     = require('./handlers/modals');
     const { handleOutfit, handlePagos, handlePagoVerified, handleOffer, handleClose, handleTopCompradores } = require('./handlers/commands');
-    const { handleAddGroup, handleDeleteGroup, handleCheckGroup, handleGroups } = require('./handlers/groupLicenses');
+    const {
+        handleAddGroup, handleRegenerateToken, handleDeleteGroup, handleCheckGroup, handleGroups,
+    } = require('./handlers/groupLicenses');
     const outfitApi           = require('./utils/outfitApi');
     const { handleMessage }   = require('./handlers/messages');
     const { handleMessageDelete } = require('./handlers/messageDelete');
@@ -164,6 +166,15 @@ if (RUN_BOT) {
                 ],
             },
             {
+                name: 'regeneratetoken',
+                description: 'Emite una credencial nueva para una licencia e invalida la anterior (solo owner)',
+                options: [
+                    { name: 'group_id',     type: 3, description: 'ID del grupo de Roblox',                                 required: true },
+                    { name: 'discord_user', type: 6, description: 'Usuario de Discord enlazado (confirmación, no se cambia)', required: true },
+                    { name: 'roblox_user',  type: 3, description: 'Usuario de Roblox enlazado (confirmación, no se cambia)',  required: true },
+                ],
+            },
+            {
                 name: 'deletegroup',
                 description: 'Desactiva la licencia de un grupo de Roblox (solo owner)',
                 options: [
@@ -253,6 +264,7 @@ if (RUN_BOT) {
             else if (interaction.isChatInputCommand() && interaction.commandName === 'connect')      await handleConnect(interaction);
             else if (interaction.isChatInputCommand() && interaction.commandName === 'topcompradores') await handleTopCompradores(interaction);
             else if (interaction.isChatInputCommand() && interaction.commandName === 'addgroup')      await handleAddGroup(interaction);
+            else if (interaction.isChatInputCommand() && interaction.commandName === 'regeneratetoken') await handleRegenerateToken(interaction);
             else if (interaction.isChatInputCommand() && interaction.commandName === 'deletegroup')   await handleDeleteGroup(interaction);
             else if (interaction.isChatInputCommand() && interaction.commandName === 'checkgroup')    await handleCheckGroup(interaction);
             else if (interaction.isChatInputCommand() && interaction.commandName === 'groups')        await handleGroups(interaction);

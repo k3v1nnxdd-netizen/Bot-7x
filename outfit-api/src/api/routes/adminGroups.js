@@ -4,7 +4,8 @@ const express = require('express');
 const router = express.Router();
 const groupWhitelist = require('../../services/groupWhitelistService');
 const {
-    parseGroupId, parseGroupListQuery, parseGroupMeta, parseGroupRemovalQuery, ValidationError,
+    parseGroupId, parseGroupListQuery, parseGroupMeta, parseGroupRemovalQuery,
+    parseTokenRegenerationBody, ValidationError,
 } = require('../../validation/params');
 
 // Administracion de la whitelist de grupos. Mismos adaptadores finos que el
@@ -156,6 +157,52 @@ router.get('/:groupId', async (req, res) => {
         authorized: groupWhitelist.isAuthorized(group),
         found: group !== null,
         ...(group ? presentar(group) : VACIA),
+    });
+});
+
+// POST /admin/groups/:groupId/token
+//   body: { "discordUserId": "...", "robloxUsername": "..." }
+//
+// Rota la credencial: emite un token nuevo de 256 bits, guarda su SHA-256 y
+// PISA el anterior, que queda invalido en el acto. Es la unica via de
+// recuperacion cuando un token se pierde — el alta no lo reemite, porque
+// reactivar una licencia no puede cambiarle la credencial a un cliente que
+// esta jugando.
+//
+// LOS DOS DATOS DEL CUERPO NO MODIFICAN NADA. Son una confirmacion de
+// identidad: tienen que coincidir EXACTAMENTE con el usuario de Discord y el
+// de Roblox ya enlazados, o no se toca la fila. Rotar la credencial del grupo
+// equivocado deja a alguien fuera de su propio juego sin aviso.
+//
+// Va declarada ANTES que las rutas con `/:groupId` a secas para que el orden no
+// dependa de que Express distinga bien un sufijo. Y es POST, no PUT: cada
+// llamada produce una credencial nueva, asi que no es idempotente y no debe
+// parecerlo.
+router.post('/:groupId/token', async (req, res) => {
+    res.locals.routeLabel = 'POST /admin/groups/:groupId/token';
+
+    const body = req.body;
+    if (body === undefined || body === null || typeof body !== 'object' || Array.isArray(body)) {
+        throw new ValidationError(
+            'Manda un cuerpo JSON con {"discordUserId":"...","robloxUsername":"..."} ' +
+            'y la cabecera Content-Type: application/json'
+        );
+    }
+
+    const groupId = parseGroupId(req.params.groupId);
+    const confirmacion = parseTokenRegenerationBody(body);
+
+    const result = await groupWhitelist.regenerateToken(groupId, confirmacion);
+
+    res.json({
+        ...presentar(result),
+        authorized: groupWhitelist.isAuthorized(result),
+
+        // Segunda y ultima vez que un token en claro sale de este servicio, y
+        // por el mismo camino que el alta: de la base solo se puede recuperar
+        // su hash, asi que si esta respuesta se pierde hay que volver a rotar.
+        tokenIssued: true,
+        token: result.token,
     });
 });
 

@@ -567,6 +567,7 @@ Cuatro endpoints sobre `group_whitelist`, protegidos por **`ADMIN_API_KEY`** en 
 | `POST` | `/admin/groups` | `201` si es alta nueva, `200` si ya estaba (idempotente). |
 | `GET` | `/admin/groups?includeInactive=&limit=&offset=` | Listado paginado con `total` y `hasMore`. |
 | `GET` | `/admin/groups/:groupId` | `200` siempre, con `authorized` booleano. |
+| `POST` | `/admin/groups/:groupId/token` | **Rota la credencial.** Exige confirmar el comprador. |
 | `DELETE` | `/admin/groups/:groupId?purge=1&reason=&actor=` | Desactiva (o borra con `purge=1`). `404` si no está. |
 
 Cuatro decisiones que conviene conocer antes de consumirlos:
@@ -585,6 +586,19 @@ Cada licencia lleva un **token propio**: 256 bits aleatorios con prefijo `7xl_`,
 - **Alta nueva** → se genera un token, se guarda su hash y el token en claro **se devuelve una sola vez** en la respuesta del `POST`. No hay forma de volver a consultarlo.
 - **Reactivación** → **no se cambia el token**. El juego del cliente sigue funcionando sin tocar una línea. La respuesta trae `token: null` y `tokenIssued: false`.
 - **Licencia antigua sin token** (las anteriores a esto) → adopta uno la próxima vez que se dé de alta. No es cambiárselo: es que no tenía ninguno.
+
+**Si un token se pierde, se rota**: `POST /admin/groups/:groupId/token`. Emite uno nuevo, invalida el anterior **en el acto** —la búsqueda es por hash y ese hash deja de existir en cualquier fila, así que no hace falta lista de revocación— y **no toca nada más**: ni `created_at`, ni `linked_at`, ni el comprador, ni quién dio el alta.
+
+Exige confirmar en el cuerpo el `discordUserId` y el `robloxUsername` ya enlazados. **Esos dos datos no modifican la licencia**: van en el `WHERE`, no en el `SET`. Si no coinciden exactamente, responde `409 confirmation_mismatch` y no se toca la fila — rotar la credencial del grupo equivocado deja a un cliente fuera de su propio juego sin aviso, y entre dos ids de nueve cifras hay un dedo de distancia. La comprobación y la escritura son **una sola sentencia**, así que son atómicas.
+
+```bash
+curl -X POST "$BASE/admin/groups/35216530/token" \
+  -H "x-admin-key: $ADMIN" -H "Content-Type: application/json" \
+  -d '{"discordUserId":"996310284803248158","robloxUsername":"CompradorRblx"}'
+# 200 { ..., "tokenIssued": true, "token": "7xl_…" }   <- la única vez que se ve
+# 409 { "error": { "code": "confirmation_mismatch", "campos": ["roblox"] } }
+# 404 { "error": { "code": "group_not_found" } }
+```
 
 SHA-256 a secas y **no** bcrypt/argon2 a propósito: eso es lo correcto para contraseñas, que las elige una persona y tienen poquísima entropía. Aquí son 256 bits aleatorios —no hay diccionario que probar— y esta ruta se llama desde el juego en caliente, así que un hash lento solo compraría latencia. El hash determinista es además lo que permite **buscar por clave única** en vez de leer la tabla entera comparando fila a fila.
 
@@ -665,7 +679,7 @@ Invoke-RestMethod -Method Delete -Uri "$BASE/admin/groups/35216530?reason=Reembo
 ### Cómo comprobar que todo esto está bien
 
 ```bash
-npm test                  # 216 tests sin red ni base de datos (incluye /admin y la verificacion de licencia)
+npm test                  # 239 tests sin red ni base de datos (incluye /admin y la verificacion de licencia)
 npm run db:check          # contra el Postgres real: conexión, tabla, columnas, PK,
                           # y el alta/consulta/baja/purga completos del servicio
 ```
@@ -684,7 +698,7 @@ npm install
 cp .env.example .env      # y pon una OUTFIT_API_KEY
 npm start                 # escucha en 3100
 
-npm test                  # 216 tests, sin red ni base de datos
+npm test                  # 239 tests, sin red ni base de datos
 npm run test:live         # verificación end-to-end contra la API real de Roblox
 npm run db:check          # verificación contra el Postgres real (necesita DATABASE_URL)
 ```

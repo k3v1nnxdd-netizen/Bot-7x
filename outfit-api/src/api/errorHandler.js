@@ -7,6 +7,7 @@ const {
 } = require('../roblox/errors');
 const { DatabaseUnavailableError } = require('../db/errors');
 const { OwnershipUnavailableError } = require('../services/gameOwnershipService');
+const { ConfirmationMismatchError } = require('../services/groupWhitelistService');
 
 // UNICO punto de traduccion error -> HTTP de todo el servicio. Los handlers
 // de ruta no capturan nada: dejan subir el error y aqui se decide. Asi el
@@ -51,6 +52,14 @@ function errorHandler(err, req, res, next) {
 
     if (err instanceof NotFoundError) {
         return send(res, 404, err.code, err.message);
+    }
+
+    // La confirmacion de identidad no cuadro con lo guardado (rotacion de
+    // credencial). 409 y no 400: la peticion esta perfectamente formada, lo que
+    // no encaja es con el ESTADO. Y no 404, porque el grupo si existe — decir
+    // "no existe" mandaria al administrador a buscar el problema donde no esta.
+    if (err instanceof ConfirmationMismatchError) {
+        return send(res, 409, err.code, err.message, { campos: err.campos ?? [] });
     }
 
     // Limite de Roblox, no nuestro. Se propaga el Retry-After tal cual lo

@@ -191,6 +191,81 @@ async function removeGroup(groupId, { purge = false, reason = null, actorId = nu
     return { ...group, active: purge ? false : group.active, purged: purge };
 }
 
+// La confirmacion de identidad no cuadro con lo que hay guardado. Es una clase
+// aparte y no un ValidationError porque no es una peticion mal formada: los
+// datos son validos, simplemente NO son los de esta licencia. Sale como 409
+// para que el administrador entienda que no se ha hecho nada y por que.
+class ConfirmationMismatchError extends Error {
+    constructor(message, campos) {
+        super(message);
+        this.name = 'ConfirmationMismatchError';
+        this.code = 'confirmation_mismatch';
+        this.campos = campos; // que campos no coincidieron; NUNCA sus valores
+    }
+}
+
+// Rotacion de la credencial. Emite un token nuevo, guarda solo su SHA-256 y
+// PISA el anterior — que queda invalido en el acto, porque la busqueda de
+// /v1/license/verify es por hash y ese hash ya no existe en ninguna fila.
+//
+// LOS DATOS DE CONFIRMACION NO MODIFICAN NADA. `discordUserId` y
+// `robloxUsername` entran en el WHERE, no en el SET: sirven para que el
+// administrador demuestre que sabe de que licencia esta hablando antes de
+// invalidarle el juego a un cliente. Rotar la credencial del grupo equivocado
+// deja a alguien fuera de su propio juego sin aviso, y con un id de 9 cifras
+// eso es un dedo mal puesto.
+//
+// SE ACTUALIZA UNA SOLA COLUMNA. created_at, linked_at, discord_user_id,
+// roblox_username, group_name, added_by y el rastro de la baja quedan
+// EXACTAMENTE como estaban: esto rota una llave, no reescribe la historia de
+// la licencia.
+//
+// La comprobacion va en el WHERE y no en un SELECT previo para que sea
+// ATOMICA: entre un SELECT y un UPDATE cabe otra operacion, y aqui lo que se
+// decide con esa comprobacion es si se invalida o no la credencial de alguien.
+// Solo cuando no se toca ninguna fila se consulta, y unicamente para poder
+// decir si el grupo no existe o si lo que no cuadraba era la confirmacion.
+async function regenerateToken(groupId, { discordUserId, robloxUsername }) {
+    const token = licenseToken.generateToken();
+    const tokenHash = licenseToken.hashToken(token);
+
+    const { rows } = await run(
+        `UPDATE group_whitelist
+            SET license_token_hash = $4
+          WHERE group_id = $1
+            AND discord_user_id = $2
+            AND roblox_username = $3
+      RETURNING ${COLUMNS}`,
+        [groupId, discordUserId, robloxUsername, tokenHash]
+    );
+
+    if (rows.length === 0) {
+        const actual = await getGroup(groupId);
+        if (actual === null) {
+            throw new NotFoundError('group_not_found', `El grupo ${groupId} no esta en la whitelist`);
+        }
+
+        // Se dice QUE campo no cuadro, nunca cual era el valor guardado. Quien
+        // llama ya tiene la clave de administracion y podria consultarlo, asi
+        // que no es un secreto — pero un mensaje de error no es el sitio para
+        // sacar datos de un cliente.
+        const campos = [];
+        if (actual.discordUserId !== discordUserId) campos.push('discord');
+        if (actual.robloxUsername !== robloxUsername) campos.push('roblox');
+
+        throw new ConfirmationMismatchError(
+            campos.length === 2
+                ? 'Ni el usuario de Discord ni el de Roblox coinciden con los enlazados a esta licencia'
+                : campos[0] === 'discord'
+                    ? 'El usuario de Discord no coincide con el enlazado a esta licencia'
+                    : 'El usuario de Roblox no coincide con el enlazado a esta licencia',
+            campos
+        );
+    }
+
+    return { ...toGroup(rows[0]), token, tokenIssued: true };
+}
+
 // Consulta puntual. Devuelve null si el grupo no esta en la tabla; es la ruta
 // quien decide que significa eso en HTTP (ver adminGroups.js: un grupo no
 // listado NO es un 404, es un "no autorizado" perfectamente valido).
@@ -272,4 +347,13 @@ async function listGroups({ includeInactive = false, limit = 100, offset = 0 } =
     };
 }
 
-module.exports = { addGroup, removeGroup, getGroup, listGroups, isAuthorized, findByTokenHash };
+module.exports = {
+    addGroup,
+    removeGroup,
+    getGroup,
+    listGroups,
+    isAuthorized,
+    findByTokenHash,
+    regenerateToken,
+    ConfirmationMismatchError,
+};

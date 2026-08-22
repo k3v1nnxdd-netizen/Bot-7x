@@ -32,6 +32,7 @@ const config = require('../config');
 // un sistema y no como cinco decisiones sueltas. Son un paso más saturados que
 // los pasteles iniciales: la barra del embed tiene que verse a un vistazo en un
 // canal lleno, sin llegar al rojo de alarma ni al verde de neón.
+const AZUL    = 0x3498DB; // credencial rotada: ni alta ni baja, otra cosa
 const VERDE   = 0x2ECC71; // licencia concedida / activa   (antes 0x6FCF97)
 const ROJO    = 0xE74C3C; // licencia retirada             (antes 0xE57373)
 const NARANJA = 0xE67E22; // grupo conocido, licencia caducada (antes 0xF2994A)
@@ -201,22 +202,56 @@ const CREDENCIAL = {
     conservada: 'Sin cambios: el grupo conserva su token',
 };
 
-// El token en claro solo existe en la respuesta del alta y solo se enseña
-// aquí, en un mensaje EFIMERO que ve únicamente quien ejecutó el comando.
+// El token en claro solo existe en la respuesta de la API y solo se enseña
+// aquí, en un embed EFIMERO que ve únicamente quien ejecutó el comando.
 //
-// No va en el embed por un motivo que no admite matices: los embeds de
+// No va en el embed público por un motivo que no admite matices: los embeds de
 // licencias son públicos (así se pidieron), y publicar la credencial de un
 // cliente en un canal es entregársela a todo el que pase por ahí. Y no se
 // puede "borrar luego": lo que se publica en Discord ya se ha visto.
-function mensajeDeToken({ token, groupId }, nombreGrupo) {
-    return [
-        `**Token de licencia — ${texto(nombreGrupo)}** · \`${groupId}\``,
-        '```',
-        token,
-        '```',
-        'Se muestra **una sola vez**: la API guarda solo su hash (SHA-256), así que no hay forma de volver a consultarlo.',
-        'Este mensaje solo lo ves tú. Entrégaselo al cliente por un canal privado.',
-    ].join('\n');
+//
+// Todo va DENTRO del embed, incluido el token: nada de información suelta en
+// el contenido del mensaje.
+function buildTokenEmbed({ token, groupId }, nombreGrupo, { rotado = false } = {}) {
+    return new EmbedBuilder()
+        .setColor(rotado ? AZUL : VERDE)
+        .setTitle(rotado ? 'Token regenerado — credencial nueva' : 'Token de licencia')
+        .setDescription(
+            `${EMOJI.grupo} **${texto(nombreGrupo, 'Grupo sin nombre')}** · ${codigo(groupId)}\n\n` +
+            '```\n' + token + '\n```\n' +
+            'Se muestra **una sola vez**: la API guarda solo su hash (SHA-256), así que no hay forma de volver a consultarlo.\n' +
+            (rotado ? '**El token anterior ha quedado invalidado.** Entrégale este al cliente para que lo sustituya.\n' : '') +
+            'Este mensaje solo lo ves tú. Entrégaselo al cliente por un canal privado.'
+        )
+        .setFooter({ text: FOOTER })
+        .setTimestamp();
+}
+
+// Embed PUBLICO de la rotación. Dice qué se hizo y sobre qué licencia, y nada
+// más: ni el token nuevo, ni el viejo, ni rastro de ninguno.
+function buildRegeneratedEmbed({ licencia, nombreGrupo, iconUrl, actorId }) {
+    return new EmbedBuilder()
+        .setColor(AZUL)
+        .setTitle('Token regenerado')
+        .setThumbnail(iconUrl ?? undefined)
+        .setDescription(
+            'La credencial de esta licencia se ha sustituido. El token anterior ya no sirve.\n\n' +
+            bloqueLicencia({
+                nombreGrupo,
+                groupId: licencia.groupId,
+                discordUserId: licencia.discordUserId,
+                robloxUsername: licencia.robloxUsername,
+            })
+        )
+        .addFields(
+            { name: 'Regenerado por', value: actorId ? `<@${actorId}>` : '—', inline: true },
+            { name: 'Fecha',          value: fecha(new Date().toISOString()),  inline: true },
+            // La fecha de alta NO se toca al rotar: se enseña para dejar claro
+            // que la licencia es la misma de siempre y solo cambió la llave.
+            { name: 'Alta original',  value: fecha(licencia.createdAt),        inline: true },
+        )
+        .setFooter({ text: FOOTER })
+        .setTimestamp();
 }
 
 function buildAddedEmbed({ licencia, nombreGrupo, iconUrl, actorId, credencial }) {
@@ -466,7 +501,7 @@ async function handleAddGroup(interaction) {
     let credencial = CREDENCIAL.conservada;
     if (licencia.token) {
         const entregado = await safeFollowUp(interaction, {
-            content: mensajeDeToken(licencia, nombreGrupo),
+            embeds: [buildTokenEmbed(licencia, nombreGrupo)],
             ephemeral: true,
         });
         credencial = entregado ? CREDENCIAL.entregada : CREDENCIAL.noEntregada;
@@ -481,6 +516,89 @@ async function handleAddGroup(interaction) {
             credencial,
         })],
     });
+}
+
+// ── /regeneratetoken ─────────────────────────────────────────────────────────
+
+// La única vía de recuperación cuando un token se pierde: el alta NO lo reemite
+// (reactivar una licencia no puede cambiarle la credencial a un cliente que
+// está jugando), así que sin esto la única salida sería purgar la fila y perder
+// el historial.
+//
+// Los tres argumentos son obligatorios y los dos últimos NO modifican nada: son
+// una confirmación de identidad que la API comprueba contra lo ya enlazado. El
+// motivo es concreto — rotar la credencial del grupo equivocado deja a un
+// cliente fuera de su propio juego sin aviso, y entre dos ids de nueve cifras
+// hay un dedo de distancia.
+async function handleRegenerateToken(interaction) {
+    if (!esOwner(interaction)) return denegar(interaction);
+
+    const groupId = validarGroupId(interaction.options.getString('group_id'));
+    const discordUser = interaction.options.getUser('discord_user');
+    const robloxUser = (interaction.options.getString('roblox_user') ?? '').trim();
+
+    if (!groupId) {
+        return safeReply(interaction, {
+            content: '❌ El **Group ID** debe ser el id numérico del grupo de Roblox, sin ceros a la izquierda.',
+            ephemeral: true,
+        });
+    }
+    if (!ROBLOX_USER_PATTERN.test(robloxUser)) {
+        return safeReply(interaction, {
+            content: '❌ El **usuario de Roblox** debe tener entre 3 y 20 caracteres alfanuméricos o guion bajo.',
+            ephemeral: true,
+        });
+    }
+
+    if (!await safeDeferReply(interaction)) return; // público
+
+    let licencia;
+    try {
+        licencia = await outfitApi.regenerateToken(groupId, {
+            discordUserId: discordUser.id,
+            robloxUsername: robloxUser,
+        });
+    } catch (err) {
+        // La API distingue los tres casos, y cada uno manda a mirar a un sitio
+        // distinto: el grupo no está, los datos no cuadran, o algo se rompió.
+        if (err.code === 'group_not_found') {
+            return fallar(interaction, `❌ El grupo \`${groupId}\` no está en la whitelist: no hay ninguna credencial que regenerar.`);
+        }
+        if (err.code === 'confirmation_mismatch') {
+            return fallar(
+                interaction,
+                `❌ ${err.message}. **No se ha regenerado nada.** Comprueba los datos con \`/checkgroup group_id:${groupId}\`.`
+            );
+        }
+        return fallar(interaction, `❌ ${mensajeDeError(err)}`);
+    }
+
+    const { info, icono } = await datosDeRoblox(groupId);
+    const nombreGrupo = info?.name ?? licencia.groupName;
+
+    // El token nuevo, primero y en privado. Si esto fallara, el token se
+    // perdería igual que el anterior — con la diferencia de que ahora sí hay
+    // forma de recuperarse: volver a ejecutar el comando.
+    const entregado = await safeFollowUp(interaction, {
+        embeds: [buildTokenEmbed(licencia, nombreGrupo, { rotado: true })],
+        ephemeral: true,
+    });
+
+    await safeEditReply(interaction, {
+        embeds: [buildRegeneratedEmbed({
+            licencia,
+            nombreGrupo,
+            iconUrl: icono,
+            actorId: interaction.user.id,
+        })],
+    });
+
+    if (!entregado) {
+        await safeFollowUp(interaction, {
+            content: '⚠️ No se pudo mostrarte el token nuevo. Vuelve a ejecutar `/regeneratetoken` para emitir otro.',
+            ephemeral: true,
+        });
+    }
 }
 
 // ── /deletegroup ─────────────────────────────────────────────────────────────
@@ -615,6 +733,7 @@ async function handleGroupsPageButton(interaction) {
 
 module.exports = {
     handleAddGroup,
+    handleRegenerateToken,
     handleDeleteGroup,
     handleCheckGroup,
     handleGroups,
@@ -629,7 +748,8 @@ module.exports = {
         buildListRow,
         paginar,
         validarGroupId,
-        mensajeDeToken,
+        buildTokenEmbed,
+        buildRegeneratedEmbed,
         CREDENCIAL,
         fecha,
         GRUPOS_POR_PAGINA,

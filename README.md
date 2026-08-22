@@ -42,6 +42,7 @@ Cuatro comandos que gestionan la whitelist de grupos de Roblox a través de **ou
 | Comando | Opciones | Visibilidad |
 |---|---|---|
 | `/addgroup` | `group_id` (req.), `discord_user` (req.), `roblox_user` (req.) | Pública |
+| `/regeneratetoken` | `group_id` (req.), `discord_user` (req.), `roblox_user` (req.) | Pública + token en privado |
 | `/deletegroup` | `group_id` (req.), `motivo` (opc.) | Pública |
 | `/checkgroup` | `group_id` (req.) | Pública |
 | `/groups` | — | **Efímera** (solo quien la ejecuta) |
@@ -64,6 +65,10 @@ Un alta **nueva** genera una credencial propia del grupo (`7xl_…`). El bot la 
 Se muestra **una sola vez**: la API solo guarda su SHA-256, así que no hay forma de volver a consultarla. El embed público únicamente dice si se emitió y si llegó a entregarse.
 
 **Reactivar una licencia no cambia el token**, así que el juego del cliente sigue funcionando sin tocar nada. El cliente usa ese token en `POST /v1/license/verify` (ver el README de `outfit-api`).
+
+**Si el token se pierde, `/regeneratetoken`.** Emite uno nuevo e **invalida el anterior en el acto**. Los tres argumentos son obligatorios y `discord_user` / `roblox_user` **no modifican la licencia**: son una confirmación de identidad que debe coincidir exactamente con lo enlazado, o no se regenera nada. Sin ellos, un dedo mal puesto en un id de nueve cifras dejaría a otro cliente fuera de su propio juego sin aviso.
+
+El token nuevo se entrega en un embed **efímero**; el embed público solo dice que se regeneró, para quién y cuándo.
 
 ## Ejecutar
 

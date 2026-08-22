@@ -265,15 +265,69 @@ module.exports = async function run() {
         'y si la entrega falla, el embed lo dice en vez de fingir que salió bien'
     );
 
-    // El mensaje efímero: es el ÚNICO sitio donde el token puede aparecer.
-    const privado = gl.mensajeDeToken({ token: TOKEN, groupId: GROUP_ID }, 'Mi Grupo');
-    assert(privado.includes(TOKEN), 'el mensaje privado sí lleva el token: es su único momento');
-    assert(privado.includes('```'), 'va en un bloque de código para poder copiarlo de una pieza');
+    // El embed efímero: es el ÚNICO sitio donde el token puede aparecer.
+    const privado = gl.buildTokenEmbed({ token: TOKEN, groupId: GROUP_ID }, 'Mi Grupo');
+    const privadoJson = privado.toJSON();
+    assert(desc(privado).includes(TOKEN), 'el embed privado sí lleva el token: es su único momento');
+    assert(desc(privado).includes('```'), 'va en un bloque de código para poder copiarlo de una pieza');
     assert(
-        privado.includes('una sola vez') && privado.toLowerCase().includes('hash'),
+        desc(privado).includes('una sola vez') && desc(privado).toLowerCase().includes('hash'),
         'y explica que no se puede volver a consultar, porque la API solo guarda su hash'
     );
-    assert(privado.length <= 2000, 'cabe en el límite de un mensaje de Discord');
+    assert(
+        desc(privado).includes(GROUP_ID) && desc(privado).includes(E.grupo),
+        'toda la información va DENTRO del embed: grupo, id y token'
+    );
+    assert(desc(privado).length <= 4096, 'cabe en el límite de una descripción de embed');
+
+    // ── /regeneratetoken ────────────────────────────────────────────────────
+
+    const rotado = gl.buildTokenEmbed({ token: TOKEN, groupId: GROUP_ID }, 'Mi Grupo', { rotado: true });
+    assert(
+        desc(rotado).includes(TOKEN) && desc(rotado).toLowerCase().includes('anterior'),
+        'el embed privado de una rotación avisa de que el token anterior ya no sirve'
+    );
+    assert(rotado.toJSON().color === 0x3498DB, 'la rotación tiene su propio color: ni alta ni baja');
+    assert(privadoJson.color === 0x2ECC71, 'y la emisión inicial conserva el verde del alta');
+
+    const regenerado = gl.buildRegeneratedEmbed({
+        licencia: licencia(),
+        nombreGrupo: 'Mi Grupo',
+        iconUrl: 'https://tr.rbxcdn.com/icono.png',
+        actorId: ADMIN_ID,
+    });
+
+    assert(regenerado.toJSON().title === 'Token regenerado', 'el título público es "Token regenerado"');
+    assert(regenerado.toJSON().color === 0x3498DB, 'y usa el azul de la rotación');
+    assert(
+        desc(regenerado).includes(`${E.grupo} **Mi Grupo**`) &&
+        desc(regenerado).includes(`${E.discord} <@${DISCORD_ID}>`) &&
+        desc(regenerado).includes(`${E.roblox} \`CompradorRblx\``),
+        'muestra grupo, Discord enlazado y Roblox enlazado'
+    );
+    assert(campo(regenerado, 'Regenerado por') === `<@${ADMIN_ID}>`, 'y quién lo regeneró');
+    assert(
+        (campo(regenerado, 'Fecha') ?? '').includes('<t:') && (campo(regenerado, 'Fecha') ?? '').includes(':R>'),
+        'con la fecha como timestamp de Discord'
+    );
+    assert(
+        campo(regenerado, 'Alta original').includes('<t:1768473000:f>'),
+        'la fecha de alta NO cambia al rotar: la licencia es la misma, solo cambió la llave'
+    );
+
+    // LA assert que más importa de este comando: el token nuevo no puede
+    // aparecer en el embed que ve todo el servidor.
+    assert(
+        !serializado(regenerado).includes(TOKEN) && !/7xl_/.test(serializado(regenerado)),
+        'el embed PÚBLICO de la rotación no contiene el token, ni aunque venga en la licencia'
+    );
+    assert(
+        !serializado(gl.buildRegeneratedEmbed({
+            licencia: licencia({ token: TOKEN, tokenIssued: true }),
+            nombreGrupo: 'Mi Grupo', iconUrl: null, actorId: ADMIN_ID,
+        })).includes(TOKEN),
+        'ni siquiera cuando la licencia que se le pasa trae el token dentro'
+    );
 
     // ── /deletegroup ────────────────────────────────────────────────────────
 
@@ -405,7 +459,23 @@ module.exports = async function run() {
 
     // ── Emojis: los del servidor, y solo donde Discord los pinta ────────────
 
-    const todosLosEmbeds = [alta, reactivada, conToken, baja, sinMotivo, activa, inactiva, nunca, listado, vacio, truncado, sinComprador];
+    // Solo los PUBLICOS: los efimeros llevan el token a proposito y se
+        // comprueban aparte.
+        const todosLosEmbeds = [alta, reactivada, conToken, regenerado, baja, sinMotivo, activa, inactiva, nunca, listado, vacio, truncado, sinComprador];
+    
+        // Los efimeros SI deben cumplir el resto de reglas de formato.
+        const efimeros = [privado, rotado];
+        assert(
+            efimeros.every(e => !UNICODE_EMOJI.test(serializado(e))),
+            "los embeds efimeros tampoco llevan emojis unicode"
+        );
+        assert(
+            efimeros.every(e => {
+                const j = e.toJSON();
+                return !EMOJI_SERVIDOR.test(j.title ?? "") && !EMOJI_SERVIDOR.test(j.footer?.text ?? "");
+            }),
+            "ni ponen emojis del servidor donde Discord no los renderiza"
+        );
 
     assert(
         todosLosEmbeds.every(e => !UNICODE_EMOJI.test(serializado(e))),

@@ -309,10 +309,10 @@ La **inteligencia de catálogo** de un outfit entero en una sola petición: nomb
 ```
 POST /v1/catalog/batch
 x-api-key: <OUTFIT_API_KEY>
+x-license-token: 7xl_…
 Content-Type: application/json
 
 {
-  "token": "7xl_…",
   "gameId": "5432109876",
   "placeId": "1234567890",
   "assetIds": ["11308945948", "11308935548", "607702162"],
@@ -322,6 +322,8 @@ Content-Type: application/json
 ```
 
 `x-api-key` **no basta**, y es deliberado: esa clave viaja dentro del `.rbxl` que se vende, así que todo el que compre el sistema —o le robe una copia— la tiene. Sirve para decir «esto viene de un juego que usa el sistema», no «este juego ha pagado». Para lo segundo está el token, que es único por licencia y revocable de uno en uno.
+
+El token va en la cabecera `x-license-token`, **igual que en `/v1/license/verify` y por el mismo motivo**: un `Secret` de Roblox no se puede serializar con `JSONEncode`, así que no cabe en el cuerpo. Si llega en el body, `400` diciendo dónde va.
 
 La comprobación es **exactamente la misma cadena de `/v1/license/verify`**, reutilizada sin duplicar una línea (`src/security/licenseGuard.js` → `licenseService.verify`): token → licencia activa → **propiedad real del juego resuelta contra Roblox**. Un `creatorId` falsificado en el `.rbxl` no abre el catálogo. La propiedad sale de la caché de 6 h, así que abrir un outfit **no** vuelve a preguntarle a Roblox de quién es la experiencia.
 
@@ -451,11 +453,18 @@ Cuelga de `/v1`, así que va detrás de `x-api-key` y del limitador por IP como 
 ```
 POST /v1/license/verify
 x-api-key: <OUTFIT_API_KEY>
+x-license-token: 7xl_…
 Content-Type: application/json
 
-{ "token": "7xl_…", "gameId": 5432109876, "placeId": 1234567890,
+{ "gameId": 5432109876, "placeId": 1234567890,
   "creatorType": "Group", "creatorId": 35216530 }
 ```
+
+**El token viaja por cabecera, no en el cuerpo**, y no es una preferencia: `HttpService:GetSecret()` devuelve un objeto `Secret` que **no se puede serializar con `JSONEncode`**. Un token guardado donde debe estar —como Secret de Roblox— simplemente no cabe en el body. Por cabecera sí, y además encaja con el resto del servicio: los otros dos secretos ya viajan así, y una cabecera no acaba en la URL que sí se registra.
+
+**Son tres credenciales distintas y no se unifican:** `x-api-key` dice *«esto viene de un juego que usa el sistema»* (la misma para todos, vive en el `.rbxl`); `x-license-token` dice *«soy el grupo 35216530»* (una por licencia, revocable de una en una); `x-admin-key` solo abre `/admin`.
+
+Si el token llega en el **cuerpo**, la respuesta es `400` diciendo dónde va — no un `403 token_invalido` que mandaría a revisar una licencia que está perfecta. Si **falta la cabecera**, también `400`.
 
 ```json
 200 { "ok": true, "groupId": "35216530" }
@@ -530,9 +539,15 @@ local HttpService = game:GetService("HttpService")
 local respuesta = HttpService:RequestAsync({
     Url = "https://<tu-servicio>.up.railway.app/v1/license/verify",
     Method = "POST",
-    Headers = { ["Content-Type"] = "application/json", ["x-api-key"] = OUTFIT_API_KEY },
+    Headers = {
+        ["Content-Type"] = "application/json",
+        -- Las dos credenciales, cada una en su cabecera. Pueden ser Secrets:
+        -- un Secret NO se puede meter en el Body (JSONEncode no lo serializa),
+        -- pero en un Header funciona.
+        ["x-api-key"]       = HttpService:GetSecret("OUTFIT_API_KEY"),
+        ["x-license-token"] = HttpService:GetSecret("LICENSE_TOKEN"),
+    },
     Body = HttpService:JSONEncode({
-        token   = LICENSE_TOKEN,   -- el que se entregó al dar de alta
         gameId  = game.GameId,     -- universeId; se contrasta con el place
         placeId = game.PlaceId,    -- el puntero que usa la API para preguntar a Roblox
         -- Opcionales, solo informativos: la API NO los usa para decidir.
@@ -679,7 +694,7 @@ Invoke-RestMethod -Method Delete -Uri "$BASE/admin/groups/35216530?reason=Reembo
 ### Cómo comprobar que todo esto está bien
 
 ```bash
-npm test                  # 239 tests sin red ni base de datos (incluye /admin y la verificacion de licencia)
+npm test                  # 245 tests sin red ni base de datos (incluye /admin y la verificacion de licencia)
 npm run db:check          # contra el Postgres real: conexión, tabla, columnas, PK,
                           # y el alta/consulta/baja/purga completos del servicio
 ```
@@ -698,7 +713,7 @@ npm install
 cp .env.example .env      # y pon una OUTFIT_API_KEY
 npm start                 # escucha en 3100
 
-npm test                  # 239 tests, sin red ni base de datos
+npm test                  # 245 tests, sin red ni base de datos
 npm run test:live         # verificación end-to-end contra la API real de Roblox
 npm run db:check          # verificación contra el Postgres real (necesita DATABASE_URL)
 ```

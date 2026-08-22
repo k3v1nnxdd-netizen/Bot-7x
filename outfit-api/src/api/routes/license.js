@@ -4,7 +4,7 @@ const express = require('express');
 const router = express.Router();
 const licenseService = require('../../services/licenseService');
 const logger = require('../../observability/logger');
-const { parseLicenseVerifyBody } = require('../../validation/params');
+const { parseLicenseVerifyBody, parseLicenseTokenHeader } = require('../../validation/params');
 
 // Verificacion de licencia para el JUEGO. Cuelga de /v1, con el resto de lo
 // que consume Roblox, y por tanto detras de `x-api-key` y del limitador por
@@ -30,7 +30,14 @@ const { parseLicenseVerifyBody } = require('../../validation/params');
 router.use(express.json({ limit: '2kb' }));
 
 // POST /v1/license/verify
-//   body: { token, creatorType, creatorId, gameId, placeId }
+//   cabeceras: x-api-key (la del juego) + x-license-token (la de la licencia)
+//   body: { creatorType, creatorId, gameId, placeId }
+//
+// El token NO va en el cuerpo: `HttpService:GetSecret()` de Roblox devuelve un
+// objeto Secret que no se puede serializar con JSONEncode, asi que un secreto
+// guardado como Secret —que es donde debe estar— solo puede salir por cabecera.
+// Son dos credenciales DISTINTAS y no se unifican: la del juego dice "esto usa
+// el sistema" y viaja dentro del .rbxl; la de licencia dice "soy este grupo".
 //
 // DOS FORMAS DE RESPUESTA, y la distincion es deliberada:
 //
@@ -47,7 +54,12 @@ router.use(express.json({ limit: '2kb' }));
 router.post('/verify', async (req, res) => {
     res.locals.routeLabel = 'POST /v1/license/verify';
 
-    const datos = parseLicenseVerifyBody(req.body);
+    // El token por CABECERA; el resto, en el cuerpo. Ver la explicacion larga
+    // en validation/params.js: un Secret de Roblox no se puede serializar con
+    // JSONEncode, asi que no puede viajar en el body.
+    const token = parseLicenseTokenHeader(req.headers);
+    const datos = { ...parseLicenseVerifyBody(req.body), token };
+
     const resultado = await licenseService.verify(datos);
 
     // ¿El juego declaro un dueño distinto del que dice Roblox? No cambia la

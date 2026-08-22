@@ -319,6 +319,44 @@ function parseGroupRemovalQuery(query) {
 }
 
 // ── Verificacion de licencia (POST /v1/license/verify) ──────────────────────
+
+// EL TOKEN DE LICENCIA VIAJA POR CABECERA, `x-license-token`, y no en el
+// cuerpo. El motivo es una limitacion real de Roblox, no una preferencia:
+// `HttpService:GetSecret()` devuelve un objeto Secret que NO se puede
+// serializar con `JSONEncode`. Un secreto guardado como Secret de Roblox
+// —que es donde debe estar— simplemente no puede meterse en el body.
+//
+// Por cabecera si funciona, y ademas encaja con el resto del servicio: los
+// otros dos secretos (`x-api-key`, `x-admin-key`) ya viajan asi, y las
+// cabeceras no aparecen en la URL que si se registra (ver requestLogger.js).
+//
+// SON TRES CREDENCIALES DISTINTAS Y NO SE UNIFICAN:
+//   x-api-key       -> "esto viene de un juego que usa el sistema". La misma
+//                      para todos, vive dentro del .rbxl que se vende.
+//   x-license-token -> "soy el grupo 35216530". Una por licencia, revocable
+//                      de una en una.
+//   x-admin-key     -> "puedo dar y quitar licencias". Solo /admin.
+//
+// Un token AUSENTE es 400 (falta una cabecera: fallo del script que llama).
+// Un token PRESENTE que no autoriza es 403 con motivo. Esa distincion es la
+// misma de antes y hay que conservarla: manda a mirar a sitios distintos.
+function parseLicenseTokenHeader(headers) {
+    const raw = headers?.['x-license-token'];
+
+    if (raw === undefined || raw === null || (typeof raw === 'string' && raw.trim() === '')) {
+        throw new ValidationError('Falta la cabecera x-license-token con el token de licencia');
+    }
+    // Node entrega un ARRAY si la cabecera llega repetida. Con dos tokens
+    // distintos no hay forma honesta de elegir uno.
+    if (typeof raw !== 'string') {
+        throw new ValidationError('x-license-token debe enviarse una sola vez');
+    }
+    if (raw.length > 256) {
+        throw new ValidationError('x-license-token no tiene un tamaño valido');
+    }
+
+    return raw.trim();
+}
 //
 // Lo que manda el juego de Roblox. Se valida la FORMA aqui y se decide la
 // AUTORIZACION en src/services/licenseService.js, y esa separacion importa:
@@ -341,11 +379,14 @@ function parseLicenseVerifyBody(body) {
         );
     }
 
-    if (typeof body.token !== 'string' || body.token.trim() === '') {
-        throw new ValidationError('token es obligatorio');
-    }
-    if (body.token.length > 256) {
-        throw new ValidationError('token no tiene un tamaño valido');
+    // EL TOKEN YA NO VIAJA EN EL CUERPO. Si llega ahi, se rechaza con un
+    // mensaje que dice donde va, en vez de ignorarlo en silencio: ignorarlo
+    // acabaria en un 403 token_invalido y mandaria a revisar la licencia
+    // cuando el problema es que el token nunca llego.
+    if (body.token !== undefined) {
+        throw new ValidationError(
+            'El token de licencia va en la cabecera x-license-token, no en el cuerpo'
+        );
     }
 
     // creatorType y creatorId son OPCIONALES desde que la propiedad se resuelve
@@ -362,7 +403,6 @@ function parseLicenseVerifyBody(body) {
     }
 
     return {
-        token: body.token.trim(),
         creatorType,
         creatorId: body.creatorId === undefined || body.creatorId === null
             ? null
@@ -452,6 +492,7 @@ module.exports = {
     ValidationError,
     parseCatalogBatchBody,
     parseLicenseVerifyBody,
+    parseLicenseTokenHeader,
     parseRobloxNumericId,
     parseUsername,
     parseUserId,

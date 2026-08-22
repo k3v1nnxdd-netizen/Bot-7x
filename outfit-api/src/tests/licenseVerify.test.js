@@ -117,8 +117,9 @@ module.exports = async function run() {
     // Lo que manda el juego. `creatorType`/`creatorId` son justamente lo que un
     // .rbxl editado puede falsificar, asi que por defecto van con el valor
     // honesto y cada test los retuerce a placer.
+    // El token YA NO va en el cuerpo: viaja por la cabecera x-license-token,
+    // porque un Secret de Roblox no se puede serializar con JSONEncode.
     const cuerpo = (overrides = {}) => ({
-        token: TOKEN,
         creatorType: 'Group',
         creatorId: Number(GROUP_ID),
         gameId: Number(UNIVERSE_ID),
@@ -126,8 +127,13 @@ module.exports = async function run() {
         ...overrides,
     });
 
-    const verificar = (port, body, headers = juegoHeaders) =>
-        request(port, 'POST', '/v1/license/verify', { headers, body });
+    // `token: null` = no se manda la cabecera. Cualquier otro valor se manda
+    // tal cual, para poder probar tokens viejos, inventados o mal formados.
+    const verificar = (port, body, { headers = juegoHeaders, token = TOKEN } = {}) =>
+        request(port, 'POST', '/v1/license/verify', {
+            headers: token === null ? headers : { ...headers, 'x-license-token': token },
+            body,
+        });
 
     const app = createApp();
     const server = await new Promise(resolve => {
@@ -186,7 +192,7 @@ module.exports = async function run() {
         licenciaEn(filaActiva());
         robloxDice({ duenio: { type: 'Group', id: GROUP_ID } });
 
-        const res = await verificar(port, { token: TOKEN, gameId: Number(UNIVERSE_ID), placeId: Number(PLACE_ID) });
+        const res = await verificar(port, { gameId: Number(UNIVERSE_ID), placeId: Number(PLACE_ID) });
 
         assert.strictEqual(res.status, 200);
         assert.strictEqual(res.body.ok, true);
@@ -307,7 +313,7 @@ module.exports = async function run() {
     test('la ADMIN_API_KEY no abre /v1/license/verify', async () => {
         licenciaEn(filaActiva());
         robloxDice({});
-        const res = await verificar(port, cuerpo(), { 'content-type': 'application/json', 'x-admin-key': ADMIN });
+        const res = await verificar(port, cuerpo(), { headers: { 'content-type': 'application/json', 'x-admin-key': ADMIN } });
 
         assert.strictEqual(res.status, 401, 'la clave de administracion no sirve para verificar');
         assert.strictEqual(res.body.error.code, 'unauthorized');
@@ -318,7 +324,7 @@ module.exports = async function run() {
     test('sin x-api-key -> 401 y ni una consulta', async () => {
         licenciaEn(filaActiva());
         robloxDice({});
-        const res = await verificar(port, cuerpo(), { 'content-type': 'application/json' });
+        const res = await verificar(port, cuerpo(), { headers: { 'content-type': 'application/json' } });
 
         assert.strictEqual(res.status, 401);
         assert.strictEqual(calls.length, 0);
@@ -364,7 +370,7 @@ module.exports = async function run() {
     test('token desconocido -> 403 token_invalido, sin preguntar a Roblox', async () => {
         licenciaEn(null);
         robloxDice({});
-        const res = await verificar(port, cuerpo({ token: licenseToken.generateToken() }));
+        const res = await verificar(port, cuerpo(), { token: licenseToken.generateToken() });
 
         assert.strictEqual(res.status, 403);
         assert.deepStrictEqual(res.body, { ok: false, motivo: 'token_invalido' });
@@ -374,12 +380,12 @@ module.exports = async function run() {
     test('token mal formado -> 403 token_invalido, IDENTICO y sin tocar nada', async () => {
         licenciaEn(null);
         robloxDice({});
-        const conocido = await verificar(port, cuerpo({ token: licenseToken.generateToken() }));
+        const conocido = await verificar(port, cuerpo(), { token: licenseToken.generateToken() });
 
         for (const malo of ['no-es-un-token', '7xl_corto', 'x'.repeat(200), '7xl_' + 'á'.repeat(43)]) {
             licenciaEn(filaActiva());
             robloxDice({});
-            const res = await verificar(port, cuerpo({ token: malo }));
+            const res = await verificar(port, cuerpo(), { token: malo });
 
             assert.strictEqual(res.status, 403, `"${malo.slice(0, 12)}" deberia denegar`);
             assert.deepStrictEqual(
@@ -435,8 +441,148 @@ module.exports = async function run() {
 
         licenciaEn(null);
         robloxDice({});
-        const sinToken = await verificar(port, cuerpo({ token: licenseToken.generateToken(), creatorId: 1 }));
+        const sinToken = await verificar(port, cuerpo({ creatorId: 1 }), { token: licenseToken.generateToken() });
         assert.strictEqual(sinToken.body.motivo, 'token_invalido');
+    });
+
+    // ═══ El transporte del token: cabecera x-license-token ═══════════════════
+    //
+    // El token viaja por cabecera y no en el cuerpo por una limitacion real de
+    // Roblox: HttpService:GetSecret() devuelve un objeto Secret que no se puede
+    // serializar con JSONEncode. Un secreto guardado donde debe estar —como
+    // Secret— solo puede salir por cabecera.
+
+    test('el token va por cabecera y autoriza sin aparecer en el cuerpo', async () => {
+        licenciaEn(filaActiva());
+        robloxDice({ duenio: { type: 'Group', id: GROUP_ID } });
+
+        const res = await verificar(port, cuerpo());
+
+        assert.strictEqual(res.status, 200);
+        assert.deepStrictEqual(res.body, { ok: true, groupId: GROUP_ID });
+        assert.deepStrictEqual(
+            Object.keys(cuerpo()).sort(),
+            ['creatorId', 'creatorType', 'gameId', 'placeId'],
+            'el cuerpo no lleva ni menciona el token'
+        );
+    });
+
+    test('sin la cabecera x-license-token -> 400 que dice que falta', async () => {
+        licenciaEn(filaActiva());
+        robloxDice({});
+        const res = await verificar(port, cuerpo(), { token: null });
+
+        // 400 y no 403: falta una cabecera, que es un fallo del script que
+        // llama. Un 403 mandaria a revisar la licencia, que esta perfecta.
+        assert.strictEqual(res.status, 400);
+        assert.strictEqual(res.body.error.code, 'invalid_request');
+        assert.match(res.body.error.message, /x-license-token/);
+        assert.strictEqual(calls.length, 0, 'no llega a costar una consulta');
+        assert.strictEqual(robloxCalls.length, 0, 'ni una llamada a Roblox');
+    });
+
+    test('la cabecera vacia o repetida -> 400', async () => {
+        for (const token of ['', '   ']) {
+            licenciaEn(filaActiva());
+            robloxDice({});
+            const res = await verificar(port, cuerpo(), { token });
+            assert.strictEqual(res.status, 400, `"${token}" deberia dar 400`);
+            assert.strictEqual(calls.length, 0);
+        }
+
+        // Node entrega un array cuando la cabecera llega dos veces. Con dos
+        // tokens distintos no hay forma honesta de elegir uno.
+        licenciaEn(filaActiva());
+        robloxDice({});
+        const repetida = await request(port, 'POST', '/v1/license/verify', {
+            headers: [
+                ['content-type', 'application/json'],
+                ['x-api-key', OUTFIT],
+                ['x-license-token', TOKEN],
+                ['x-license-token', licenseToken.generateToken()],
+            ],
+            body: cuerpo(),
+        });
+        assert.strictEqual(repetida.status, 400, 'dos tokens en la misma peticion se rechazan');
+        assert.strictEqual(calls.length, 0);
+    });
+
+    test('el token en el CUERPO -> 400 que dice donde va, no un 403 confuso', async () => {
+        licenciaEn(filaActiva());
+        robloxDice({});
+        const res = await verificar(port, cuerpo({ token: TOKEN }), { token: null });
+
+        assert.strictEqual(res.status, 400);
+        assert.match(res.body.error.message, /cabecera x-license-token/);
+        // Ignorarlo en silencio acabaria en "token_invalido" y mandaria a
+        // revisar la licencia cuando el token nunca llego a leerse.
+        assert.notStrictEqual(res.body.error.code, 'token_invalido');
+        assert.ok(!res.raw.includes(TOKEN), 'y el token que venia en el cuerpo no se refleja de vuelta');
+    });
+
+    test('un token viejo en la cabecera -> 403 token_invalido', async () => {
+        // Simula una credencial rotada: el hash guardado ya es otro.
+        const tokenViejo = licenseToken.generateToken();
+        licenciaEn(filaActiva()); // la fila tiene el HASH del token actual
+        robloxDice({});
+
+        const res = await verificar(port, cuerpo(), { token: tokenViejo });
+
+        assert.strictEqual(res.status, 403);
+        assert.deepStrictEqual(res.body, { ok: false, motivo: 'token_invalido' });
+        assert.strictEqual(robloxCalls.length, 0, 'sin credencial valida no se pregunta a Roblox');
+    });
+
+    test('las dos credenciales son distintas y no se pueden intercambiar', async () => {
+        // Mandar el token de licencia como si fuera la clave del juego.
+        licenciaEn(filaActiva());
+        robloxDice({});
+        const comoApiKey = await request(port, 'POST', '/v1/license/verify', {
+            headers: { 'content-type': 'application/json', 'x-api-key': TOKEN, 'x-license-token': TOKEN },
+            body: cuerpo(),
+        });
+        assert.strictEqual(comoApiKey.status, 401, 'el token de licencia no abre /v1');
+
+        // Y al reves: la clave del juego como token de licencia.
+        licenciaEn(filaActiva());
+        robloxDice({});
+        const comoToken = await verificar(port, cuerpo(), { token: OUTFIT });
+        assert.strictEqual(comoToken.status, 403, 'la clave del juego no identifica a ningun grupo');
+        assert.strictEqual(comoToken.body.motivo, 'token_invalido');
+    });
+
+    test('la cabecera no acaba en la URL registrada', async () => {
+        // Es media razon de mandar secretos por cabecera: requestLogger si
+        // registra la URL, y un token en la query acabaria ahi y en el log de
+        // acceso de cualquier proxy por medio.
+        const logger = require('../observability/logger');
+        const infoOriginal = logger.info;
+        const registrado = [];
+        logger.info = (mensaje, datos) => registrado.push({ mensaje, datos });
+
+        try {
+            licenciaEn(filaActiva());
+            robloxDice({ duenio: { type: 'Group', id: GROUP_ID } });
+            await verificar(port, cuerpo());
+        } finally {
+            logger.info = infoOriginal;
+        }
+
+        const volcado = JSON.stringify(registrado);
+        assert.ok(!volcado.includes(TOKEN), 'EL TOKEN NO PUEDE ACABAR EN EL LOG');
+        assert.ok(!volcado.includes(HASH), 'ni su hash');
+    });
+
+    test('el logger redacta la cabecera si alguien la pasa sin pensar', async () => {
+        // Red de seguridad: hoy ningun modulo pasa la cabecera al logger, pero
+        // el dia que alguien lo haga tiene que salir redactada.
+        const logger = require('../observability/logger');
+        const capturado = await captureStdout(async () => {
+            logger.error('caso de prueba', { 'x-license-token': TOKEN, licenseToken: TOKEN, ruta: '/v1/license/verify' });
+        });
+
+        assert.ok(!capturado.includes(TOKEN), 'el logger redacta el token de licencia');
+        assert.ok(capturado.includes('/v1/license/verify'), 'lo que no es secreto si se registra');
     });
 
     // ═══ Peticiones mal formadas: 400, no 403 ════════════════════════════════
@@ -444,14 +590,12 @@ module.exports = async function run() {
     test('faltan campos obligatorios -> 400 invalid_request sin tocar nada', async () => {
         const casos = [
             { body: {}, motivo: 'cuerpo vacio' },
-            { body: cuerpo({ token: undefined }), motivo: 'sin token' },
             { body: cuerpo({ gameId: undefined }), motivo: 'sin gameId' },
             { body: cuerpo({ placeId: undefined }), motivo: 'sin placeId' },
             { body: cuerpo({ placeId: 'abc' }), motivo: 'placeId no numerico' },
             { body: cuerpo({ placeId: 0 }), motivo: 'placeId cero' },
             { body: cuerpo({ gameId: -5 }), motivo: 'gameId negativo' },
             { body: cuerpo({ placeId: 1.5 }), motivo: 'placeId decimal' },
-            { body: cuerpo({ token: 123 }), motivo: 'token que no es texto' },
             { body: cuerpo({ creatorType: 7 }), motivo: 'creatorType que no es texto' },
             { body: cuerpo({ creatorId: 'abc' }), motivo: 'creatorId presente pero no numerico' },
             { body: [], motivo: 'el cuerpo no es un objeto' },
@@ -553,11 +697,11 @@ module.exports = async function run() {
         const { maxPerWindow } = ownRateLimit.getMetrics();
 
         for (let i = 0; i < maxPerWindow; i++) {
-            const res = await request(port, 'POST', '/v1/license/verify', { headers: juegoHeaders, body: cuerpo(), sinReset: true });
+            const res = await request(port, 'POST', '/v1/license/verify', { headers: { ...juegoHeaders, 'x-license-token': TOKEN }, body: cuerpo(), sinReset: true });
             assert.strictEqual(res.status, 200, `la peticion ${i + 1} debia pasar`);
         }
 
-        const res = await request(port, 'POST', '/v1/license/verify', { headers: juegoHeaders, body: cuerpo(), sinReset: true });
+        const res = await request(port, 'POST', '/v1/license/verify', { headers: { ...juegoHeaders, 'x-license-token': TOKEN }, body: cuerpo(), sinReset: true });
         assert.strictEqual(res.status, 429);
         ownRateLimit.reset();
     });

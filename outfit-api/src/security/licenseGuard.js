@@ -1,7 +1,7 @@
 'use strict';
 
 const licenseService = require('../services/licenseService');
-const { parseLicenseVerifyBody } = require('../validation/params');
+const { parseLicenseVerifyBody, parseLicenseTokenHeader } = require('../validation/params');
 
 // Guardia de licencia para rutas de /v1 que NO deben abrirse solo con la
 // `x-api-key`.
@@ -31,7 +31,14 @@ const { parseLicenseVerifyBody } = require('../validation/params');
 // efecto. Que una licencia retirada deje de funcionar EN LA SIGUIENTE peticion
 // vale mas que ahorrarse un milisegundo.
 async function requireLicense(req, res, next) {
-    const datos = parseLicenseVerifyBody(req.body);
+    // Mismo transporte que /v1/license/verify: el token por cabecera, el resto
+    // en el cuerpo. La limitacion de Roblox que lo obliga alli (un Secret no se
+    // puede serializar con JSONEncode) es exactamente la misma aqui, asi que
+    // separar los dos transportes solo serviria para que este endpoint fuera
+    // inusable desde un juego que guarde su token como Secret.
+    const token = parseLicenseTokenHeader(req.headers);
+    const datos = { ...parseLicenseVerifyBody(req.body), token };
+
     const resultado = await licenseService.verify(datos);
 
     if (!resultado.ok) {

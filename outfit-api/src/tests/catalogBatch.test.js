@@ -213,15 +213,22 @@ module.exports = async function run() {
         };
     }
 
+    // El token NO va en el cuerpo: viaja por la cabecera x-license-token, igual
+    // que en /v1/license/verify. Un Secret de Roblox no se puede serializar con
+    // JSONEncode, y aqui aplica exactamente la misma limitacion.
     const cuerpo = (extra = {}) => ({
-        token: TOKEN,
         gameId: UNIVERSE_ID,
         placeId: PLACE_ID,
         assetIds: [DH_CABEZA, DH_MOOD, SOMBRERO],
         ...extra,
     });
 
-    const pedir = (port, body, headers = juego) => request(port, '/v1/catalog/batch', { headers, body });
+    // `token: null` = no se manda la cabecera.
+    const pedir = (port, body, { headers = juego, token = TOKEN } = {}) =>
+        request(port, '/v1/catalog/batch', {
+            headers: token === null ? headers : { ...headers, 'x-license-token': token },
+            body,
+        });
     const deCatalogo = () => llamadas.filter(l => l.api !== 'place->universe' && l.api !== 'universe->owner');
 
     // El runner fija CACHE_MAX_ENTRIES=5 para que cache.test.js pueda provocar
@@ -242,7 +249,7 @@ module.exports = async function run() {
 
     test('sin x-api-key -> 401 y ni una llamada', async () => {
         licenciaFila = filaActiva(); montarRoblox();
-        const res = await pedir(port, cuerpo(), { 'content-type': 'application/json' });
+        const res = await pedir(port, cuerpo(), { headers: { 'content-type': 'application/json' } });
 
         assert.strictEqual(res.status, 401);
         assert.strictEqual(llamadas.length, 0);
@@ -250,7 +257,7 @@ module.exports = async function run() {
 
     test('la ADMIN_API_KEY no abre el catalogo', async () => {
         licenciaFila = filaActiva(); montarRoblox();
-        const res = await pedir(port, cuerpo(), { 'content-type': 'application/json', 'x-admin-key': ADMIN });
+        const res = await pedir(port, cuerpo(), { headers: { 'content-type': 'application/json', 'x-admin-key': ADMIN } });
 
         assert.strictEqual(res.status, 401);
         assert.strictEqual(llamadas.length, 0);
@@ -260,8 +267,7 @@ module.exports = async function run() {
         // La clave del juego viaja dentro del .rbxl: por si sola no puede abrir
         // la inteligencia de catalogo. Es el motivo de existir de esta ruta.
         licenciaFila = filaActiva(); montarRoblox();
-        const { token, ...sinToken } = cuerpo();
-        const res = await pedir(port, sinToken);
+        const res = await pedir(port, cuerpo(), { token: null });
 
         assert.strictEqual(res.status, 400);
         assert.strictEqual(res.body.error.code, 'invalid_request');
@@ -270,7 +276,7 @@ module.exports = async function run() {
 
     test('token invalido -> 403 token_invalido y CERO trabajo de catalogo', async () => {
         licenciaFila = null; montarRoblox();
-        const res = await pedir(port, cuerpo({ token: licenseToken.generateToken() }));
+        const res = await pedir(port, cuerpo(), { token: licenseToken.generateToken() });
 
         assert.strictEqual(res.status, 403);
         assert.deepStrictEqual(res.body, { ok: false, motivo: 'token_invalido' });
@@ -373,7 +379,7 @@ module.exports = async function run() {
     test('cuerpo enorme -> 413', async () => {
         licenciaFila = filaActiva(); montarRoblox();
         const res = await request(port, '/v1/catalog/batch', {
-            headers: juego, raw: JSON.stringify(cuerpo({ relleno: 'x'.repeat(9000) })),
+            headers: { ...juego, 'x-license-token': TOKEN }, raw: JSON.stringify(cuerpo({ relleno: 'x'.repeat(9000) })),
         });
         assert.strictEqual(res.status, 413);
     });
@@ -633,7 +639,7 @@ module.exports = async function run() {
         const metrics = await request(port, '/v1/metrics', { headers: { 'x-api-key': OUTFIT } });
         assert.strictEqual(metrics.status, 404, 'POST /v1/metrics no existe (es GET)');
 
-        const noExiste = await pedir(port, cuerpo(), juego).then(() => request(port, '/v1/catalog/otra', { headers: juego, body: {} }));
+        const noExiste = await pedir(port, cuerpo(), juego).then(() => request(port, '/v1/catalog/otra', { headers: { ...juego, 'x-license-token': TOKEN }, body: {} }));
         assert.strictEqual(noExiste.status, 404);
         assert.strictEqual(noExiste.body.error.code, 'route_not_found');
     });
@@ -644,10 +650,10 @@ module.exports = async function run() {
         const { maxPerWindow } = ownRateLimit.getMetrics();
 
         for (let i = 0; i < maxPerWindow; i++) {
-            const res = await request(port, '/v1/catalog/batch', { headers: juego, body: cuerpo(), sinReset: true });
+            const res = await request(port, '/v1/catalog/batch', { headers: { ...juego, 'x-license-token': TOKEN }, body: cuerpo(), sinReset: true });
             assert.strictEqual(res.status, 200, `la peticion ${i + 1} debia pasar`);
         }
-        const res = await request(port, '/v1/catalog/batch', { headers: juego, body: cuerpo(), sinReset: true });
+        const res = await request(port, '/v1/catalog/batch', { headers: { ...juego, 'x-license-token': TOKEN }, body: cuerpo(), sinReset: true });
         assert.strictEqual(res.status, 429);
         ownRateLimit.reset();
     });

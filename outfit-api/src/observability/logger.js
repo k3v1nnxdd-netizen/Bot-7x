@@ -30,6 +30,13 @@ const activeLevel = LEVELS[config.logLevel] ?? LEVELS.info;
 const SENSITIVE = new Set([
     'xapikey', 'apikey', 'authorization', 'cookie', 'token', 'secret', 'password',
     'xadminkey', 'adminkey', 'adminapikey',
+    // El token de licencia viaja ahora por cabecera (`x-license-token`), y el
+    // normalizador de nombres quita guiones: sin estas dos entradas, un
+    // `logger.info({ 'x-license-token': ... })` escrito sin pensar imprimiria
+    // la credencial de un cliente en el log de Railway. Ninguna parte del
+    // codigo lo hace hoy; esta capa existe justo para el dia que alguien lo
+    // añada sin darse cuenta.
+    'xlicensetoken', 'licensetoken',
     'databaseurl', 'connectionstring', 'dsn',
 ]);
 

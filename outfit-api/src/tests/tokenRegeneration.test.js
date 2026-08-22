@@ -143,9 +143,11 @@ module.exports = async function run() {
         discordUserId: DISCORD_ID, robloxUsername: ROBLOX_USER, ...extra,
     });
 
+    // El token va por CABECERA: un Secret de Roblox no se puede serializar con
+    // JSONEncode, asi que no puede viajar en el cuerpo.
     const verificar = (port, token) => request(port, 'POST', '/v1/license/verify', {
-        headers: juego,
-        body: { token, gameId: '5432109876', placeId: '1234567890' },
+        headers: { ...juego, 'x-license-token': token },
+        body: { gameId: '5432109876', placeId: '1234567890' },
     });
 
     const app = createApp();

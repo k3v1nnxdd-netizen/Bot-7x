@@ -34,7 +34,22 @@ const NARANJA = 0xF2994A; // known group, license no longer valid
 const GRIS    = 0x9AA0A6; // never had a license at all
 const NEUTRO  = 0x2B2D31; // the listing, same gray as the rest of the bot's panels
 
-const FOOTER = '7x Community • Sistema de licencias';
+// Emojis del servidor, no unicode. Se declaran aquí y en un solo sitio porque
+// un id de emoji equivocado no falla: se imprime `<a:add:123>` en crudo en
+// mitad de un mensaje público, y eso solo se ve en producción.
+//
+// OJO CON DÓNDE SE USAN: Discord solo los renderiza en el contenido del
+// mensaje, en la descripción del embed y en el valor de un campo. En títulos,
+// nombres de campo y pies aparecen como texto plano — ver el bloque de embeds.
+const EMOJI = {
+    grupo:   '<:followers7x:1525326777071960124>',
+    roblox:  '<:roblox:1501213275482886205>',
+    discord: '<a:dccc:1540604144325369907>',
+    alta:    '<a:add:1540603311890104321>',
+    baja:    '<a:remove:1540604743234228364>',
+};
+
+const FOOTER = '7x Community · Sistema de licencias';
 
 const GRUPOS_POR_PAGINA = 8;
 
@@ -57,16 +72,20 @@ function denegar(interaction) {
     });
 }
 
-// Full date AND relative age, both from the same timestamp: Discord renders
-// them in each viewer's own timezone and language, which a preformatted date
-// string can't do. The relative line is what makes "hace 3 meses" readable at
-// a glance without doing arithmetic on a date.
+// Fecha completa Y antigüedad relativa, las dos del mismo instante: Discord las
+// pinta en la zona horaria y el idioma de cada quien, cosa que una fecha ya
+// formateada no puede hacer. La segunda línea es la que hace legible "hace 3
+// meses" sin ponerse a restar fechas.
+//
+// `:f` en vez de `:F` — misma fecha y hora completas, pero sin el día de la
+// semana por delante, que en una rejilla de tres campos era lo único que
+// obligaba a que cada uno ocupara dos renglones.
 function fecha(iso) {
     if (!iso) return '—';
     const ms = Date.parse(iso);
     if (Number.isNaN(ms)) return '—';
     const unix = Math.floor(ms / 1000);
-    return `<t:${unix}:F>\n<t:${unix}:R>`;
+    return `<t:${unix}:f>\n<t:${unix}:R>`;
 }
 
 // Group names and Roblox usernames are attacker-adjacent text (anyone can name
@@ -77,8 +96,11 @@ function texto(valor, fallback = '—') {
     return escapeMarkdown(String(valor));
 }
 
+// Mención Y id en la misma línea. El id en crudo no es decoración: una mención
+// de alguien que se fue del servidor se queda en `@unknown-user`, y entonces el
+// número es lo único que permite saber a quién estaba enlazada la licencia.
 function mencion(discordUserId) {
-    return discordUserId ? `<@${discordUserId}>\n\`${discordUserId}\`` : '—';
+    return discordUserId ? `<@${discordUserId}> · \`${discordUserId}\`` : '—';
 }
 
 // The bot validates before spending a Roblox call or an API round trip; the
@@ -120,29 +142,67 @@ async function datosDeRoblox(groupId) {
 }
 
 // ── Embeds ───────────────────────────────────────────────────────────────────
+//
+// DÓNDE PUEDEN IR LOS EMOJIS DEL SERVIDOR, y no es una preferencia de estilo:
+// Discord solo renderiza `<:nombre:id>` en el CONTENIDO del mensaje, en la
+// DESCRIPCIÓN del embed y en el VALOR de un campo. En el título, en el nombre
+// de un campo, en el pie o en el autor se imprime el texto crudo
+// (`<a:add:1540603311890104321>`), que es peor que no poner nada. Por eso todo
+// el peso visual vive en la descripción y los títulos son texto limpio.
+//
+// Eso además empuja al diseño compacto que se buscaba: en vez de nueve campos
+// en rejilla, tres o cuatro líneas de descripción con el estado, el grupo y las
+// dos cuentas, y una sola fila de campos para las fechas.
+
+// Envuelve un valor en un code span. Se quitan las comillas invertidas del
+// propio valor: un nombre que las lleve rompería el bloque y dejaría el resto
+// de la línea en crudo.
+function codigo(valor) {
+    return `\`${String(valor).replace(/`/g, '')}\``;
+}
+
+// Las tres líneas de identidad que comparten los cuatro embeds: qué grupo, qué
+// usuario de Discord y qué usuario de Roblox. Idénticas en todos a propósito —
+// leer una licencia tiene que ser el mismo gesto en /addgroup, /deletegroup y
+// /checkgroup, y eso vale más que adornar cada uno por su lado.
+function bloqueLicencia({ nombreGrupo, groupId, discordUserId, robloxUsername, extra = null }) {
+    const grupo = [
+        `${EMOJI.grupo} **${texto(nombreGrupo, 'Grupo sin nombre')}**`,
+        codigo(groupId),
+        extra,
+    ].filter(Boolean).join(' · ');
+
+    const discord = discordUserId
+        ? `${EMOJI.discord} ${mencion(discordUserId)}`
+        : `${EMOJI.discord} Sin usuario de Discord enlazado`;
+
+    const roblox = robloxUsername
+        ? `${EMOJI.roblox} ${codigo(robloxUsername)}`
+        : `${EMOJI.roblox} Sin usuario de Roblox enlazado`;
+
+    return `${grupo}\n${discord}\n${roblox}`;
+}
 
 function buildAddedEmbed({ licencia, nombreGrupo, iconUrl, actorId }) {
+    // `created` viene de si Postgres INSERTÓ o ACTUALIZÓ la fila (xmax = 0), no
+    // de una suposición de aquí: es el único dato honesto sobre si la licencia
+    // es nueva o una readmisión.
+    const estado = `${EMOJI.alta} **Activa** · ${licencia.created ? 'Licencia nueva' : 'Licencia reactivada'}`;
+
     return new EmbedBuilder()
         .setColor(VERDE)
         .setTitle('Licencia agregada')
         .setThumbnail(iconUrl ?? undefined)
+        .setDescription(`${estado}\n\n${bloqueLicencia({
+            nombreGrupo,
+            groupId: licencia.groupId,
+            discordUserId: licencia.discordUserId,
+            robloxUsername: licencia.robloxUsername,
+        })}`)
         .addFields(
-            { name: 'Estado',             value: 'Activa ✅',                          inline: true },
-            { name: 'Grupo',              value: texto(nombreGrupo),                   inline: true },
-            { name: 'Group ID',           value: `\`${licencia.groupId}\``,            inline: true },
-            { name: 'Usuario de Discord', value: mencion(licencia.discordUserId),      inline: true },
-            { name: 'Usuario de Roblox',  value: texto(licencia.robloxUsername),       inline: true },
-            { name: 'Agregado por',       value: actorId ? `<@${actorId}>` : '—',      inline: true },
-            { name: 'Alta original',      value: fecha(licencia.createdAt),            inline: true },
-            { name: 'Enlace actual',      value: fecha(licencia.linkedAt),             inline: true },
-            {
-                name: 'Tipo',
-                // The API's `created` flag is the only honest source for this:
-                // it comes from whether Postgres INSERTed or UPDATEd the row,
-                // not from a guess made here.
-                value: licencia.created ? '🆕 Licencia nueva' : '♻️ Licencia reactivada',
-                inline: true,
-            },
+            { name: 'Alta original', value: fecha(licencia.createdAt), inline: true },
+            { name: 'Enlace actual', value: fecha(licencia.linkedAt),  inline: true },
+            { name: 'Agregado por',  value: actorId ? `<@${actorId}>` : '—', inline: true },
         )
         .setFooter({ text: FOOTER })
         .setTimestamp();
@@ -151,85 +211,106 @@ function buildAddedEmbed({ licencia, nombreGrupo, iconUrl, actorId }) {
 function buildRemovedEmbed({ licencia, nombreGrupo, iconUrl, actorId, motivo }) {
     return new EmbedBuilder()
         .setColor(ROJO)
-        .setTitle('⛔ Licencia desactivada')
+        .setTitle('Licencia desactivada')
         .setThumbnail(iconUrl ?? undefined)
+        .setDescription(`${EMOJI.baja} **Inactiva**\n\n${bloqueLicencia({
+            nombreGrupo,
+            groupId: licencia.groupId,
+            discordUserId: licencia.discordUserId,
+            robloxUsername: licencia.robloxUsername,
+        })}`)
         .addFields(
-            { name: 'Estado',             value: 'Inactiva',                       inline: true },
-            { name: 'Grupo',              value: texto(nombreGrupo),               inline: true },
-            { name: 'Group ID',           value: `\`${licencia.groupId}\``,        inline: true },
-            { name: 'Usuario de Discord', value: mencion(licencia.discordUserId),  inline: true },
-            { name: 'Usuario de Roblox',  value: texto(licencia.robloxUsername),   inline: true },
-            { name: 'Desactivado por',    value: actorId ? `<@${actorId}>` : '—',  inline: true },
-            { name: 'Motivo',             value: texto(motivo, 'No especificado'), inline: false },
-            { name: 'Alta original',      value: fecha(licencia.createdAt),        inline: true },
-            { name: 'Fecha de baja',      value: fecha(licencia.deactivatedAt),    inline: true },
+            { name: 'Alta original',   value: fecha(licencia.createdAt),     inline: true },
+            { name: 'Fecha de baja',   value: fecha(licencia.deactivatedAt), inline: true },
+            { name: 'Desactivado por', value: actorId ? `<@${actorId}>` : '—', inline: true },
+            { name: 'Motivo',          value: texto(motivo, 'No especificado'), inline: false },
         )
         .setFooter({ text: FOOTER })
         .setTimestamp();
 }
 
-// Three outcomes, three colors, and the difference between the last two is the
-// point: "had a license and lost it" and "never had one" look identical if you
-// only ask "is it authorized?", and they mean very different things when a
-// customer is waiting for an answer.
+// Tres resultados, tres colores, y la diferencia entre los dos últimos es el
+// motivo de que exista: "tuvo licencia y se le retiró" y "nunca tuvo" son
+// idénticos si solo se pregunta "¿está autorizado?", y significan cosas muy
+// distintas con un cliente esperando respuesta.
 function buildCheckEmbed({ estado, groupId, nombreGrupo, iconUrl, miembros }) {
     const autorizada = estado.authorized === true;
     const conocida = estado.found === true;
 
-    const color = autorizada ? VERDE : conocida ? NARANJA : GRIS;
-    const titulo = autorizada ? '✅ Licencia activa' : conocida ? '⛔ Licencia desactivada' : '❔ Sin licencia';
-    const linea = autorizada
-        ? 'Activa ✅ — el grupo está autorizado.'
+    const cabecera = autorizada
+        ? `${EMOJI.alta} **Autorizado**`
         : conocida
-            ? 'Inactiva ⛔ — tuvo licencia y se le retiró.'
-            : 'Sin licencia ❔ — este grupo nunca fue dado de alta.';
+            ? `${EMOJI.baja} **Licencia retirada**`
+            : '**Sin licencia** · este grupo nunca fue dado de alta';
 
     const embed = new EmbedBuilder()
-        .setColor(color)
-        .setTitle(titulo)
+        .setColor(autorizada ? VERDE : conocida ? NARANJA : GRIS)
+        .setTitle(autorizada ? 'Licencia activa' : conocida ? 'Licencia desactivada' : 'Sin licencia')
         .setThumbnail(iconUrl ?? undefined)
-        .addFields(
-            { name: 'Estado',             value: linea,                          inline: false },
-            { name: 'Grupo',              value: texto(nombreGrupo),             inline: true },
-            { name: 'Group ID',           value: `\`${groupId}\``,               inline: true },
-            { name: 'Miembros',           value: miembros != null ? miembros.toLocaleString('es-ES') : '—', inline: true },
-            { name: 'Usuario de Discord', value: mencion(estado.discordUserId),  inline: true },
-            { name: 'Usuario de Roblox',  value: texto(estado.robloxUsername),   inline: true },
-            { name: 'Autorizado ahora',   value: autorizada ? 'Sí' : 'No',       inline: true },
-            { name: 'Alta original',      value: fecha(estado.createdAt),        inline: true },
-            { name: 'Último enlace',      value: fecha(estado.linkedAt),         inline: true },
-        )
         .setFooter({ text: FOOTER })
         .setTimestamp();
 
-    // Only shown when there IS a withdrawal to explain — an empty "Motivo: —"
-    // on an active license is noise.
-    if (conocida && !autorizada) {
+    const extra = miembros != null ? `${miembros.toLocaleString('es-ES')} miembros` : null;
+
+    // Un grupo que nunca estuvo en la whitelist NO tiene comprador ni fechas:
+    // enseñar tres líneas de "—" no informa de nada y alarga el embed. Se
+    // muestra solo lo que Roblox sí sabe de él.
+    if (!conocida) {
+        return embed.setDescription(
+            `${cabecera}\n\n${EMOJI.grupo} **${texto(nombreGrupo, 'Grupo sin nombre')}** · ${codigo(groupId)}` +
+            (extra ? ` · ${extra}` : '')
+        );
+    }
+
+    embed.setDescription(`${cabecera}\n\n${bloqueLicencia({
+        nombreGrupo,
+        groupId,
+        discordUserId: estado.discordUserId,
+        robloxUsername: estado.robloxUsername,
+        extra,
+    })}`);
+
+    embed.addFields(
+        { name: 'Alta original',  value: fecha(estado.createdAt), inline: true },
+        { name: 'Último enlace',  value: fecha(estado.linkedAt),  inline: true },
+    );
+
+    // Solo cuando hay una baja que explicar: un "Motivo: —" en una licencia
+    // activa es ruido.
+    if (!autorizada) {
         embed.addFields(
-            { name: 'Fecha de baja',   value: fecha(estado.deactivatedAt),                 inline: true },
+            { name: 'Fecha de baja',   value: fecha(estado.deactivatedAt), inline: true },
             { name: 'Desactivado por', value: estado.deactivatedBy ? `<@${estado.deactivatedBy}>` : '—', inline: true },
-            { name: 'Motivo',          value: texto(estado.deactivationReason, 'No especificado'),       inline: false },
+            { name: 'Motivo',          value: texto(estado.deactivationReason, 'No especificado'), inline: false },
         );
     }
 
     return embed;
 }
 
-// Pure, and exported for the tests: the paging arithmetic is the part of the
-// listing that can silently drop a license, so it's worth pinning down without
-// a Discord client anywhere near it.
+// Pura, y exportada para los tests: la aritmética de paginado es la parte del
+// listado que puede perder una licencia en silencio, así que conviene fijarla
+// sin un cliente de Discord cerca.
 function paginar(groups, porPagina = GRUPOS_POR_PAGINA) {
     const paginas = [];
     for (let i = 0; i < groups.length; i += porPagina) paginas.push(groups.slice(i, i + porPagina));
     return paginas.length ? paginas : [[]];
 }
 
+// Dos líneas por licencia, con el estado en el emoji de la izquierda: es lo que
+// permite listar vigentes y retiradas juntas sin partir el listado en dos
+// bloques y sin repetir la palabra "activa" veinte veces.
 function lineaDeGrupo(group) {
-    const icono = group.active ? '✅' : '⛔';
-    const nombre = texto(group.groupName, 'Grupo sin nombre guardado');
-    const discord = group.discordUserId ? `<@${group.discordUserId}>` : 'Discord no enlazado';
-    const roblox = texto(group.robloxUsername, 'Roblox no enlazado');
-    return `${icono} **${nombre}** — \`${group.groupId}\`\n${discord} • ${roblox}`;
+    const marca = group.active ? EMOJI.alta : EMOJI.baja;
+    // Aquí SOLO la mención, sin el id en crudo que sí llevan los embeds de
+    // detalle: son dos líneas por licencia y ocho licencias por página, y ese
+    // número de 18 cifras repetido ocho veces es justo lo que convierte una
+    // lista legible en un muro.
+    const discord = group.discordUserId ? `<@${group.discordUserId}>` : 'Sin Discord';
+    const roblox = group.robloxUsername ? codigo(group.robloxUsername) : 'Sin Roblox';
+
+    return `${marca} **${texto(group.groupName, 'Grupo sin nombre')}** · ${codigo(group.groupId)}\n` +
+           `${EMOJI.discord} ${discord} · ${EMOJI.roblox} ${roblox}`;
 }
 
 function buildListEmbed({ groups, total, pagina, paginas, truncado }) {
@@ -237,6 +318,7 @@ function buildListEmbed({ groups, total, pagina, paginas, truncado }) {
     const inactivas = groups.length - activas;
     const enPagina = paginar(groups)[pagina] ?? [];
 
+    const resumen = `**${total}** licencias · **${activas}** activas · **${inactivas}** inactivas`;
     const cuerpo = enPagina.length
         ? enPagina.map(lineaDeGrupo).join('\n\n')
         : '_No hay ninguna licencia registrada todavía._';
@@ -244,17 +326,15 @@ function buildListEmbed({ groups, total, pagina, paginas, truncado }) {
     const embed = new EmbedBuilder()
         .setColor(NEUTRO)
         .setTitle('Licencias de grupos')
-        .setDescription(
-            `**Total:** ${total}  •  **Activas:** ${activas}  •  **Inactivas:** ${inactivas}\n\n${cuerpo}`
-        )
-        .setFooter({ text: `Página ${pagina + 1}/${paginas} • ${FOOTER}` })
+        .setDescription(`${resumen}\n\n${cuerpo}`)
+        .setFooter({ text: `Página ${pagina + 1}/${paginas} · ${FOOTER}` })
         .setTimestamp();
 
-    // Said out loud instead of quietly showing fewer: a listing that cuts off
-    // in silence reads exactly like a complete one.
+    // Dicho en voz alta en vez de mostrar menos y callarse: un listado que se
+    // corta en silencio se lee exactamente igual que uno completo.
     if (truncado) {
         embed.addFields({
-            name: '⚠️ Listado incompleto',
+            name: 'Listado incompleto',
             value: 'Hay más licencias de las que caben en una consulta. Se muestran las más recientes.',
             inline: false,
         });

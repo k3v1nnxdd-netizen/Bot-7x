@@ -4,8 +4,8 @@
 // /groups) — the bot half of it. NO network and NO Discord client: everything
 // here is either a pure builder or the pure part of the outfit-api client.
 //
-// The two things these tests exist to protect are the two that would hurt
-// most and that a manual smoke test would never catch:
+// The things these tests exist to protect are the ones that would hurt most
+// and that a manual smoke test would never catch:
 //
 //   1. THE ADMIN KEY NEVER ESCAPES. An axios error carries the request
 //      headers — admin key included — so the failure path is exactly where a
@@ -14,6 +14,11 @@
 //   2. A LICENSE IS NEVER SILENTLY DROPPED FROM THE LISTING. The paging
 //      arithmetic is the only place /groups can lose a paying customer, and
 //      it would look completely normal on screen.
+//   3. THE SERVER EMOJIS ONLY GO WHERE DISCORD RENDERS THEM. Custom emoji
+//      work in a message's content, an embed's description and a field's
+//      VALUE — and nowhere else. Put one in a title, a field NAME or the
+//      footer and it prints as raw `<a:add:1540603311890104321>` in a public
+//      message. Nothing in the code can warn about that, so a test does.
 
 // Set BEFORE requiring the client: it reads process.env once, at load time,
 // exactly like the rest of this project's config modules.
@@ -33,6 +38,22 @@ const DISCORD_ID = '996310284803248158';
 const ADMIN_ID = '346085763638886400';
 const CREATED_AT = '2026-01-15T10:30:00.000Z';
 const LINKED_AT = '2026-02-01T09:00:00.000Z';
+
+// Los cinco emojis del servidor, escritos aquí a mano a propósito: si alguien
+// cambia un id en handlers/groupLicenses.js, este archivo tiene que discrepar.
+const E = {
+    grupo:   '<:followers7x:1525326777071960124>',
+    roblox:  '<:roblox:1501213275482886205>',
+    discord: '<a:dccc:1540604144325369907>',
+    alta:    '<a:add:1540603311890104321>',
+    baja:    '<a:remove:1540604743234228364>',
+};
+
+// Cualquier emoji unicode (✅, ⛔, 🆕, ⚠️...). `Extended_Pictographic` los
+// cubre todos sin tener que enumerarlos.
+const UNICODE_EMOJI = /\p{Extended_Pictographic}/u;
+// La forma de un emoji del servidor: `<:nombre:id>` o `<a:nombre:id>`.
+const EMOJI_SERVIDOR = /<a?:[a-zA-Z0-9_]+:\d+>/;
 
 // A license exactly as outfit-api returns it.
 const licencia = (overrides = {}) => ({
@@ -72,6 +93,7 @@ function transportError(code) {
 
 const serializado = embed => JSON.stringify(embed.toJSON());
 const campo = (embed, nombre) => embed.toJSON().fields?.find(f => f.name === nombre)?.value;
+const desc = embed => embed.toJSON().description ?? '';
 
 module.exports = async function run() {
     const suite = createSuite('groupLicenses');
@@ -130,8 +152,6 @@ module.exports = async function run() {
         'cada fallo se clasifica con su propio código para que el handler pueda reaccionar'
     );
 
-    // El mensaje del 404 de grupo SÍ se reenvía tal cual (lo escribimos
-    // nosotros y solo contiene el id); el de un error desconocido NO.
     assert(
         toSafeError(axiosError(404, { error: { code: 'group_not_found', message: 'El grupo 123 no esta en la whitelist' } }))
             .message.includes('123'),
@@ -167,7 +187,7 @@ module.exports = async function run() {
     );
     assert(gl.paginar([]).length === 1 && gl.paginar([])[0].length === 0, 'una lista vacía sigue siendo una página (vacía)');
 
-    // ── Embed de /addgroup ──────────────────────────────────────────────────
+    // ── /addgroup ───────────────────────────────────────────────────────────
 
     const alta = gl.buildAddedEmbed({
         licencia: licencia(),
@@ -180,55 +200,33 @@ module.exports = async function run() {
     assert(altaJson.color === 0x6FCF97, 'el embed de alta usa el verde suave de "completado" (#6FCF97)');
     assert(altaJson.title === 'Licencia agregada', 'el título es exactamente "Licencia agregada"');
     assert(altaJson.thumbnail?.url === 'https://tr.rbxcdn.com/icono.png', 'el icono real del grupo va como thumbnail (arriba a la derecha)');
-    assert(campo(alta, 'Estado') === 'Activa ✅', 'muestra el estado como "Activa ✅"');
-    assert(campo(alta, 'Group ID').includes(GROUP_ID), 'muestra el Group ID');
+    assert(desc(alta).startsWith(`${E.alta} **Activa**`), 'la primera línea es el emoji de alta + el estado');
+    assert(desc(alta).includes(`${E.grupo} **Mi Grupo**`), 'el nombre del grupo lleva el emoji de grupo del servidor');
+    assert(desc(alta).includes(`\`${GROUP_ID}\``), 'el Group ID va en la misma línea que el nombre');
     assert(
-        campo(alta, 'Usuario de Discord').includes(`<@${DISCORD_ID}>`) && campo(alta, 'Usuario de Discord').includes(DISCORD_ID),
-        'muestra el usuario de Discord como mención Y como ID'
+        desc(alta).includes(`${E.discord} <@${DISCORD_ID}> · \`${DISCORD_ID}\``),
+        'el usuario de Discord lleva su emoji, la mención Y el id en una sola línea'
     );
-    assert(campo(alta, 'Usuario de Roblox') === 'CompradorRblx', 'muestra el usuario de Roblox del comprador');
+    assert(desc(alta).includes(`${E.roblox} \`CompradorRblx\``), 'el usuario de Roblox lleva el emoji de Roblox');
+    assert(desc(alta).includes('Licencia nueva'), 'una licencia recién creada se anuncia como nueva');
     assert(campo(alta, 'Agregado por') === `<@${ADMIN_ID}>`, 'muestra quién agregó la licencia');
     assert(
-        campo(alta, 'Alta original').includes('<t:1768473000:F>') && campo(alta, 'Alta original').includes('<t:1768473000:R>'),
+        campo(alta, 'Alta original').includes('<t:1768473000:f>') && campo(alta, 'Alta original').includes('<t:1768473000:R>'),
         'la fecha de alta usa timestamps de Discord: completa y relativa'
     );
     assert(
-        campo(alta, 'Enlace actual').includes('<t:1769936400:F>'),
+        campo(alta, 'Enlace actual').includes('<t:1769936400:f>'),
         'la fecha del enlace actual es distinta de la del alta y también es un timestamp de Discord'
     );
-    assert(campo(alta, 'Tipo').includes('nueva'), 'una licencia recién creada se anuncia como nueva');
+    assert(altaJson.fields.length === 3, 'el embed de alta es compacto: una sola fila de tres campos');
 
     const reactivada = gl.buildAddedEmbed({
-        licencia: licencia({ created: false }),
-        nombreGrupo: 'Mi Grupo',
-        iconUrl: null,
-        actorId: ADMIN_ID,
+        licencia: licencia({ created: false }), nombreGrupo: 'Mi Grupo', iconUrl: null, actorId: ADMIN_ID,
     });
-    assert(campo(reactivada, 'Tipo').includes('reactivada'), 'una licencia que ya existía se anuncia como reactivada');
+    assert(desc(reactivada).includes('Licencia reactivada'), 'una licencia que ya existía se anuncia como reactivada');
     assert(reactivada.toJSON().thumbnail === undefined, 'sin icono de Roblox el embed sigue construyéndose igual');
 
-    // ── Ni secretos ni URLs internas en NINGÚN embed ────────────────────────
-
-    const todosLosEmbeds = [
-        alta,
-        reactivada,
-        gl.buildRemovedEmbed({
-            licencia: licencia({ active: false, deactivatedAt: '2026-03-02T18:00:00.000Z', deactivatedBy: ADMIN_ID, deactivationReason: 'Reembolso' }),
-            nombreGrupo: 'Mi Grupo', iconUrl: null, actorId: ADMIN_ID, motivo: 'Reembolso',
-        }),
-        gl.buildCheckEmbed({ estado: { ...licencia(), authorized: true, found: true }, groupId: GROUP_ID, nombreGrupo: 'Mi Grupo', iconUrl: null, miembros: 1234 }),
-        gl.buildListEmbed({ groups: [licencia()], total: 1, pagina: 0, paginas: 1, truncado: false }),
-    ];
-    assert(
-        todosLosEmbeds.every(e => !serializado(e).includes(SECRETO)),
-        'ningún embed contiene la clave de administración'
-    );
-    assert(
-        todosLosEmbeds.every(e => !serializado(e).includes('railway.internal') && !serializado(e).includes(URL_INTERNA)),
-        'ningún embed contiene la URL interna de la API'
-    );
-
-    // ── Embed de /deletegroup ───────────────────────────────────────────────
+    // ── /deletegroup ────────────────────────────────────────────────────────
 
     const baja = gl.buildRemovedEmbed({
         licencia: licencia({ active: false, deactivatedAt: '2026-03-02T18:00:00.000Z', deactivatedBy: ADMIN_ID, deactivationReason: 'Reembolso' }),
@@ -238,22 +236,24 @@ module.exports = async function run() {
         motivo: 'Reembolso',
     });
     assert(baja.toJSON().color === 0xE57373, 'la baja usa un rojo suave, no un rojo chillón');
-    assert(baja.toJSON().title === '⛔ Licencia desactivada', 'el título es "⛔ Licencia desactivada"');
-    assert(campo(baja, 'Estado') === 'Inactiva', 'el estado que muestra es "Inactiva"');
+    assert(baja.toJSON().title === 'Licencia desactivada', 'el título es texto limpio, sin emoji que no renderizaría');
+    assert(desc(baja).startsWith(`${E.baja} **Inactiva**`), 'la primera línea es el emoji de remover + el estado');
+    assert(desc(baja).includes(`${E.grupo} **Mi Grupo**`) && desc(baja).includes(`${E.roblox}`), 'repite el mismo bloque de identidad que /addgroup');
     assert(campo(baja, 'Motivo') === 'Reembolso', 'muestra el motivo de la baja');
     assert(campo(baja, 'Desactivado por') === `<@${ADMIN_ID}>`, 'muestra quién la desactivó');
     assert(
-        campo(baja, 'Alta original').includes('<t:1768473000:F>'),
+        campo(baja, 'Alta original').includes('<t:1768473000:f>'),
         'la baja sigue mostrando la fecha de alta original: la fila no se borra'
     );
+    assert(baja.toJSON().fields.length === 4, 'la baja son tres fechas/autor en fila más el motivo: nada más');
 
     const sinMotivo = gl.buildRemovedEmbed({
         licencia: licencia({ active: false }), nombreGrupo: null, iconUrl: null, actorId: ADMIN_ID, motivo: null,
     });
     assert(campo(sinMotivo, 'Motivo') === 'No especificado', 'sin motivo se dice "No especificado", nunca "undefined"');
-    assert(campo(sinMotivo, 'Grupo') === '—', 'un grupo sin nombre guardado no imprime "null"');
+    assert(desc(sinMotivo).includes('Grupo sin nombre'), 'un grupo sin nombre guardado no imprime "null"');
 
-    // ── Embed de /checkgroup: tres estados, tres colores ────────────────────
+    // ── /checkgroup: tres estados, tres colores ─────────────────────────────
 
     const activa = gl.buildCheckEmbed({
         estado: { ...licencia(), authorized: true, found: true },
@@ -272,32 +272,39 @@ module.exports = async function run() {
             discordUserId: null, robloxUsername: null, groupName: null, addedBy: null,
             deactivatedAt: null, deactivatedBy: null, deactivationReason: null,
         },
-        groupId: GROUP_ID, nombreGrupo: null, iconUrl: null, miembros: null,
+        groupId: GROUP_ID, nombreGrupo: 'Grupo Ajeno', iconUrl: null, miembros: 500,
     });
 
     assert(activa.toJSON().color === 0x6FCF97, 'autorizado -> verde');
     assert(inactiva.toJSON().color === 0xF2994A, 'desactivado -> naranja');
     assert(nunca.toJSON().color === 0x9AA0A6, 'nunca existió -> gris');
     assert(
-        campo(activa, 'Autorizado ahora') === 'Sí' && campo(inactiva, 'Autorizado ahora') === 'No' && campo(nunca, 'Autorizado ahora') === 'No',
-        'los tres dicen explícitamente si el grupo está autorizado AHORA'
+        desc(activa).startsWith(`${E.alta} **Autorizado**`) &&
+        desc(inactiva).startsWith(`${E.baja} **Licencia retirada**`) &&
+        desc(nunca).startsWith('**Sin licencia**'),
+        'los tres dicen en la primera línea si el grupo está autorizado AHORA'
     );
     assert(campo(inactiva, 'Motivo') === 'Chargeback', 'una licencia retirada explica por qué se retiró');
-    assert(campo(activa, 'Motivo') === undefined, 'una licencia activa no arrastra un campo "Motivo" vacío');
+    assert(campo(activa, 'Motivo') === undefined && activa.toJSON().fields.length === 2,
+        'una licencia activa no arrastra campos de baja vacíos');
     assert(
-        campo(nunca, 'Alta original') === '—' && campo(nunca, 'Usuario de Roblox') === '—',
-        'un grupo sin licencia muestra guiones, no "null" ni "undefined"'
+        (nunca.toJSON().fields ?? []).length === 0 && desc(nunca).includes(`${E.grupo} **Grupo Ajeno**`),
+        'un grupo sin licencia no imprime una rejilla de guiones: solo lo que Roblox sí sabe de él'
     );
-    // El separador de miles depende del ICU del entorno (es-ES no agrupa los
-    // numeros de 4 cifras), asi que se comprueba el COMPORTAMIENTO — hay
-    // numero cuando Roblox lo da, guion cuando no — y no una cadena concreta.
     assert(
-        campo(activa, 'Miembros').replace(/\D/g, '') === '1234',
-        'el número de miembros que devuelve Roblox se muestra'
+        !desc(nunca).includes(E.discord) && !desc(nunca).includes(E.roblox),
+        'sin licencia no hay comprador que enseñar, así que no se enseñan sus líneas'
     );
-    assert(campo(inactiva, 'Miembros') === '—', 'si Roblox no responde, el número de miembros es un guion y no "null"');
+    assert(
+        desc(activa).replace(/\D/g, '').includes('1234'),
+        'el número de miembros que devuelve Roblox se muestra junto al grupo'
+    );
+    assert(
+        !desc(inactiva).includes('miembros'),
+        'si Roblox no responde, no se inventa un número de miembros'
+    );
 
-    // ── Embed de /groups ────────────────────────────────────────────────────
+    // ── /groups ─────────────────────────────────────────────────────────────
 
     const lista = [
         licencia({ groupId: '111', groupName: 'Grupo Uno', active: true, robloxUsername: 'UnoRblx' }),
@@ -305,55 +312,95 @@ module.exports = async function run() {
         licencia({ groupId: '333', groupName: 'Grupo Tres', active: false, robloxUsername: 'TresRblx' }),
     ];
     const listado = gl.buildListEmbed({ groups: lista, total: 3, pagina: 0, paginas: 1, truncado: false });
-    const desc = listado.toJSON().description;
 
     assert(
-        desc.includes('**Total:** 3') && desc.includes('**Activas:** 2') && desc.includes('**Inactivas:** 1'),
-        'el listado muestra total, activas e inactivas'
+        desc(listado).startsWith('**3** licencias · **2** activas · **1** inactivas'),
+        'el listado abre con total, activas e inactivas en una sola línea'
     );
     assert(
-        desc.includes('✅ **Grupo Uno** — `111`') && desc.includes('⛔ **Grupo Tres** — `333`'),
-        'cada línea lleva el estado, el nombre y el Group ID en el formato pedido'
+        desc(listado).includes(`${E.alta} **Grupo Uno** · \`111\``) &&
+        desc(listado).includes(`${E.baja} **Grupo Tres** · \`333\``),
+        'cada línea marca el estado con el emoji de alta o de remover, y lleva nombre e id'
     );
     assert(
-        desc.includes(`<@${DISCORD_ID}> • UnoRblx`),
-        'cada licencia muestra el Discord enlazado y el usuario de Roblox'
+        desc(listado).includes(`${E.discord} <@${DISCORD_ID}> · ${E.roblox} \`UnoRblx\``),
+        'la segunda línea de cada licencia lleva Discord y Roblox con sus emojis'
     );
     assert(
-        listado.toJSON().footer.text.startsWith('Página 1/1'),
-        'el pie indica en qué página se está'
+        !desc(listado).includes(`\`${DISCORD_ID}\``),
+        'el listado NO repite el id de Discord en crudo: ocho veces por página lo convierte en un muro'
     );
-    // El listado NO usa un color de estado (verde/rojo/naranja): mezclaría un
-    // significado que no tiene, porque en la misma lista conviven activas e
-    // inactivas. Usa el gris neutro que ya llevan el resto de paneles del bot.
+    assert(listado.toJSON().footer.text.startsWith('Página 1/1'), 'el pie indica en qué página se está');
     assert(listado.toJSON().color === 0x2B2D31, 'el listado usa el gris neutro del resto de paneles del bot');
 
     const vacio = gl.buildListEmbed({ groups: [], total: 0, pagina: 0, paginas: 1, truncado: false });
     assert(
-        vacio.toJSON().description.includes('Total:** 0') && vacio.toJSON().description.includes('No hay ninguna licencia'),
+        desc(vacio).includes('**0** licencias') && desc(vacio).includes('No hay ninguna licencia'),
         'sin licencias el listado lo dice en vez de mostrar un embed roto'
     );
 
     const truncado = gl.buildListEmbed({ groups: lista, total: 5000, pagina: 0, paginas: 1, truncado: true });
     assert(
-        truncado.toJSON().fields.some(f => f.name.includes('incompleto')),
+        truncado.toJSON().fields.some(f => f.name === 'Listado incompleto'),
         'un listado que no cabe entero lo AVISA en vez de fingir que están todas'
+    );
+
+    const sinComprador = gl.buildListEmbed({
+        groups: [licencia({ groupId: '555', groupName: 'Antigua', discordUserId: null, robloxUsername: null })],
+        total: 1, pagina: 0, paginas: 1, truncado: false,
+    });
+    assert(
+        desc(sinComprador).includes('Sin Discord') && desc(sinComprador).includes('Sin Roblox'),
+        'una licencia antigua sin comprador guardado se lista igual, diciéndolo'
+    );
+
+    // ── Emojis: los del servidor, y solo donde Discord los pinta ────────────
+
+    const todosLosEmbeds = [alta, reactivada, baja, sinMotivo, activa, inactiva, nunca, listado, vacio, truncado, sinComprador];
+
+    assert(
+        todosLosEmbeds.every(e => !UNICODE_EMOJI.test(serializado(e))),
+        'ningún embed lleva emojis unicode: solo los del servidor'
+    );
+    assert(
+        todosLosEmbeds.every(e => {
+            const j = e.toJSON();
+            return !EMOJI_SERVIDOR.test(j.title ?? '') &&
+                !EMOJI_SERVIDOR.test(j.footer?.text ?? '') &&
+                !EMOJI_SERVIDOR.test(j.author?.name ?? '') &&
+                (j.fields ?? []).every(f => !EMOJI_SERVIDOR.test(f.name));
+        }),
+        'ningún emoji del servidor va en un título, un nombre de campo o un pie: ahí Discord los imprimiría en crudo'
+    );
+    assert(
+        [E.grupo, E.roblox, E.discord, E.alta, E.baja].every(emoji =>
+            todosLosEmbeds.some(e => serializado(e).includes(emoji))
+        ),
+        'los cinco emojis del servidor se usan de verdad, con sus ids exactos'
+    );
+
+    // ── Ni secretos ni URLs internas en NINGÚN embed ────────────────────────
+
+    assert(
+        todosLosEmbeds.every(e => !serializado(e).includes(SECRETO)),
+        'ningún embed contiene la clave de administración'
+    );
+    assert(
+        todosLosEmbeds.every(e => !serializado(e).includes('railway.internal') && !serializado(e).includes(URL_INTERNA)),
+        'ningún embed contiene la URL interna de la API'
     );
 
     // ── Límites de Discord con datos en el peor caso ────────────────────────
     // Un embed que pasa de 4096 caracteres de descripción o de 1024 en un
-    // campo no se muestra: Discord rechaza el mensaje entero. Se comprueba
-    // con el nombre de grupo más largo que la API acepta (64) y una página
-    // completa.
+    // campo no se muestra: Discord rechaza el mensaje entero. Se comprueba con
+    // el nombre de grupo más largo que la API acepta (64), una página completa
+    // y el marcado de los emojis, que también ocupa.
     const largo = 'G'.repeat(64);
     const pagina = Array.from({ length: gl.GRUPOS_POR_PAGINA }, (_, i) =>
         licencia({ groupId: '9'.repeat(20), groupName: largo, robloxUsername: 'U'.repeat(20), discordUserId: DISCORD_ID, active: i % 2 === 0 })
     );
-    const pesado = gl.buildListEmbed({ groups: pagina, total: 8, pagina: 0, paginas: 1, truncado: true });
-    assert(pesado.toJSON().description.length <= 4096, 'una página llena de nombres larguísimos sigue cabiendo en la descripción');
-
-    const embedsPesados = [
-        pesado,
+    const pesados = [
+        gl.buildListEmbed({ groups: pagina, total: 8, pagina: 0, paginas: 1, truncado: true }),
         gl.buildAddedEmbed({ licencia: licencia({ groupName: largo, robloxUsername: 'U'.repeat(20) }), nombreGrupo: largo, iconUrl: null, actorId: ADMIN_ID }),
         gl.buildCheckEmbed({
             estado: { ...licencia({ active: false, deactivationReason: 'M'.repeat(300), deactivatedAt: CREATED_AT, deactivatedBy: ADMIN_ID }), authorized: false, found: true },
@@ -361,14 +408,14 @@ module.exports = async function run() {
         }),
     ];
     assert(
-        embedsPesados.every(e => {
-            const json = e.toJSON();
-            const fields = json.fields ?? [];
+        pesados.every(e => {
+            const j = e.toJSON();
+            const fields = j.fields ?? [];
             return fields.length <= 25 &&
                 fields.every(f => f.name.length <= 256 && f.value.length <= 1024) &&
-                (json.description?.length ?? 0) <= 4096;
+                (j.description?.length ?? 0) <= 4096;
         }),
-        'ningún embed supera los límites de Discord (25 campos, 256/1024, 4096)'
+        'ningún embed supera los límites de Discord (25 campos, 256/1024, 4096) ni con los datos más largos posibles'
     );
 
     // ── Texto hostil ────────────────────────────────────────────────────────
@@ -378,8 +425,17 @@ module.exports = async function run() {
         total: 1, pagina: 0, paginas: 1, truncado: false,
     });
     assert(
-        !hostil.toJSON().description.includes('**__Grupo__**'),
+        !desc(hostil).includes('**__Grupo__**'),
         'un nombre de grupo con markdown se escapa: nadie puede deformar el embed nombrando así su grupo'
+    );
+
+    const conBackticks = gl.buildListEmbed({
+        groups: [licencia({ groupId: '4`4`4', groupName: 'X', robloxUsername: 'a`b' })],
+        total: 1, pagina: 0, paginas: 1, truncado: false,
+    });
+    assert(
+        (desc(conBackticks).match(/`/g) || []).length % 2 === 0,
+        'las comillas invertidas de un valor no pueden dejar un code span abierto'
     );
 
     // ── Botones de paginación ───────────────────────────────────────────────

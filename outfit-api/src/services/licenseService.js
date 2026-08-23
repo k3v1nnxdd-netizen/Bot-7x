@@ -11,6 +11,18 @@ const licenseToken = require('../security/licenseToken');
 // levantar un servidor, y el dia que el juego pregunte por otra via la
 // respuesta seguira siendo la misma.
 //
+// TRES CLASES DE RUTA CONSUMEN ESTO, y las tres pasan por verify():
+//
+//   POST /v1/license/verify   gameId y placeId en el cuerpo.
+//   POST /v1/catalog/batch    gameId y placeId en el cuerpo.
+//   GET  /v1/users, /v1/outfits   gameId y placeId por cabecera (x-game-id,
+//                             x-place-id), porque son GET y no tienen cuerpo.
+//
+// Que el transporte cambie y la decision no es exactamente el motivo de que
+// esto viva aparte. Una ruta que se conformara con menos que verify() seria un
+// agujero silencioso: el token de un cliente abriria el sistema desde una
+// experiencia que no es la suya, y no habria forma de notarlo mirando /verify.
+//
 // ═══ LA REGLA QUE GOBIERNA ESTE ARCHIVO ═══
 //
 // NADA que venga en el cuerpo de la peticion demuestra propiedad. El comprador
@@ -58,15 +70,15 @@ const CREADOR_GRUPO = 'Group';
 
 const denegado = (motivo, real = null) => ({ ok: false, motivo, propiedadReal: real });
 
-// LOS TRES PRIMEROS ESLABONES DE LA CADENA, aparte porque los comparten dos
-// clases de ruta muy distintas:
+// LOS TRES PRIMEROS ESLABONES DE LA CADENA (token -> licencia -> activa),
+// aparte de los otros cuatro porque son los unicos que no necesitan hablar con
+// Roblox: se resuelven con una consulta local por clave unica.
 //
-//   - la verificacion completa (/v1/license/verify), que ademas comprueba la
-//     propiedad real del juego contra Roblox;
-//   - las rutas de DATOS que consume el juego (/v1/users, /v1/outfits), que
-//     son GET sin cuerpo y por tanto no traen gameId ni placeId. Ahi no hay
-//     nada que comprobar contra Roblox: son lecturas sobre datos publicos, y
-//     lo que se exige es tener una licencia viva.
+// NO son un punto de entrada alternativo. TODO lo que autoriza en este servicio
+// pasa por verify(), que es esto mas la propiedad real del juego — las rutas de
+// datos incluidas, desde que reciben gameId y placeId por cabecera. Que esto
+// este separado es una division interna para poder leer la cadena, no una
+// version corta que alguna ruta pueda usar en lugar de la entera.
 //
 // Estar aqui y no duplicado en cada sitio es lo que garantiza que "token
 // valido" signifique EXACTAMENTE lo mismo en todas partes: mismo hash, misma

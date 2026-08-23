@@ -744,11 +744,18 @@ module.exports = async function run() {
         assert.strictEqual(sinToken.status, 400, 'sin token no se entra a las rutas de datos');
         assert.match(sinToken.body.error.message, /x-license-token/);
 
-        // Y con token, POST /v1/users sigue sin existir: la verificacion no le
-        // ha dado superficie de escritura a la API de datos.
+        // Y con token Y con el contexto de la experiencia, POST /v1/users sigue
+        // sin existir: la verificacion no le ha dado superficie de escritura a
+        // la API de datos.
         licenciaEn(filaActiva());
         const escritura = await request(port, 'POST', '/v1/users', {
-            headers: { ...juegoHeaders, 'x-license-token': TOKEN }, body: cuerpo(),
+            headers: {
+                ...juegoHeaders,
+                'x-license-token': TOKEN,
+                'x-game-id': UNIVERSE_ID,
+                'x-place-id': PLACE_ID,
+            },
+            body: cuerpo(),
         });
         assert.strictEqual(escritura.status, 404, 'sigue sin superficie de escritura');
         assert.strictEqual(escritura.body.error.code, 'route_not_found');

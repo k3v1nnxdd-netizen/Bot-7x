@@ -8,6 +8,7 @@ const logger = require('../observability/logger');
 const ownRateLimit = require('../security/rateLimit');
 const robloxRateLimiter = require('../roblox/rateLimiter');
 const db = require('../db/pool');
+const roblox = require('../roblox/client');
 const licenseToken = require('../security/licenseToken');
 
 // Tests de la app completa por HTTP real, pero SIN red hacia fuera: todos los
@@ -57,13 +58,35 @@ module.exports = async function run() {
     // tests puedan seguir ejercitando lo suyo, que es la VALIDACION de
     // parametros — la del token tiene su propio archivo.
     const TOKEN = licenseToken.generateToken();
+    const GROUP_ID = '35216530';
+    const PLACE_ID = '1234567890';
+    const UNIVERSE_ID = '5432109876';
+
     const queryOriginal = db.query;
     db.query = async () => ({
-        rows: [{ group_id: '35216530', active: true, license_token_hash: licenseToken.hashToken(TOKEN) }],
+        rows: [{ group_id: GROUP_ID, active: true, license_token_hash: licenseToken.hashToken(TOKEN) }],
         rowCount: 1,
     });
 
-    const auth = { 'x-license-token': TOKEN };
+    // Las rutas de datos resuelven ahora la propiedad REAL de la experiencia
+    // contra Roblox antes de dejar pasar nada. Se sustituyen las dos llamadas
+    // por un doble que dice "este place es del grupo con licencia": lo que
+    // ejercita este archivo es el CABLEADO y la validacion de parametros, no
+    // la cadena de autorizacion — esa tiene sus propios archivos.
+    const propiedadOriginal = {
+        getUniverseIdForPlace: roblox.getUniverseIdForPlace,
+        getUniverseOwner: roblox.getUniverseOwner,
+    };
+    roblox.getUniverseIdForPlace = async () => UNIVERSE_ID;
+    roblox.getUniverseOwner = async universeId => ({
+        universeId, rootPlaceId: PLACE_ID, name: 'Juego de prueba',
+        creatorType: 'Group', creatorId: GROUP_ID, creatorName: 'Grupo de prueba',
+    });
+
+    // El juego manda SIEMPRE los dos ids de la experiencia: son con lo que se
+    // le pregunta a Roblox de quien es. Sin ellos la peticion es un 400, asi
+    // que sin ellos estos tests no probarian lo que dicen probar.
+    const auth = { 'x-license-token': TOKEN, 'x-game-id': UNIVERSE_ID, 'x-place-id': PLACE_ID };
     const authMetrics = { 'x-api-key': KEY };   // /v1/metrics no se migra: es observabilidad nuestra
 
     test('GET /health responde 200 sin API key y sin tocar Roblox', async () => {
@@ -155,7 +178,14 @@ module.exports = async function run() {
         }
 
         // Lo importante: rechazar en el borde cuesta microsegundos y CERO
-        // trafico saliente. Una peticion basura no puede gastar cuota de Roblox.
+        // trafico saliente hacia los endpoints de DATOS. Una peticion basura no
+        // puede gastar cuota de usernameLookup / outfitList / outfitDetails.
+        //
+        // (La propiedad de la experiencia si se resuelve antes que el
+        // parametro, porque la puerta va delante de la ruta. Cuesta dos
+        // llamadas la PRIMERA vez que se ve un placeId y ninguna despues: se
+        // cachea 6 h. Aqui esta ademas sustituida por un doble, que no pasa por
+        // el limitador y por eso no mueve estos contadores.)
         assert.deepStrictEqual(robloxCallCounts(), before);
     });
 
@@ -202,6 +232,7 @@ module.exports = async function run() {
     const ok = await suite.run();
 
     db.query = queryOriginal;
+    Object.assign(roblox, propiedadOriginal);
     await new Promise(resolve => server.close(resolve));
     return ok;
 };

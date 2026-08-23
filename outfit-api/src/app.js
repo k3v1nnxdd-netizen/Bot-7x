@@ -10,7 +10,7 @@ const licenseRoute = require('./api/routes/license');
 const catalogRoute = require('./api/routes/catalog');
 const { requireApiKey } = require('./security/apiKey');
 const { requireAdminKey } = require('./security/adminKey');
-const { requireLicenseTokenHeader, requireActiveLicense } = require('./security/licenseGuard');
+const { requireLicenseTokenHeader, requireLicensedGame } = require('./security/licenseGuard');
 const { rateLimit } = require('./security/rateLimit');
 const { requestLogger } = require('./observability/requestLogger');
 const { latencyMiddleware } = require('./observability/metrics');
@@ -80,14 +80,21 @@ function createApp() {
     // nada mas: el comprador configura UN solo Secret en su experiencia
     // (`OutfitLicenseToken`) y con el llama a todo lo que necesita.
     //
-    // `requireActiveLicense` comprueba token -> licencia -> activa. No resuelve
-    // la propiedad del juego contra Roblox, y no puede: son GET sin cuerpo, sin
-    // gameId ni placeId. Tampoco hace falta — esto son lecturas sobre datos
-    // PUBLICOS de Roblox, no la autorizacion del producto, que sigue viviendo
-    // entera en /v1/license/verify.
-    app.use('/v1/users', rateLimit, requireLicenseTokenHeader, requireActiveLicense,
+    // `requireLicensedGame` exige la CADENA ENTERA, la misma que
+    // /v1/license/verify: token -> licencia -> activa -> propiedad real del
+    // juego contra Roblox -> ese dueño es un grupo -> es el grupo de la
+    // licencia. Los dos ids que hacen falta para preguntarselo a Roblox
+    // (`x-game-id`, `x-place-id`) viajan por cabecera, porque estas rutas son
+    // GET y no tienen cuerpo.
+    //
+    // Que aqui se compruebe lo mismo que en /verify no es redundancia: sin
+    // ello, el token de un cliente abriria estas rutas desde CUALQUIER
+    // experiencia de Roblox, y la licencia dejaria de estar atada al juego que
+    // se pago. Verificar al arrancar el servidor no sirve de nada si cada
+    // lectura posterior se conforma con menos.
+    app.use('/v1/users', rateLimit, requireLicenseTokenHeader, requireLicensedGame,
         latencyMiddleware, usersRoute, notFoundHandler);
-    app.use('/v1/outfits', rateLimit, requireLicenseTokenHeader, requireActiveLicense,
+    app.use('/v1/outfits', rateLimit, requireLicenseTokenHeader, requireLicensedGame,
         latencyMiddleware, outfitsRoute, notFoundHandler);
 
     // ── Lo unico que queda con la clave compartida ───────────────────────────

@@ -20,15 +20,21 @@ Tres alcances, tres credenciales, y ninguna abre la puerta de otra:
 
 Las rutas del juego **no** piden `x-api-key` porque esa clave era idéntica para todos los clientes y viajaba dentro del `.rbxl` que se vende: no identificaba a nadie y no se podía revocar sin romperle el juego a todos a la vez. El token sí. `/health` no pide ninguna credencial; `/v1/metrics` se queda con `x-api-key` a propósito — es observabilidad nuestra (percentiles, breaker, contadores de la base) y un cliente con licencia no tiene por qué verla.
 
-En las rutas de **datos** (`/v1/users`, `/v1/outfits`) la comprobación es token → licencia encontrada → licencia activa. No se resuelve la propiedad del juego contra Roblox: son GET sin cuerpo, sin `gameId` ni `placeId`, y son lecturas sobre datos **públicos** de Roblox. La autorización del producto sigue viviendo entera en `/v1/license/verify`.
+En las rutas de **datos** (`/v1/users`, `/v1/outfits`) la comprobación es **la cadena entera, la misma de `/v1/license/verify`**: token → licencia encontrada → licencia activa → Roblox conoce el place → el universo cuadra → el dueño real es un **grupo** → ese grupo es el de la licencia. Como son GET sin cuerpo, los dos ids con los que se le pregunta a Roblox viajan por cabecera: **`x-game-id`** y **`x-place-id`**, obligatorias.
+
+Que aquí se compruebe lo mismo que en `/verify` no es redundancia. Con solo «token vivo», quien copiara el token de un cliente podría leer outfits desde **su propio juego** indefinidamente: verificar al arrancar el servidor no sirve de nada si cada lectura posterior se conforma con menos. La licencia queda atada al juego que se pagó, no solo al grupo.
+
+`x-creator-type` y `x-creator-id` también se envían y **no deciden nada** — son lo que el `.rbxl` afirma de sí mismo, y el `.rbxl` está en el ordenador del comprador. Se registran para poder comparar lo declarado con lo real, que es como se detecta un cliente manipulado.
+
+**Falta una cabecera → `400`, nunca un pase.** Si su ausencia saltara la comprobación, desactivarla sería tan fácil como borrar una línea del script que se distribuye.
 
 | Método | Ruta | Descripción |
 |---|---|---|
 | `GET` | `/health` | Healthcheck de Railway. Público, sin límite, sin llamadas a Roblox. |
-| `GET` | `/v1/users/by-username/:username` | Resuelve `username` → `userId`. **`x-license-token`.** |
-| `GET` | `/v1/users/:userId/outfits?limit=&pageToken=&outfitType=` | Lista los outfits **guardados**. **`x-license-token`.** |
-| `GET` | `/v1/users/by-username/:username/outfits?…` | Resuelve **y** lista. **`x-license-token`.** |
-| `GET` | `/v1/outfits/:outfitId?catalog=1&bundles=1` | Contenido completo del outfit. **`x-license-token`.** |
+| `GET` | `/v1/users/by-username/:username` | Resuelve `username` → `userId`. **`x-license-token` + `x-game-id` + `x-place-id`.** |
+| `GET` | `/v1/users/:userId/outfits?limit=&pageToken=&outfitType=` | Lista los outfits **guardados**. **`x-license-token` + `x-game-id` + `x-place-id`.** |
+| `GET` | `/v1/users/by-username/:username/outfits?…` | Resuelve **y** lista. **`x-license-token` + `x-game-id` + `x-place-id`.** |
+| `GET` | `/v1/outfits/:outfitId?catalog=1&bundles=1` | Contenido completo del outfit. **`x-license-token` + `x-game-id` + `x-place-id`.** |
 | `GET` | `/v1/metrics` | Observabilidad interna. **`x-api-key`.** No la consume el juego. |
 | `POST` | `/v1/catalog/batch` | Inteligencia de catálogo de un outfit entero. **`x-license-token`.** |
 | `POST` | `/v1/license/verify` | ¿Puede este juego usar el sistema? **`x-license-token`.** |
@@ -170,15 +176,30 @@ local BASE = "https://<tu-servicio>.up.railway.app"
 -- token que entregó /addgroup o /regeneratetoken.
 local TOKEN = HttpService:GetSecret("OutfitLicenseToken")
 
+-- Cabeceras fijas de TODA llamada de datos. Los dos ids no son telemetría:
+-- son con lo que la API le pregunta a Roblox de quién es esta experiencia, y
+-- sin ellos la petición es un 400. game.GameId y game.PlaceId los pone Roblox,
+-- no el script.
+local HEADERS = {
+    ["x-license-token"] = TOKEN,
+    ["x-game-id"]  = tostring(game.GameId),
+    ["x-place-id"] = tostring(game.PlaceId),
+    -- Informativos: la API NO los usa para decidir, solo para el log.
+    ["x-creator-type"] = tostring(game.CreatorType.Name),
+    ["x-creator-id"]   = tostring(game.CreatorId),
+}
+
 local function apiGet(path)
     local ok, res = pcall(HttpService.RequestAsync, HttpService, {
-        Url = BASE .. path, Method = "GET", Headers = { ["x-license-token"] = TOKEN },
+        Url = BASE .. path, Method = "GET", Headers = HEADERS,
     })
     if not ok then return nil, "network" end
     local body = HttpService:JSONDecode(res.Body)
     if res.StatusCode == 200 then return body end
-    -- 403 llega como { ok = false, motivo = "..." }: token_invalido o
-    -- licencia_inactiva. El resto de errores llega como { error = {...} }.
+    -- 403 llega como { ok = false, motivo = "..." }: token_invalido,
+    -- licencia_inactiva, grupo_no_coincide, no_es_grupo, juego_desconocido o
+    -- juego_no_coincide. El resto de errores llega como { error = {...} }.
+    -- Un 503 NO es una denegación: es "ahora mismo no lo sé", y se reintenta.
     if res.StatusCode == 403 then return nil, body.motivo end
     return nil, body.error and body.error.code or tostring(res.StatusCode)
 end

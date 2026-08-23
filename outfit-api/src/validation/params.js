@@ -357,6 +357,83 @@ function parseLicenseTokenHeader(headers) {
 
     return raw.trim();
 }
+
+// ── Contexto de la EXPERIENCIA en las rutas de DATOS ────────────────────────
+//
+// Las tres rutas que consume el juego (GET /v1/users/..., GET /v1/outfits/...)
+// no tienen cuerpo donde meter `gameId` y `placeId`, y los necesitan por el
+// mismo motivo que /v1/license/verify: son el PUNTERO con el que se le
+// pregunta a Roblox de quien es la experiencia. Asi que viajan por cabecera,
+// igual que el token, en `x-game-id` y `x-place-id`.
+//
+// SON OBLIGATORIOS, y esa es la decision que sostiene todo lo demas. Si
+// faltaran y la comprobacion se saltara sin ellos, quitar dos lineas del
+// script bastaria para desactivar la verificacion de propiedad — que es
+// exactamente lo que esa verificacion existe para impedir. No tener nada que
+// comprobar no puede significar "adelante".
+//
+// Mismo reparto de codigos que en el resto del servicio: cabecera ausente o
+// mal formada -> 400 (bug del script que llama, y decirselo claro es lo que le
+// permite arreglarlo); propiedad que no cuadra -> 403 con motivo, y eso lo
+// decide licenseService, no esto.
+function parseSingleHeader(headers, name, maxLength = 64) {
+    const raw = headers?.[name];
+
+    if (raw === undefined || raw === null || (typeof raw === 'string' && raw.trim() === '')) {
+        throw new ValidationError(`Falta la cabecera ${name} con el id de la experiencia`);
+    }
+    // Node entrega un ARRAY si la cabecera llega repetida. Con dos ids
+    // distintos no hay forma honesta de elegir uno.
+    if (typeof raw !== 'string') {
+        throw new ValidationError(`${name} debe enviarse una sola vez`);
+    }
+    if (raw.length > maxLength) {
+        throw new ValidationError(`${name} no tiene un tamaño valido`);
+    }
+
+    return raw.trim();
+}
+
+// Cabecera OPCIONAL de las que el juego DECLARA sobre si mismo. Ausente es
+// ausente y no un error: son datos auxiliares que no deciden nada.
+function parseOptionalHeader(headers, name, maxLength = 64) {
+    const raw = headers?.[name];
+    if (raw === undefined || raw === null) return null;
+    if (typeof raw !== 'string') {
+        throw new ValidationError(`${name} debe enviarse una sola vez`);
+    }
+    const value = raw.trim();
+    if (value === '') return null;
+    if (value.length > maxLength) {
+        throw new ValidationError(`${name} no tiene un tamaño valido`);
+    }
+    return value;
+}
+
+function parseLicenseContextHeaders(headers) {
+    // `x-creator-type` y `x-creator-id` se aceptan y se REGISTRAN, pero no
+    // entran en ninguna decision: son afirmaciones del .rbxl, que es un archivo
+    // que esta en el ordenador del comprador. Sirven para que el log distinga
+    // un script mal configurado de un intento deliberado de suplantacion — ver
+    // detectarDeclaracionFalsa en licenseService.
+    //
+    // Se validan igual de estrictos que en el cuerpo de /v1/license/verify: un
+    // valor mal escrito es un bug del script, y devolverle un 400 explicito se
+    // lo enseña en vez de esconderselo.
+    const creatorTypeRaw = parseOptionalHeader(headers, 'x-creator-type', 32);
+    const creatorIdRaw = parseOptionalHeader(headers, 'x-creator-id');
+
+    return {
+        // Los dos que SI importan. `placeId` es a quien se le pregunta la
+        // propiedad y `gameId` lo que se contrasta con el universo real.
+        gameId: parseGroupId(parseSingleHeader(headers, 'x-game-id'), 'x-game-id'),
+        placeId: parseGroupId(parseSingleHeader(headers, 'x-place-id'), 'x-place-id'),
+
+        creatorType: creatorTypeRaw,
+        creatorId: creatorIdRaw === null ? null : parseGroupId(creatorIdRaw, 'x-creator-id'),
+    };
+}
+
 //
 // Lo que manda el juego de Roblox. Se valida la FORMA aqui y se decide la
 // AUTORIZACION en src/services/licenseService.js, y esa separacion importa:
@@ -493,6 +570,7 @@ module.exports = {
     parseCatalogBatchBody,
     parseLicenseVerifyBody,
     parseLicenseTokenHeader,
+    parseLicenseContextHeaders,
     parseRobloxNumericId,
     parseUsername,
     parseUserId,

@@ -20,8 +20,18 @@ const { NotFoundError, UpstreamRateLimitedError, CircuitOpenError, UpstreamError
 //     placeId (declarado)
 //        -> apis.roblox.com/universes/v1/places/{placeId}/universe
 //     universeId REAL
-//        -> games.roblox.com/v1/games?universeIds={universeId}
+//        -> develop.roblox.com/v1/universes/{universeId}
 //     creator REAL { type: "Group"|"User", id }
+//
+// Ninguna de las dos llamadas usa credenciales de Roblox, y no por descuido:
+// este servicio no tiene ninguna que pueda filtrarse porque no existe. Ni
+// cookie, ni Open Cloud, ni OAuth. La unica credencial del sistema sigue
+// siendo x-license-token, que es NUESTRA y se revoca de una en una.
+//
+// El segundo paso NO es games.roblox.com/v1/games, que es el que se usaba
+// antes: aquel endpoint responde 200 con una ficha CENSURADA (ids a cero) en
+// vez de un 404 cuando no quiere enseñar la experiencia, y eso se traducia por
+// "no existe". Ver la nota larga en getUniverseOwner (src/roblox/client.js).
 //
 // LO QUE ESTO SI RESUELVE: nadie puede ya inventarse un dueño. Un `creatorId`
 // falso en el JSON no cambia el resultado, porque el resultado no sale del
@@ -86,6 +96,14 @@ async function resolveByPlaceId(placeId) {
         // Roblox dice con certeza que no existe. Es una RESPUESTA, no un
         // fallo: se devuelve como dato para que la decision de licencia la
         // tome un solo sitio.
+        //
+        // ESTE ES EL UNICO CAMINO QUE PRODUCE UNA DENEGACION DEFINITIVA, asi
+        // que lo que llega hasta aqui esta acotado a proposito: un 404, o el
+        // 400 concreto con el que develop.roblox.com dice "The universe does
+        // not exist". Una respuesta que simplemente no se puede usar —Roblox
+        // censurando la ficha, un cuerpo con forma inesperada— sale por
+        // UpstreamError y termina en 503, no aqui. Confundir las dos cosas es
+        // exactamente el fallo que tuvo este modulo.
         if (err instanceof NotFoundError) return DESCONOCIDO;
 
         // A partir de aqui, todo es "no lo se ahora mismo". NUNCA se traduce a

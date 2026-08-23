@@ -255,7 +255,20 @@ async function callOnce(fn) {
 // `routeKey` identifica el bucket; `notFoundCode` es el codigo semantico que
 // se le da a un 404 en esta ruta concreta ('user_not_found' vs
 // 'outfit_not_found'), porque el limitador no sabe que recurso se pidio.
-async function run(routeKey, fn, { notFoundCode = 'not_found' } = {}) {
+//
+// `notFoundWhen(status, data)` es la valvula para las rutas de Roblox que NO
+// usan 404 para decir "esto no existe". develop.roblox.com contesta 400 con
+// {"errors":[{"code":1,"field":"universeId","message":"The universe does not
+// exist."}]}, que sin esto acabaria de 502 — un fallo temporal — cuando en
+// realidad es una respuesta definitiva.
+//
+// LA DIRECCION DEL RIESGO NO ES SIMETRICA, y por eso el predicado lo pone cada
+// llamada y no una regla general: quedarse corto (tratar un "no existe" como
+// fallo temporal) devuelve un 503 que se reintenta, molesto pero inofensivo.
+// Pasarse (tratar un 4xx cualquiera como "no existe") convierte un problema de
+// Roblox en una DENEGACION definitiva contra un cliente legitimo. Ante la duda,
+// el predicado tiene que decir que no.
+async function run(routeKey, fn, { notFoundCode = 'not_found', notFoundWhen = null } = {}) {
     const bucket = buckets[routeKey];
     if (!bucket) throw new Error(`routeKey desconocido: ${routeKey}`);
 
@@ -282,8 +295,10 @@ async function run(routeKey, fn, { notFoundCode = 'not_found' } = {}) {
 
                 const status = err?.response?.status;
 
-                // ── 404: respuesta valida y definitiva ──
-                if (status === 404) {
+                // ── 404 (o el "no existe" propio de esta ruta): valido y definitivo ──
+                // El predicado solo se consulta si HUBO respuesta: sin ella no
+                // hay nada que Roblox haya confirmado.
+                if (status === 404 || (err?.response && notFoundWhen?.(status, err.response.data) === true)) {
                     bucket.metrics.notFound++;
                     onSuccess(bucket); // Roblox funciona: el recurso es el que no existe
                     throw new NotFoundError(notFoundCode, 'El recurso solicitado no existe en Roblox');

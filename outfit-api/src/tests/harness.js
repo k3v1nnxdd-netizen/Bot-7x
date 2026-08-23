@@ -34,9 +34,12 @@ function createSuite(name) {
 // Error con la forma de uno de axios, para ejercitar la clasificacion del
 // limitador sin red: axios cuelga la respuesta HTTP de `err.response`, y deja
 // esa propiedad AUSENTE cuando no hubo respuesta (timeout, DNS, socket).
-function axiosError(status, headers = {}) {
+// `data` importa cuando la clasificacion depende del CUERPO y no solo del
+// codigo: develop.roblox.com dice "el universo no existe" con un 400 cuyo
+// cuerpo es lo unico que lo distingue de cualquier otro 400.
+function axiosError(status, headers = {}, data = {}) {
     const err = new Error(`Request failed with status code ${status}`);
-    err.response = { status, headers, data: {} };
+    err.response = { status, headers, data };
     return err;
 }
 

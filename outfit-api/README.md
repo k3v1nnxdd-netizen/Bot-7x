@@ -527,12 +527,40 @@ placeId (lo declara el juego)
    │      → universeId REAL
    │      → ¿coincide con el gameId declarado?  si no: juego_no_coincide
    │
-   └─► GET games.roblox.com/v1/games?universeIds={universeId REAL}
-          → creator REAL { type: "Group"|"User", id }
+   └─► GET develop.roblox.com/v1/universes/{universeId REAL}
+          → creatorType / creatorTargetId REALES
           → ese id es el que se compara con el group_id de la licencia
+          → rootPlaceId, solo para el log (un universo tiene varios places)
 ```
 
 El único dato del cliente que entra en la decisión es `placeId`, y **no como prueba de propiedad sino como puntero**: «mira este sitio y dime tú de quién es».
+
+Las dos llamadas van **sin credenciales de Roblox** — ni cookie, ni Open Cloud, ni OAuth. No es una omisión: este servicio no tiene ninguna credencial de Roblox que pueda filtrarse porque no existe ninguna. La única credencial del sistema sigue siendo `x-license-token`, que es nuestra y se revoca de una en una.
+
+#### Por qué el segundo paso no es `games.roblox.com/v1/games`
+
+Lo era, y **mentía por omisión — con un 200**. Ese endpoint solo revela los detalles de una experiencia si el gateway público considera que puede enseñarlos. Cuando no (experiencia privada, sin publicar, o publicada con el cuestionario de madurez pendiente) no responde 404 ni 403: responde **200 con una ficha censurada** que tiene la forma de una respuesta buena y los ids a **cero**:
+
+```json
+{ "id": 0, "rootPlaceId": 0, "name": "[TITLE UNAVAILABLE]",
+  "creator": { "id": 0, "name": "[UNKNOWN]", "type": "Group" },
+  "isContentRestricted": true }
+```
+
+El código hacía `if (!juego?.id) throw NotFoundError` y, como `0` es *falsy*, traducía «Roblox no me lo quiere contar» por «esa experiencia no existe» → `juego_desconocido`, un **403 definitivo contra un cliente cuyo juego existía y era suyo**. Se detectó con la primera experiencia real: place `125691607069384`, universo `10751677333`, grupo `144910779`.
+
+Quitar aquel `if` no arreglaba nada: con `creator.id: 0` la cadena seguía y moría en `grupo_no_coincide`. Otro 403 definitivo con otro nombre. El endpoint entero no sirve para decidir propiedad.
+
+`develop.roblox.com/v1/universes/{id}` devuelve el propietario real de experiencias **públicas y privadas** sin credenciales, y señala «no existe» con un **400** (`{"errors":[{"code":1,"field":"universeId"}]}`), no con un 404 — de ahí el predicado `notFoundWhen` del limitador, deliberadamente estrecho.
+
+**La regla que gobierna esto**, y que es la lección del fallo:
+
+| Lo que dice Roblox | Cómo se traduce |
+|---|---|
+| «no existe», **confirmado** (404, o el 400 concreto) | `NotFoundError` → `juego_desconocido` (403, definitivo) |
+| Todo lo demás: censura, cuerpo raro, 401, 403, 429, 5xx, red | `UpstreamError` → **503**, reintentable |
+
+Equivocarse hacia «no lo sé» cuesta un reintento. Equivocarse hacia «no existe» echa a un cliente legítimo de su propio juego. Los dos errores no son simétricos y el código los trata en consecuencia.
 
 ### La cadena, en este orden exacto
 

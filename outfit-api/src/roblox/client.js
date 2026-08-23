@@ -5,7 +5,7 @@ const http = require('http');
 const https = require('https');
 const config = require('../config');
 const rateLimiter = require('./rateLimiter');
-const { NotFoundError } = require('./errors');
+const { NotFoundError, UpstreamError } = require('./errors');
 
 // EL UNICO modulo de este servicio que habla con Roblox. Nada mas importa
 // axios ni construye una URL de roblox.com: cualquier futura llamada entra
@@ -18,6 +18,11 @@ const { NotFoundError } = require('./errors');
 //   3. GET  avatar.roblox.com/v3/outfits/{id}/details       contenido del outfit
 //   4. GET  catalog.roblox.com/v1/assets/{id}/bundles       SOLO bajo peticion
 //      explicita (?bundles=1) — ver getBundlesForAsset y su advertencia.
+//   5. GET  apis.roblox.com/universes/v1/places/{id}/universe  placeId -> universeId
+//   6. GET  develop.roblox.com/v1/universes/{id}            universeId -> dueño REAL
+//
+// Las dos ultimas son la verificacion de licencia. La 6 NO es games.roblox.com
+// a proposito: ver la nota larga sobre la ficha censurada en getUniverseOwner.
 //
 // Las tres primeras son las que atienden el 100% del trafico normal. Un outfit
 // completo — accesorios, ropa 2D y por capas, partes del cuerpo, colores,
@@ -422,32 +427,94 @@ async function getUniverseIdForPlace(placeId) {
     return String(universeId);
 }
 
-// GET https://games.roblox.com/v1/games?universeIds={universeId}
-// -> { data: [{ id, rootPlaceId, name, creator: { id, name, type } }] }
+// GET https://develop.roblox.com/v1/universes/{universeId}
+// -> { id, name, rootPlaceId, isActive, privacyType,
+//      creatorType: "Group"|"User", creatorTargetId, creatorName }
 //
-// `creator.type` es "Group" o "User", y `creator.id` el id del grupo o del
-// usuario. ESTA es la fuente de verdad de la autorizacion: lo que Roblox dice
-// sobre quien es dueño del universo, no lo que dice el script del cliente.
+// ESTA es la fuente de verdad de la autorizacion: lo que Roblox dice sobre
+// quien es dueño del universo, no lo que dice el script del cliente.
+//
+// ═══ POR QUE NO games.roblox.com/v1/games?universeIds= ═══
+//
+// Porque MIENTE POR OMISION, y de la peor forma posible: con un 200.
+//
+// Ese endpoint solo revela los detalles de una experiencia si el gateway
+// publico considera que puede enseñarlos. Cuando no —experiencia privada, sin
+// publicar, o publicada pero con el cuestionario de madurez de contenido
+// pendiente— NO responde 404 ni 403. Responde 200 con una ficha censurada
+// que tiene la forma de una respuesta buena:
+//
+//     { "id": 0, "rootPlaceId": 0, "name": "[TITLE UNAVAILABLE]",
+//       "creator": { "id": 0, "name": "[UNKNOWN]", "type": "Group" },
+//       "isContentRestricted": true }
+//
+// Los ids llegan a CERO. El codigo anterior hacia `if (!juego?.id) throw
+// NotFoundError`, y como 0 es falsy, traducia "Roblox no me lo quiere contar"
+// por "esa experiencia no existe" -> juego_desconocido -> 403 definitivo
+// contra un cliente cuyo juego existe y es suyo. Se detecto con la primera
+// experiencia real: placeId 125691607069384, universo 10751677333, del grupo
+// 144910779, denegado durante horas.
+//
+// Y no valia con quitar aquel `if`: con creator.id = 0 la cadena seguia
+// adelante y moria en `juego_no_coincide` ("0" !== el grupo de la licencia).
+// Otro 403 definitivo, solo que con otro nombre. El endpoint entero no sirve
+// para decidir propiedad.
+//
+// develop.roblox.com/v1/universes/{id} devuelve el propietario REAL tanto de
+// experiencias publicas como privadas, sin credenciales de ningun tipo — ni
+// cookie, ni Open Cloud, ni OAuth (comprobado en vivo con las dos clases). Se
+// mantiene asi la propiedad de este cliente: no existe ninguna credencial de
+// Roblox en este servicio que pueda filtrarse, porque no hay ninguna.
+//
+// ═══ COMO DICE ESTA RUTA "no existe" ═══
+//
+// Con un 400, no con un 404 (comprobado en vivo):
+//     {"errors":[{"code":1,"field":"universeId",
+//                 "message":"The universe does not exist."}]}
+//
+// De ahi el `notFoundWhen`: sin el, un universo inexistente saldria de 502.
+// El predicado es DELIBERADAMENTE estrecho —exige el 400, el code 1 y el
+// field— porque errar hacia "no lo se" (503, se reintenta) es inofensivo y
+// errar hacia "no existe" (403, definitivo) echa a un cliente legitimo.
+const UNIVERSO_INEXISTENTE = (status, data) =>
+    status === 400 &&
+    Array.isArray(data?.errors) &&
+    data.errors.some(e => e?.code === 1 && e?.field === 'universeId');
+
 async function getUniverseOwner(universeId) {
     const response = await rateLimiter.run('universeInfo', () => http_.get(
-        `https://games.roblox.com/v1/games?universeIds=${universeId}`
-    ), { notFoundCode: 'universe_not_found' });
+        `https://develop.roblox.com/v1/universes/${universeId}`
+    ), { notFoundCode: 'universe_not_found', notFoundWhen: UNIVERSO_INEXISTENTE });
 
-    // Con un universeId inexistente Roblox responde 200 con data: [], igual
-    // que el endpoint de usernames. Mismo tratamiento: "no existe" tiene una
-    // sola forma en este servicio, venga como venga.
-    const juego = response.data?.data?.[0];
-    if (!juego?.id) {
-        throw new NotFoundError('universe_not_found', 'Roblox no reconoce ese universo');
+    const universo = response.data;
+    const creatorId = universo?.creatorTargetId;
+
+    // 200 CON UN CUERPO QUE NO SIRVE PARA DECIDIR. Esto es UpstreamError y
+    // jamas NotFoundError, y es la leccion entera del fallo que arreglo este
+    // codigo: "Roblox contesto algo que no puedo usar" no es "esto no existe".
+    // Sube como 502/503 —reintentable— en vez de convertirse en una denegacion
+    // definitiva. El `<= 0` cubre exactamente la ficha censurada, por si algun
+    // dia esta ruta tambien la sirviera.
+    if (universo?.id == null || universo.creatorType == null || creatorId == null || Number(creatorId) <= 0) {
+        throw new UpstreamError(
+            'develop/universes respondio 200 sin un propietario utilizable',
+            new Error(`universeId=${universeId} creatorType=${universo?.creatorType ?? 'ausente'} creatorTargetId=${creatorId ?? 'ausente'}`)
+        );
     }
 
     return {
-        universeId: String(juego.id),
-        rootPlaceId: juego.rootPlaceId != null ? String(juego.rootPlaceId) : null,
-        name: juego.name ?? null,
-        creatorType: juego.creator?.type ?? null,   // 'Group' | 'User'
-        creatorId: juego.creator?.id != null ? String(juego.creator.id) : null,
-        creatorName: juego.creator?.name ?? null,
+        universeId: String(universo.id),
+        // El place RAIZ del universo. NO se usa para autorizar: un universo
+        // tiene varios places y el juego puede llamar desde cualquiera de
+        // ellos, asi que exigir placeId === rootPlaceId cerraria la puerta a
+        // usos legitimos. Va al log, donde si ayuda a entender una reclamacion.
+        rootPlaceId: universo.rootPlaceId != null ? String(universo.rootPlaceId) : null,
+        name: universo.name ?? null,
+        creatorType: universo.creatorType,          // 'Group' | 'User'
+        creatorId: String(creatorId),
+        creatorName: universo.creatorName ?? null,
+        // Informativo: distingue en el log un juego sin publicar de uno vivo.
+        privacyType: universo.privacyType ?? null,
     };
 }
 
@@ -462,5 +529,9 @@ module.exports = {
     getUniverseIdForPlace,
     getUniverseOwner,
     normalizeOutfitList, // puro; exportado para los tests
+    // puro; exportado para los tests. Es el que decide si un 4xx de Roblox es
+    // "no existe" (definitivo) o "algo va mal" (reintentable), asi que merece
+    // pruebas propias en vez de solo ejercitarse de refilon.
+    esUniversoInexistente: UNIVERSO_INEXISTENTE,
     catalogKey,          // puro; la clave "Asset:123" / "Bundle:192"
 };

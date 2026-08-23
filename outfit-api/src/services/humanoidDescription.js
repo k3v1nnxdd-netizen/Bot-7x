@@ -62,6 +62,19 @@ const CLASSIC_ACCESSORIES = {
 // WalkAnimation(55), MoodAnimation(78). Death y Pose se mapean por el mismo
 // criterio de nombre; si Roblox nunca los envia, el campo queda simplemente
 // en null, que es la verdad.
+//
+// AVISO PARA QUIEN CONSUMA ESTO, verificado contra el API dump de Roblox:
+// `death` y `pose` NO tienen propiedad en HumanoidDescription. Roblox tiene
+// los TIPOS de asset (49 DeathAnimation, 56 PoseAnimation) pero la clase no
+// expone DeathAnimation ni PoseAnimation, asi que `d.DeathAnimation = ...` en
+// Lua es un error en tiempo de ejecucion que aborta la construccion ENTERA del
+// avatar — cara animada incluida. Se siguen exponiendo porque son datos reales
+// del outfit y ocultarlos seria mentir; lo que no pueden es aplicarse a ciegas.
+//
+// `mood` SI existe (HumanoidDescription.MoodAnimation) y es LA pieza que
+// anima la cara. Por eso se duplica en `animatedFace`: en esta lista, entre
+// climb y walk, es justo donde un juego que aplica "las animaciones de
+// movimiento" se la deja sin querer.
 const ANIMATIONS = {
     ClimbAnimation: 'climb',
     DeathAnimation: 'death',
@@ -73,6 +86,33 @@ const ANIMATIONS = {
     WalkAnimation: 'walk',
     PoseAnimation: 'pose',
     MoodAnimation: 'mood',
+};
+
+// typeName de Roblox -> nombre de Enum.AccessoryType, que es lo que espera
+// HumanoidDescription:SetAccessories(). La conversion es mecanica (quitarle el
+// sufijo "Accessory"), pero tenerla aqui evita que cada juego se escriba su
+// propia tabla y se deje justo las dos que importan para la cara: Eyebrow y
+// Eyelash. Un tipo que no este aqui sale como null y el juego decide.
+const ACCESSORY_TYPES = {
+    Hat: 'Hat',
+    HairAccessory: 'Hair',
+    FaceAccessory: 'Face',
+    NeckAccessory: 'Neck',
+    ShoulderAccessory: 'Shoulder',
+    FrontAccessory: 'Front',
+    BackAccessory: 'Back',
+    WaistAccessory: 'Waist',
+    TShirtAccessory: 'TShirt',
+    ShirtAccessory: 'Shirt',
+    PantsAccessory: 'Pants',
+    JacketAccessory: 'Jacket',
+    SweaterAccessory: 'Sweater',
+    ShortsAccessory: 'Shorts',
+    LeftShoeAccessory: 'LeftShoe',
+    RightShoeAccessory: 'RightShoe',
+    DressSkirtAccessory: 'DressSkirt',
+    EyebrowAccessory: 'Eyebrow',
+    EyelashAccessory: 'Eyelash',
 };
 
 function emptyAccessories() {
@@ -165,6 +205,12 @@ function buildOutfit(raw, outfitId) {
     const other = [];
     let face = null;
     let dynamicHead = null;
+    // Las tres piezas restantes de la cara animada. Van aparte porque el juego
+    // las necesita juntas y Roblox las manda desperdigadas entre los demas
+    // assets, sin nada que diga que forman una sola cosa.
+    let eyebrow = null;
+    let eyelash = null;
+    let supportsHeadShapes = null;
 
     const assets = rawAssets.map(asset => {
         const typeName = asset?.assetType?.name ?? null;
@@ -181,10 +227,23 @@ function buildOutfit(raw, outfitId) {
                 // expone tambien por separado.
                 bodyParts.head = id;
                 dynamicHead = id;
+                // Lo trae el propio asset. Dice si la cabeza acepta las formas
+                // de cabeza del jugador, y el juego lo necesita para decidir si
+                // respeta la suya o impone la del outfit.
+                supportsHeadShapes = asset?.supportsHeadShapes ?? null;
             } else if (CLOTHING[typeName]) {
                 clothing[CLOTHING[typeName]] = id;
             } else if (typeName === 'Face') {
                 face = id;
+            } else if (typeName === 'EyebrowAccessory') {
+                // Cejas y pestañas son piezas POR CAPAS, asi que siguen
+                // apareciendo en layeredClothing con su order y su puffiness —
+                // que es como se aplican. Se capturan ademas aqui porque
+                // pertenecen a la CARA, y mezcladas entre camisas y chaquetas
+                // es exactamente donde un juego deja de aplicarlas.
+                eyebrow = id;
+            } else if (typeName === 'EyelashAccessory') {
+                eyelash = id;
             } else if (CLASSIC_ACCESSORIES[typeName]) {
                 accessories[CLASSIC_ACCESSORIES[typeName]].push(id);
             } else if (ANIMATIONS[typeName]) {
@@ -204,6 +263,11 @@ function buildOutfit(raw, outfitId) {
                     assetId: id,
                     typeId,
                     typeName,
+                    // El nombre de Enum.AccessoryType que espera
+                    // SetAccessories(). Sin esto, cada juego se escribe la
+                    // misma tabla de conversion y las cejas y pestañas son
+                    // justo las que se quedan fuera.
+                    accessoryType: ACCESSORY_TYPES[typeName] ?? null,
                     order: asset.meta.order ?? null,
                     puffiness: asset.meta.puffiness ?? null,
                 });
@@ -241,6 +305,38 @@ function buildOutfit(raw, outfitId) {
             dynamicHead,
             clothing,
             face,
+
+            // ── LA CARA ANIMADA NUEVA DE ROBLOX, en un solo sitio ────────────
+            //
+            // Todo lo de aqui existe ya en otros campos de esta misma
+            // respuesta: `head` es `bodyParts.head`, `mood` es
+            // `animations.mood`, y las cejas y pestañas estan en
+            // `layeredClothing`. Que este repetido es DELIBERADO y es el
+            // arreglo: repartida entre "partes del cuerpo", "animaciones" y
+            // "ropa por capas", la cara animada no se parece a una sola cosa, y
+            // un juego que aplique esas tres categorias por separado se deja
+            // el `mood` — que es, literalmente, lo que la anima. La cabeza
+            // dinamica sin su mood se monta bien y se queda QUIETA.
+            //
+            // COMO SE APLICA EN LUA, y son dos lineas distintas:
+            //   d.Head          = animatedFace.head    -- la malla con FaceControls
+            //   d.MoodAnimation = animatedFace.mood    -- la expresion que la mueve
+            // Y las cejas y pestañas por SetAccessories, con el accessoryType
+            // que ya viene resuelto en layeredClothing.
+            //
+            // `isAnimated` es la pregunta que el juego quiere hacer de verdad:
+            // ¿esta cara se mueve? Con la cara 2D clasica es false y hay que
+            // usar `classic` (HumanoidDescription.Face). Las dos formas
+            // conviven en Roblox y un avatar tiene una o la otra, nunca las dos.
+            animatedFace: {
+                isAnimated: dynamicHead !== null,
+                head: dynamicHead,
+                mood: animations.mood,
+                eyebrow,
+                eyelash,
+                classic: face,
+                supportsHeadShapes,
+            },
             accessories,
             layeredClothing,
             animations,

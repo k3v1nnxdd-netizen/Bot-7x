@@ -18,7 +18,8 @@ module.exports = async function run() {
 
         assert.strictEqual(capas.length, 2);
         assert.deepStrictEqual(capas[0], {
-            assetId: 101396973232145, typeId: 70, typeName: 'LeftShoeAccessory', order: 0, puffiness: 0,
+            assetId: 101396973232145, typeId: 70, typeName: 'LeftShoeAccessory',
+            accessoryType: 'LeftShoe', order: 0, puffiness: 0,
         });
         // Sin order/puffiness, Studio no puede colocar bien una pieza por
         // capas: es el dato que diferencia "lleva zapatos" de "los lleva
@@ -57,10 +58,122 @@ module.exports = async function run() {
 
         assert.ok(ceja, 'debe estar entre las piezas por capas');
         assert.strictEqual(ceja.order, 2);
-        // EyebrowAccessory no es una categoria clasica de HumanoidDescription,
-        // asi que cae en `other` — pero NO se pierde.
+        // Y ademas se recoge como parte de la CARA (ver animatedFace): una ceja
+        // mezclada entre camisas y chaquetas es justo lo que un juego deja de
+        // aplicar. En `other` no cae nunca.
         assert.ok(hd.other.every(o => o.typeName !== 'EyebrowAccessory'),
             'si tiene datos de capa, se clasifica como capa y no como sobrante');
+    });
+
+    // ── LA CARA ANIMADA NUEVA DE ROBLOX ─────────────────────────────────────
+    //
+    // El fallo que motiva estos tests: los tres trozos de la cara animada
+    // existian en la respuesta pero repartidos entre bodyParts, animations y
+    // layeredClothing, sin nada que dijera que son UNA cosa. Un juego que
+    // aplicaba "las partes del cuerpo", luego "las animaciones de movimiento" y
+    // luego "la ropa por capas" montaba la cabeza y se dejaba el mood — y la
+    // cara se quedaba quieta.
+
+    test('animatedFace junta las TRES piezas de la cara animada', () => {
+        const hd = buildOutfit(fx.cabezaDinamica).humanoidDescription;
+
+        assert.strictEqual(hd.animatedFace.isAnimated, true);
+        assert.strictEqual(hd.animatedFace.head, 11308945948, 'la malla con FaceControls');
+        assert.strictEqual(hd.animatedFace.mood, 11308935548, 'LO QUE LA ANIMA');
+        assert.strictEqual(hd.animatedFace.eyebrow, 11308949065);
+        assert.strictEqual(hd.animatedFace.supportsHeadShapes, true);
+    });
+
+    test('sin mood no hay cara animada, y eso tiene que verse', () => {
+        // Una cabeza dinamica sin su MoodAnimation se monta bien y se queda
+        // quieta. Es el sintoma exacto que hay que poder diagnosticar mirando
+        // la respuesta, sin abrir Studio.
+        const sinMood = {
+            ...fx.cabezaDinamica,
+            assets: fx.cabezaDinamica.assets.filter(a => a.assetType.name !== 'MoodAnimation'),
+        };
+        const hd = buildOutfit(sinMood).humanoidDescription;
+
+        assert.strictEqual(hd.animatedFace.head, 11308945948, 'la cabeza si esta');
+        assert.strictEqual(hd.animatedFace.mood, null, 'y se ve de un vistazo que le falta el mood');
+        assert.strictEqual(hd.animatedFace.isAnimated, true, 'sigue siendo una cabeza dinamica');
+    });
+
+    test('animatedFace no se inventa nada: es lo mismo que ya hay en el resto', () => {
+        // Es redundante A PROPOSITO, asi que la redundancia tiene que ser
+        // exacta. Si algun dia divergen, este test lo caza.
+        const hd = buildOutfit(fx.cabezaDinamica).humanoidDescription;
+
+        assert.strictEqual(hd.animatedFace.head, hd.bodyParts.head);
+        assert.strictEqual(hd.animatedFace.head, hd.dynamicHead);
+        assert.strictEqual(hd.animatedFace.mood, hd.animations.mood);
+        assert.strictEqual(hd.animatedFace.classic, hd.face);
+        const ceja = hd.layeredClothing.find(c => c.typeName === 'EyebrowAccessory');
+        assert.strictEqual(hd.animatedFace.eyebrow, ceja.assetId);
+    });
+
+    test('un avatar con cara 2D clasica se distingue de uno con cara animada', () => {
+        // Las dos formas conviven en Roblox y un avatar tiene una o la otra.
+        // `isAnimated` es la pregunta que el juego quiere hacer de verdad.
+        const hd = buildOutfit({
+            assets: [{ id: 111, name: 'cara', assetType: { id: 18, name: 'Face' } }],
+        }).humanoidDescription;
+
+        assert.strictEqual(hd.animatedFace.isAnimated, false);
+        assert.strictEqual(hd.animatedFace.classic, 111, 'va a HumanoidDescription.Face');
+        assert.strictEqual(hd.animatedFace.head, null);
+        assert.strictEqual(hd.animatedFace.mood, null);
+    });
+
+    test('un outfit sin cara de ningun tipo no finge tener una', () => {
+        const hd = buildOutfit(fx.partesDelCuerpo).humanoidDescription;
+
+        assert.strictEqual(hd.animatedFace.isAnimated, false);
+        assert.deepStrictEqual(
+            [hd.animatedFace.head, hd.animatedFace.mood, hd.animatedFace.classic,
+             hd.animatedFace.eyebrow, hd.animatedFace.eyelash],
+            [null, null, null, null, null]
+        );
+    });
+
+    test('las pestañas se recogen igual que las cejas', () => {
+        const conPestanas = {
+            assets: [
+                { id: 900, name: 'Head', assetType: { id: 79, name: 'DynamicHead' }, supportsHeadShapes: false },
+                { id: 901, name: 'Lash', assetType: { id: 77, name: 'EyelashAccessory' }, meta: { order: 3, puffiness: 0 } },
+            ],
+        };
+        const hd = buildOutfit(conPestanas).humanoidDescription;
+
+        assert.strictEqual(hd.animatedFace.eyelash, 901);
+        assert.strictEqual(hd.animatedFace.supportsHeadShapes, false, 'false es un dato, no una ausencia');
+    });
+
+    test('cejas y pestañas NO acaban en other[]: son cara, no sobrantes', () => {
+        const hd = buildOutfit(fx.cabezaDinamica).humanoidDescription;
+        assert.ok(hd.other.every(o => !['EyebrowAccessory', 'EyelashAccessory'].includes(o.typeName)));
+    });
+
+    // ── accessoryType, sin el cual las piezas por capas no se pueden aplicar ─
+
+    test('cada pieza por capas trae su Enum.AccessoryType resuelto', () => {
+        const hd = buildOutfit(fx.cabezaDinamica).humanoidDescription;
+        const ceja = hd.layeredClothing.find(c => c.typeName === 'EyebrowAccessory');
+
+        // Es lo que espera SetAccessories(). Sin esto cada juego se escribe la
+        // misma tabla de conversion y las cejas y pestañas son justo las que se
+        // quedan fuera.
+        assert.strictEqual(ceja.accessoryType, 'Eyebrow');
+    });
+
+    test('un tipo por capas desconocido no se inventa un AccessoryType', () => {
+        const hd = buildOutfit({
+            assets: [{ id: 5, name: 'x', assetType: { id: 999, name: 'AlgoNuevoAccessory' }, meta: { order: 1, puffiness: 0 } }],
+        }).humanoidDescription;
+
+        assert.strictEqual(hd.layeredClothing[0].accessoryType, null,
+            'null es la verdad; un Enum inventado reventaria en Lua');
+        assert.strictEqual(hd.layeredClothing[0].assetId, 5, 'pero el asset no se pierde');
     });
 
     test('partes del cuerpo: cada una a su hueco', () => {

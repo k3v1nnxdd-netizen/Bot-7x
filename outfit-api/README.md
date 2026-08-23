@@ -91,8 +91,9 @@ GET /v1/outfits/11685920016
     "dynamicHead": 11308945948,
     "clothing": { "shirt": null, "pants": null, "graphicTShirt": null },
     "face": null,
+    "animatedFace": { "isAnimated": true, "head": 11308945948, "mood": 11308935548, "eyebrow": 11308949065, "eyelash": null, "classic": null, "supportsHeadShapes": true },
     "accessories": { "hat": [], "hair": [], "face": [], "neck": [], "shoulder": [], "front": [], "back": [], "waist": [] },
-    "layeredClothing": [{ "assetId": 11308949065, "typeId": 76, "typeName": "EyebrowAccessory", "order": 2, "puffiness": 0 }],
+    "layeredClothing": [{ "assetId": 11308949065, "typeId": 76, "typeName": "EyebrowAccessory", "accessoryType": "Eyebrow", "order": 2, "puffiness": 0 }],
     "animations": { "climb": null, "death": null, "fall": null, "idle": null, "jump": null, "run": null, "swim": null, "walk": null, "pose": null, "mood": 11308935548 },
     "emotes": [],
     "other": []
@@ -229,7 +230,7 @@ local function buildDescription(outfit)
     d.RightLeg= hd.bodyParts.rightLeg or 0
 
     d.Shirt, d.Pants = hd.clothing.shirt or 0, hd.clothing.pants or 0
-    d.GraphicTShirt, d.Face = hd.clothing.graphicTShirt or 0, hd.face or 0
+    d.GraphicTShirt  = hd.clothing.graphicTShirt or 0
 
     d.HatAccessory      = table.concat(hd.accessories.hat, ",")
     d.HairAccessory     = table.concat(hd.accessories.hair, ",")
@@ -240,6 +241,11 @@ local function buildDescription(outfit)
     d.BackAccessory     = table.concat(hd.accessories.back, ",")
     d.WaistAccessory    = table.concat(hd.accessories.waist, ",")
 
+    -- Animaciones de movimiento. Son SIETE, no ocho: HumanoidDescription NO
+    -- tiene DeathAnimation ni PoseAnimation (verificado contra el API dump de
+    -- Roblox), aunque Roblox sí tenga esos tipos de asset y la API los exponga
+    -- en hd.animations. Asignarlas es un error en tiempo de ejecución que
+    -- aborta toda esta función — y con ella el avatar entero.
     d.ClimbAnimation = hd.animations.climb or 0
     d.FallAnimation  = hd.animations.fall  or 0
     d.IdleAnimation  = hd.animations.idle  or 0
@@ -247,10 +253,41 @@ local function buildDescription(outfit)
     d.RunAnimation   = hd.animations.run   or 0
     d.SwimAnimation  = hd.animations.swim  or 0
     d.WalkAnimation  = hd.animations.walk  or 0
-    d.DeathAnimation = hd.animations.death or 0
 
-    -- Ropa por capas: aplicar con AddAccessory usando Order y Puffiness de
-    -- hd.layeredClothing, o mediante AccessoryBlob según tu flujo.
+    -- ── LA CARA ANIMADA ───────────────────────────────────────────────────
+    -- Hacen falta DOS propiedades y es el error más fácil de cometer aquí:
+    -- la cabeza dinámica trae los FaceControls y el Mood es la expresión que
+    -- los mueve. Con Head y sin MoodAnimation la cara se monta perfectamente
+    -- y se queda QUIETA.
+    local cara = hd.animatedFace
+    if cara.isAnimated then
+        d.Head          = cara.head or 0   -- malla con FaceControls
+        d.MoodAnimation = cara.mood or 0   -- lo que la anima
+    else
+        d.Face = cara.classic or 0         -- cara 2D clásica
+    end
+
+    -- Cejas, pestañas y ropa por capas, todas por SetAccessories con el
+    -- accessoryType que la API ya resuelve. Las cejas y pestañas son PARTE DE
+    -- LA CARA: sin ellas la cara animada queda incompleta. Va después de los
+    -- accesorios rígidos y con includeRigidAccessories = false, para no pisar
+    -- lo que se asignó arriba.
+    local porCapas = {}
+    for _, pieza in ipairs(hd.layeredClothing) do
+        if pieza.accessoryType then
+            table.insert(porCapas, {
+                AssetId       = pieza.assetId,
+                AccessoryType = Enum.AccessoryType[pieza.accessoryType],
+                IsLayered     = true,
+                Order         = pieza.order or 0,
+                Puffiness     = pieza.puffiness or 1,
+            })
+        end
+    end
+    if #porCapas > 0 then
+        d:SetAccessories(porCapas, false)
+    end
+
     return d
 end
 
@@ -465,6 +502,34 @@ Todo se cachea **por ítem y de forma global**, nunca por outfit ni por jugador:
 | `asset:bundles:{id}` | 24 h | la pertenencia a bundle no cambia nunca |
 | `bundle:details:{id}` | 24 h | la composición es estructural |
 | `bundle:catalog:{id}` | 1 h | el precio del bundle sí se mueve |
+
+### La cara animada nueva de Roblox
+
+Una cara animada de Roblox son **tres assets distintos**, y Roblox los manda sueltos entre los demás:
+
+| Pieza | `assetType` | Dónde va en Lua |
+|---|---|---|
+| **Dynamic Head** | 79 | `HumanoidDescription.Head` — la malla con los `FaceControls` |
+| **Mood Animation** | 78 | `HumanoidDescription.MoodAnimation` — **lo que la anima** |
+| Cejas / pestañas | 76 / 77 | `SetAccessories()` con `Enum.AccessoryType.Eyebrow` / `.Eyelash` |
+
+Esas tres piezas siguen estando cada una en su sitio natural de la respuesta (`bodyParts.head`, `animations.mood`, `layeredClothing[]`), y además se repiten juntas en **`animatedFace`**. La duplicación es deliberada: repartida entre «partes del cuerpo», «animaciones» y «ropa por capas», la cara animada no se parece a una sola cosa, y un juego que aplica esas tres categorías por separado **se deja el `mood`** — que es, literalmente, lo que la mueve.
+
+> **El síntoma:** una cabeza dinámica aplicada sin su `MoodAnimation` se monta perfectamente y **se queda quieta**. No hay error, no falta ningún asset, la cara simplemente no se anima.
+
+```lua
+local cara = hd.animatedFace
+if cara.isAnimated then
+    d.Head          = cara.head or 0   -- malla con FaceControls
+    d.MoodAnimation = cara.mood or 0   -- lo que la anima
+else
+    d.Face = cara.classic or 0         -- cara 2D clásica
+end
+```
+
+`isAnimated` es la pregunta que el juego quiere hacer de verdad: ¿esta cara se mueve? Las dos formas (animada y 2D clásica) conviven en Roblox y un avatar tiene una **o** la otra, nunca las dos.
+
+Cada pieza de `layeredClothing` trae además su **`accessoryType`** ya resuelto al nombre de `Enum.AccessoryType` que espera `SetAccessories()`. Sin eso, cada juego se escribe la misma tabla de conversión y las cejas y pestañas son justo las que se quedan fuera.
 
 ### Casos especiales
 
@@ -828,7 +893,9 @@ Esto se comprobó específicamente, porque es fácil confundirlo:
 
 - **Animaciones de movimiento: no observadas en ningún outfit guardado.** Los assets de animación (`ClimbAnimation` 48, `FallAnimation` 50, `IdleAnimation` 51, `JumpAnimation` 52, `RunAnimation` 53, `SwimAnimation` 54, `WalkAnimation` 55) **sí** aparecen en el `assets` del **avatar actual** (verificado con la cuenta Roblox). En los outfits **guardados** examinados —4 de 2 usuarios, más 9 derivados de catálogo— no apareció ninguno. No puedo demostrar que Roblox nunca los guarde, así que el mapeo está preparado: si algún día llegan, se rellenan solas. Mientras no lleguen, esas ranuras quedan en `null` en lugar de inventarse.
 
-- **`MoodAnimation` sí viene**, porque forma parte del bundle de la cabeza dinámica, no de un paquete de animaciones.
+- **`MoodAnimation` sí viene**, porque forma parte del bundle de la cabeza dinámica, no de un paquete de animaciones. **Es la pieza que anima la cara**: una cabeza dinámica aplicada sin su `MoodAnimation` se monta perfectamente y se queda quieta. Por eso, además de estar en `animations.mood`, se repite en el bloque `animatedFace` — entre `climb` y `walk` es exactamente donde un juego que aplica «las animaciones de movimiento» se la deja sin querer.
+
+- **`death` y `pose` no se pueden aplicar**, aunque la API los exponga. Verificado contra el API dump de Roblox: `HumanoidDescription` **no tiene** las propiedades `DeathAnimation` ni `PoseAnimation`, aunque Roblox sí tenga esos tipos de asset (49 y 56). Asignarlas en Lua es un error en tiempo de ejecución que aborta la construcción entera del avatar — con la cara animada dentro. Las siete que sí existen son `Climb`, `Fall`, `Idle`, `Jump`, `Run`, `Swim` y `Walk`, más `MoodAnimation`.
 
 **Si necesitas animaciones o emotes**, el endpoint oficial adicional es `GET https://avatar.roblox.com/v1/users/{userId}/avatar` — pero devuelve el **avatar puesto ahora mismo**, no el outfit guardado que estés mostrando. Dímelo y lo añado como endpoint aparte, sin mezclarlo con este.
 

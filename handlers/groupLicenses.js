@@ -193,37 +193,28 @@ function bloqueLicencia({ nombreGrupo, groupId, discordUserId, robloxUsername, e
     return `${grupo}\n${discord}\n${roblox}`;
 }
 
-// Estado de la credencial, para el embed PUBLICO. Dice si se emitió un token
-// y si llegó a entregarse — nunca el token, que es un secreto y este embed lo
-// ve el servidor entero.
+// Único texto del campo "Credencial" que NO es un token: reactivar una
+// licencia no reemite la llave (el cliente sigue jugando con la suya), y el
+// embed tiene que decirlo en vez de dejar el campo en blanco.
 const CREDENCIAL = {
-    entregada: 'Token nuevo, enviado en privado',
-    noEntregada: 'Token nuevo, pero NO se pudo entregar por Discord',
     conservada: 'Sin cambios: el grupo conserva su token',
 };
 
-// El token en claro solo existe en la respuesta de la API y solo se enseña
-// aquí, en un embed EFIMERO que ve únicamente quien ejecutó el comando.
+// EL TOKEN VA DENTRO DEL EMBED DEL ALTA, igual que en /regeneratetoken.
 //
-// No va en el embed público por un motivo que no admite matices: los embeds de
-// licencias son públicos (así se pidieron), y publicar la credencial de un
-// cliente en un canal es entregársela a todo el que pase por ahí. Y no se
-// puede "borrar luego": lo que se publica en Discord ya se ha visto.
+// Antes se partía en dos: el embed anunciaba "Token nuevo, enviado en privado"
+// y el token viajaba en un efímero aparte. Eso obligaba a reenviárselo a mano
+// al comprador — una copia más del secreto pasando por otro sitio — y dejaba
+// el mensaje del alta hablando de una credencial que no enseñaba.
 //
-// Todo va DENTRO del embed, incluido el token: nada de información suelta en
-// el contenido del mensaje.
-function buildTokenEmbed({ token, groupId }, nombreGrupo) {
-    return new EmbedBuilder()
-        .setColor(VERDE)
-        .setTitle('Token de licencia')
-        .setDescription(
-            `${EMOJI.grupo} **${texto(nombreGrupo, 'Grupo sin nombre')}** · ${codigo(groupId)}\n\n` +
-            '```\n' + token + '\n```\n' +
-            'Se muestra **una sola vez**: la API guarda solo su hash (SHA-256), así que no hay forma de volver a consultarlo.\n' +
-            'Este mensaje solo lo ves tú. Entrégaselo al cliente por un canal privado.'
-        )
-        .setFooter({ text: FOOTER })
-        .setTimestamp();
+// La contrapartida hay que tenerla presente: el mensaje de /addgroup NO es
+// efímero, así que el token queda en el historial del canal donde se ejecute.
+// Ejecútalo donde deba verlo el comprador, no en un canal público.
+function campoDeCredencial(token) {
+    if (!token) return CREDENCIAL.conservada;
+    return '```\n' + token + '\n```\n' +
+        'Se muestra **una sola vez**: la API guarda solo su hash (SHA-256), así que no hay forma de ' +
+        'volver a consultarlo. Guárdalo; será necesario para verificar la licencia del grupo.';
 }
 
 // Campo del token, con el aviso justo debajo. Va en el valor del campo y no en
@@ -241,13 +232,11 @@ function campoDeToken(token) {
 // UN SOLO MENSAJE con todo: grupo, comprador, quién lo regeneró, cuándo, el
 // alta original y el token nuevo.
 //
-// EL TOKEN VA DENTRO DE ESTE EMBED A PROPÓSITO, y es lo contrario de lo que
-// hace /addgroup. El motivo es el sitio donde se usa cada uno: /regeneratetoken
-// se ejecuta dentro de un ticket privado, donde ya están solo el comprador y el
-// staff autorizado — que son exactamente las dos partes que necesitan el token.
-// Partirlo en un embed público y un efímero obligaría al administrador a
-// reenviárselo a mano al cliente, que es una copia más del secreto pasando por
-// otro sitio.
+// EL TOKEN VA DENTRO DE ESTE EMBED A PROPÓSITO, igual que en /addgroup: los dos
+// comandos se ejecutan donde el comprador y el staff ya están delante, que son
+// exactamente las dos partes que necesitan el token. Partirlo en un embed y un
+// efímero obligaría al administrador a reenviárselo a mano al cliente, que es
+// una copia más del secreto pasando por otro sitio.
 //
 // La contrapartida hay que tenerla presente: este mensaje NO es efímero, así
 // que el token queda en el historial del canal donde se ejecute. Dentro de un
@@ -278,7 +267,7 @@ function buildRegeneratedEmbed({ licencia, nombreGrupo, iconUrl, actorId }) {
         .setTimestamp();
 }
 
-function buildAddedEmbed({ licencia, nombreGrupo, iconUrl, actorId, credencial }) {
+function buildAddedEmbed({ licencia, nombreGrupo, iconUrl, actorId }) {
     // `created` viene de si Postgres INSERTÓ o ACTUALIZÓ la fila (xmax = 0), no
     // de una suposición de aquí: es el único dato honesto sobre si la licencia
     // es nueva o una readmisión.
@@ -298,8 +287,9 @@ function buildAddedEmbed({ licencia, nombreGrupo, iconUrl, actorId, credencial }
             { name: 'Alta original', value: fecha(licencia.createdAt), inline: true },
             { name: 'Enlace actual', value: fecha(licencia.linkedAt),  inline: true },
             { name: 'Agregado por',  value: actorId ? `<@${actorId}>` : '—', inline: true },
-            // Solo el ESTADO de la credencial. El token va aparte, en privado.
-            { name: 'Credencial',    value: credencial ?? CREDENCIAL.conservada, inline: false },
+            // El token del alta, dentro del mismo mensaje. Si la licencia se
+            // reactivó sin reemitir credencial, campoDeCredencial lo dice.
+            { name: 'Credencial',    value: campoDeCredencial(licencia.token), inline: false },
         )
         .setFooter({ text: FOOTER })
         .setTimestamp();
@@ -517,27 +507,17 @@ async function handleAddGroup(interaction) {
 
     const nombreGrupo = licencia.groupName ?? info.name;
 
-    // LA CREDENCIAL SE ENTREGA ANTES QUE NADA. El token en claro existe una
-    // sola vez, en esta variable, y la API ya solo guarda su hash: si algo
-    // fallara después y se perdiera, no habría forma de recuperarlo. Por eso
-    // se entrega primero y el embed público se pinta después, con el resultado
-    // real de esa entrega en vez de una promesa.
-    let credencial = CREDENCIAL.conservada;
-    if (licencia.token) {
-        const entregado = await safeFollowUp(interaction, {
-            embeds: [buildTokenEmbed(licencia, nombreGrupo)],
-            ephemeral: true,
-        });
-        credencial = entregado ? CREDENCIAL.entregada : CREDENCIAL.noEntregada;
-    }
-
+    // UN SOLO MENSAJE, con el token dentro. El token en claro existe una sola
+    // vez, en `licencia.token`, y la API ya solo guarda su hash: entregarlo en
+    // un efímero aparte y anunciar "enviado en privado" en el embed obligaba a
+    // reenviárselo a mano al comprador. Va en el propio embed del alta, que es
+    // el mensaje que ya se está pintando.
     await safeEditReply(interaction, {
         embeds: [buildAddedEmbed({
             licencia,
             nombreGrupo,
             iconUrl,
             actorId: licencia.addedBy ?? interaction.user.id,
-            credencial,
         })],
     });
 }
@@ -759,7 +739,6 @@ module.exports = {
         buildListRow,
         paginar,
         validarGroupId,
-        buildTokenEmbed,
         buildRegeneratedEmbed,
         CREDENCIAL,
         fecha,

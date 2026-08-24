@@ -225,64 +225,58 @@ module.exports = async function run() {
 
     const reactivada = gl.buildAddedEmbed({
         licencia: licencia({ created: false }), nombreGrupo: 'Mi Grupo', iconUrl: null, actorId: ADMIN_ID,
-        credencial: gl.CREDENCIAL.conservada,
     });
     assert(desc(reactivada).includes('Licencia reactivada'), 'una licencia que ya existía se anuncia como reactivada');
     assert(reactivada.toJSON().thumbnail === undefined, 'sin icono de Roblox el embed sigue construyéndose igual');
 
-    // ── La credencial: el token JAMÁS puede acabar en un embed público ──────
+    // ── La credencial: el token va DENTRO del mensaje del alta ──────────────
 
     const TOKEN = '7xl_' + 'A'.repeat(43);
 
     const conToken = gl.buildAddedEmbed({
         licencia: licencia({ token: TOKEN, tokenIssued: true }),
         nombreGrupo: 'Mi Grupo', iconUrl: null, actorId: ADMIN_ID,
-        credencial: gl.CREDENCIAL.entregada,
     });
 
-    // ESTA es la assert que más importa de todo el archivo: los embeds de
-    // licencias son públicos, y publicar la credencial de un cliente en un
-    // canal es entregársela a todo el que pase por ahí. Y no se puede
-    // deshacer: lo que se publica en Discord ya se ha visto.
+    // ESTA es la assert del bug que originó el cambio: el alta anunciaba
+    // "Token nuevo, enviado en privado" y mandaba el token en un efímero
+    // aparte, así que el mensaje hablaba de una credencial que no enseñaba y
+    // había que reenviársela a mano al comprador.
     assert(
-        !serializado(conToken).includes(TOKEN) && !serializado(conToken).includes('7xl_'),
-        'el token NO aparece en el embed público ni aunque venga en la licencia'
+        campo(conToken, 'Credencial').includes(TOKEN),
+        'el campo Credencial del alta contiene el token, no un aviso de que se envió por otro lado'
     );
     assert(
-        campo(conToken, 'Credencial') === gl.CREDENCIAL.entregada,
-        'el embed dice que se emitió y se entregó, sin decir el qué'
+        campo(conToken, 'Credencial').includes('```'),
+        'en un bloque de código, para copiarlo de una pieza'
     );
     assert(
-        campo(reactivada, 'Credencial') === gl.CREDENCIAL.conservada,
-        'una reactivación deja claro que el grupo conserva su token de siempre'
-    );
-    assert(
-        gl.CREDENCIAL.noEntregada.length > 0 &&
-        campo(gl.buildAddedEmbed({
-            licencia: licencia({ token: TOKEN, tokenIssued: true }),
-            nombreGrupo: 'G', iconUrl: null, actorId: ADMIN_ID, credencial: gl.CREDENCIAL.noEntregada,
-        }), 'Credencial') === gl.CREDENCIAL.noEntregada,
-        'y si la entrega falla, el embed lo dice en vez de fingir que salió bien'
-    );
-
-    // El embed efímero: es el ÚNICO sitio donde el token puede aparecer.
-    const privado = gl.buildTokenEmbed({ token: TOKEN, groupId: GROUP_ID }, 'Mi Grupo');
-    const privadoJson = privado.toJSON();
-    assert(desc(privado).includes(TOKEN), 'el embed privado sí lleva el token: es su único momento');
-    assert(desc(privado).includes('```'), 'va en un bloque de código para poder copiarlo de una pieza');
-    assert(
-        desc(privado).includes('una sola vez') && desc(privado).toLowerCase().includes('hash'),
+        campo(conToken, 'Credencial').toLowerCase().includes('una sola vez') &&
+        campo(conToken, 'Credencial').toLowerCase().includes('hash'),
         'y explica que no se puede volver a consultar, porque la API solo guarda su hash'
     );
     assert(
-        desc(privado).includes(GROUP_ID) && desc(privado).includes(E.grupo),
-        'toda la información va DENTRO del embed: grupo, id y token'
+        !/enviado en privado|no se pudo entregar/i.test(serializado(conToken)),
+        'y ya no queda ni rastro del texto que prometía una entrega aparte'
     );
-    assert(desc(privado).length <= 4096, 'cabe en el límite de una descripción de embed');
+    assert(
+        conToken.toJSON().fields.find(f => f.name === 'Credencial').inline === false,
+        'el campo de la credencial ocupa el ancho completo: es lo único que hay que copiar'
+    );
+    assert(
+        campo(reactivada, 'Credencial') === gl.CREDENCIAL.conservada,
+        'una reactivación sin token nuevo deja claro que el grupo conserva el suyo'
+    );
+    assert(
+        !/7xl_|undefined|null/.test(campo(reactivada, 'Credencial')),
+        'sin token no se imprime "undefined": se dice qué pasó con la credencial'
+    );
+    assert(
+        conToken.toJSON().color === 0x2ECC71,
+        'la emisión inicial conserva el verde del alta'
+    );
 
     // ── /regeneratetoken ────────────────────────────────────────────────────
-
-    assert(privadoJson.color === 0x2ECC71, 'la emisión inicial conserva el verde del alta');
 
     const TOKEN_ROTADO = '7xl_' + 'B'.repeat(43);
     const regenerado = gl.buildRegeneratedEmbed({
@@ -311,8 +305,8 @@ module.exports = async function run() {
     );
 
     // El token SÍ va en este embed: el comando se ejecuta dentro de un ticket
-    // privado, donde el comprador y el staff ya están delante. Es el único
-    // embed no efímero del sistema que lleva una credencial dentro.
+    // privado, donde el comprador y el staff ya están delante — igual que el
+    // embed del alta, el otro del sistema que lleva una credencial dentro.
     assert(
         campo(regenerado, 'Token de licencia').includes(TOKEN_ROTADO),
         'el embed de la rotación contiene el token nuevo'
@@ -482,11 +476,11 @@ module.exports = async function run() {
     // ── Emojis: los del servidor, y solo donde Discord los pinta ────────────
 
     // Los embeds que NO pueden llevar una credencial nunca. Fuera quedan los
-    // dos únicos que sí: el efímero de /addgroup y el de /regeneratetoken.
-    const todosLosEmbeds = [alta, reactivada, conToken, baja, sinMotivo, activa, inactiva, nunca, listado, vacio, truncado, sinComprador];
+    // dos únicos que sí: el del alta con token y el de /regeneratetoken.
+    const todosLosEmbeds = [alta, reactivada, baja, sinMotivo, activa, inactiva, nunca, listado, vacio, truncado, sinComprador];
 
     // Los que SÍ llevan token deben cumplir igualmente el resto de reglas.
-    const conCredencial = [privado, regenerado];
+    const conCredencial = [conToken, regenerado];
     assert(
         conCredencial.every(e => !UNICODE_EMOJI.test(serializado(e))),
         "los embeds que llevan token tampoco llevan emojis unicode"
@@ -534,8 +528,8 @@ module.exports = async function run() {
         todosLosEmbeds.every(e => !serializado(e).includes(SECRETO)),
         'ningún embed contiene la clave de administración'
     );
-    // Los DOS únicos embeds que pueden llevar una credencial son el efímero de
-    // /addgroup y el de /regeneratetoken, que se ejecuta en un ticket privado.
+    // Los DOS únicos embeds que pueden llevar una credencial son el del alta con
+    // token y el de /regeneratetoken. Ambos se ejecutan donde el comprador está.
     // Cualquier otro que la lleve es una filtración.
     assert(
         todosLosEmbeds.every(e => !/7xl_/.test(serializado(e))),

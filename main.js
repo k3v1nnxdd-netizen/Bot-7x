@@ -49,6 +49,7 @@ if (RUN_BOT) {
         handleAddGroup, handleRegenerateToken, handleDeleteGroup, handleCheckGroup, handleGroups,
     } = require('./handlers/groupLicenses');
     const outfitApi           = require('./utils/outfitApi');
+    const roblox              = require('./src/roblox/client');
     const { handleMessage }   = require('./handlers/messages');
     const { handleMessageDelete } = require('./handlers/messageDelete');
     const { handleAntiScam }  = require('./handlers/antiScam');
@@ -203,6 +204,28 @@ if (RUN_BOT) {
             console.warn(
                 '[bot] OUTFIT_API_URL u OUTFIT_ADMIN_API_KEY no estan definidas — ' +
                 '/addgroup, /deletegroup, /checkgroup y /groups no podran contactar con la API de licencias.'
+            );
+        }
+
+        // Mismo criterio para Check Group's: sin la key de Open Cloud el panel
+        // sigue funcionando, pero no puede leer la fecha de ingreso real de
+        // Roblox, asi que cada solicitud cae al flujo manual de siempre
+        // (tarjeta NO VERIFICADO + botones del owner). Mejor verlo aqui que
+        // descubrirlo cuando un cliente pulse el boton.
+        if (!roblox.isOpenCloudConfigured()) {
+            console.warn(
+                "[bot] ROBLOX_OPEN_CLOUD_KEY no esta definida — Check Group's no podra consultar la " +
+                'fecha de ingreso (createTime) en Roblox y todas las solicitudes iran a revision manual.'
+            );
+        }
+
+        const sinConfigurar = Object.entries(config.CHECK_GROUPS)
+            .filter(([, grupo]) => !grupo.groupId)
+            .map(([clave, grupo]) => `${clave} ("${grupo.label}")`);
+        if (sinConfigurar.length) {
+            console.warn(
+                `[bot] Check Group's: sin ID de Roblox en config.CHECK_GROUPS -> ${sinConfigurar.join(', ')}. ` +
+                'Esos botones responderan que la comunidad no esta configurada en vez de consultar a Roblox.'
             );
         }
 

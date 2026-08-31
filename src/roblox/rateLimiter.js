@@ -449,6 +449,21 @@ const friendsBucket = makeBucket('friends', { startingMaxTokens: 60 });
 const thumbnailBucket = makeBucket('avatar thumbnail', { startingMaxTokens: 60 });
 // groups.roblox.com — group membership check (verification flow).
 const groupsBucket = makeBucket('groups', { startingMaxTokens: 60 });
+// apis.roblox.com/cloud/v2/groups/{id}/memberships — Roblox OPEN CLOUD, the
+// only place that reports WHEN a membership was created (createTime), which
+// is what Check Group's needs to say "lleva N días en la comunidad" instead
+// of guessing from member order. Two things make this bucket different from
+// every other one above:
+//   - It's metered per API KEY, not per IP, so it doesn't share a quota with
+//     the legacy groups.roblox.com bucket even though both are "groups".
+//     Giving it its own bucket is what keeps a burst of Check Group's clicks
+//     from eating the verification flow's headroom, and vice versa.
+//   - Open Cloud does not always answer with the x-ratelimit-* headers the
+//     legacy endpoints send. observeLimit() is a no-op when they're absent
+//     (parseStrictestLimit returns null and the remaining=null branch
+//     returns early), so this simply paces at the starting assumption below
+//     and still self-corrects the moment Roblox does send them.
+const openCloudGroupsBucket = makeBucket('open cloud group memberships', { startingMaxTokens: 60 });
 
 function getMetrics() {
     return {
@@ -462,6 +477,7 @@ function getMetrics() {
         friends: friendsBucket.getMetrics(),
         thumbnail: thumbnailBucket.getMetrics(),
         groups: groupsBucket.getMetrics(),
+        openCloudGroups: openCloudGroupsBucket.getMetrics(),
     };
 }
 
@@ -486,6 +502,8 @@ module.exports = {
     observeThumbnailLimit: thumbnailBucket.observeLimit,
     limitedGroupsRequest: groupsBucket.run,
     observeGroupsLimit: groupsBucket.observeLimit,
+    limitedOpenCloudGroupsRequest: openCloudGroupsBucket.run,
+    observeOpenCloudGroupsLimit: openCloudGroupsBucket.observeLimit,
     getMetrics,
     CircuitOpenError,
     __test: {

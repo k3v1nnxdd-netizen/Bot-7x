@@ -46,7 +46,10 @@ const PANEL_BUTTONS  = new Set(['comprar', 'otra_cosa', 'duels', 'seguidores']);
 const CALC_BUTTONS   = new Set(['calc_dinero', 'calc_robux']);
 const VERIF_BUTTONS  = new Set(['verif_check']);
 const TICKET_BUTTONS = new Set(['confirmar_pago', 'cerrar_ticket', 'confirmar_cerrar', 'cancelar_cerrar']);
-const CHECKGROUP_BUTTONS = new Set(['cg_noctra', 'cg_community', 'cg_group7x']);
+// Derivado de config.CHECK_GROUPS en vez de escrito a mano: el customId de
+// cada boton del panel es literalmente `cg_<clave>`, asi que anadir una cuarta
+// comunidad en config no puede dejarse a medias aqui.
+const CHECKGROUP_BUTTONS = new Set(Object.keys(config.CHECK_GROUPS).map(clave => `cg_${clave}`));
 const CHECKGROUP_RESULT_BUTTONS = new Set(['cg_elig_yes', 'cg_elig_no']);
 
 function isTicketChannel(interaction) {

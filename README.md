@@ -72,6 +72,143 @@ Se muestra **una sola vez**: la API solo guarda su SHA-256, así que no hay form
 
 `/addgroup` funciona distinto: ahí el token va en un mensaje **efímero** aparte, porque su embed sí se publica en canales abiertos.
 
+## Check Group's
+
+El panel del canal de Check Group's tiene un boton por comunidad. Al pulsarlo se
+pide el usuario de Roblox y el bot responde **al momento** con los dias exactos
+que esa cuenta lleva dentro de esa comunidad.
+
+El dato no se estima: sale de `createTime` de la membresia, que es la fecha en
+la que Roblox creo esa membresia. Se consulta con **Roblox Open Cloud**, filtrada
+por el usuario, en **una sola peticion**:
+
+```
+GET https://apis.roblox.com/cloud/v2/groups/{GROUP_ID}/memberships
+    ?maxPageSize=1&filter=user == 'users/{USER_ID}'
+```
+
+Nunca se recorre la lista de miembros del grupo: el filtro lo aplica Roblox, asi
+que una comunidad de 300.000 miembros cuesta exactamente lo mismo que una de 3.
+
+| Paso | Que pasa |
+|---|---|
+| 1 | El usuario pulsa el boton de una comunidad |
+| 2 | Se abre el modal y escribe su usuario de Roblox |
+| 3 | El bot resuelve usuario -> UserId (`users.roblox.com`) |
+| 4 | Consulta SU membresia en ese grupo (Open Cloud, filtrada por UserId) |
+| 5 | Calcula los dias desde `createTime` hasta hoy |
+| 6 | Publica el resultado en el canal de resultados |
+
+### La tarjeta del canal de resultados
+
+El resultado se publica SIEMPRE en `config.CHANNELS.CHECKGROUP_RESULTS`
+(`1534758835531808869`). El ID esta escrito una sola vez, ahi. Si el canal no
+esta en la cache del cliente (arranque en frio) se pide a la API antes de darlo
+por perdido.
+
+Cinco bloques:
+
+| Bloque | Contenido |
+|---|---|
+| **Jugador de Roblox** | Username, Display Name, UserId |
+| **Comunidad** | Nombre de la comunidad y su GroupId |
+| **Membresia** | Estado, fecha de ingreso, antiguedad, minimo requerido y — si falta — cuantos dias faltan |
+| **Resultado** | ELEGIBLE / NO ELEGIBLE / NO PERTENECE / NO VERIFICADO, y si lo decidio Open Cloud o una persona |
+| **Solicitud** | `<@id>` del solicitante, su Discord ID en crudo y la fecha |
+
+Todas las fechas van como **timestamps de Discord** (`<t:...:F>` y `<t:...:R>`),
+asi que cada quien las ve en su zona horaria y en su idioma. Ninguna fecha se
+escribe a mano.
+
+Y dos imagenes, ambas pedidas a Roblox en vivo:
+
+| Imagen | Sitio | Origen |
+|---|---|---|
+| Avatar del jugador | `thumbnail` (arriba a la derecha) | `thumbnails.roblox.com/v1/users/avatar-headshot` |
+| Icono de la comunidad | `image` (abajo) | `thumbnails.roblox.com/v1/groups/icons` |
+
+Los PNG del repo (`se7en.png`, `7 communitys.png`, `$7 studio.png`) **ya no son
+la fuente principal**: solo se adjuntan si Roblox no tiene todavia un icono
+renderizado para ese grupo. Y si falla cualquiera de las dos imagenes, la
+solicitud se publica igual — una imagen es decoracion, nunca un motivo para no
+dar un veredicto.
+
+### El minimo de dias
+
+```js
+// config.js
+MIN_GROUP_DAYS: 14,
+```
+
+Son los dias que Roblox exige de membresia antes de permitir un payout de grupo
+hacia esa cuenta. **Esta escrito en un unico sitio**: el flujo, el texto del
+panel y los mensajes de "te faltan N dias" lo leen todos de ahi. Para cambiarlo,
+se cambia ese numero y nada mas.
+
+No confundirlo con `ROBLOX_GROUP_DAYS_REQ`, que es el requisito propio del bot
+en el canal de verificacion y sigue siendo independiente.
+
+### Los IDs de las comunidades
+
+```js
+// config.js
+CHECK_GROUPS: {
+    noctra:    { label: '7x (Antes Noctra Study)', groupId: 282134403 },
+    community: { label: "7x Community's",          groupId: 59218460 },
+    group7x:   { label: '#7x $tudio',              groupId: 1101699267 },
+},
+```
+
+La clave de cada entrada es el sufijo del customId del boton (`cg_noctra` ->
+`noctra`), y `handlers/buttons.js` deriva de aqui que botones acepta, asi que
+anadir una cuarta comunidad no puede quedarse a medias.
+
+Un `groupId` en `null` significa que esa comunidad todavia no tiene ID asignado:
+el boton responde que no esta configurada en vez de consultar a Roblox, y el bot
+lo avisa por consola al arrancar.
+
+### Variable de entorno (Railway)
+
+```
+ROBLOX_OPEN_CLOUD_KEY=<API key de Roblox Open Cloud>
+```
+
+La key necesita permiso de **lectura de miembros (`group:read`)** sobre **cada
+una** de las comunidades configuradas arriba, y su lista de IPs permitidas tiene
+que dejar salir a Railway.
+
+Igual que `OUTFIT_ADMIN_API_KEY`, **solo se lee en un sitio**
+(`src/roblox/client.js`), viaja unicamente en la cabecera `x-api-key` y no
+aparece en ningun mensaje ni en ningun log: todo fallo de Open Cloud se convierte
+ahi mismo en un error con codigo, y el error original de axios — que lleva dentro
+`config.headers` con la key — se descarta sin salir del modulo.
+
+### Si algo falla
+
+Un fallo **nunca** se traduce en "no elegible". Si Roblox no contesta, si la key
+no esta puesta o si no tiene permiso sobre esa comunidad, la tarjeta se publica
+en estado **NO VERIFICADO** con los botones de *Elegible / No elegible* activos,
+y el owner decide a mano exactamente como antes. Es decir: sin
+`ROBLOX_OPEN_CLOUD_KEY` el sistema sigue funcionando en modo manual, no se rompe.
+
+Esas tarjetas sin resolver son las que cuentan para el limite de **3 solicitudes
+pendientes por usuario**. Una tarjeta con veredicto automatico nace ya resuelta,
+con los botones deshabilitados.
+
+### Cache
+
+Todo en memoria (`src/cache/memoryCache.js`), y cada TTL elegido por lo que de
+verdad cambia:
+
+| Dato | TTL | Por que |
+|---|---|---|
+| Identidad (username -> UserId + display name) | 10 min | Un username no cambia de dueno entre dos clics |
+| Membresia encontrada (`createTime`) | 5 min | `createTime` es inmutable mientras la membresia exista; los dias se recalculan igual en cada consulta |
+| "No es miembro" | 60 s | Corto a proposito: es justo el caso de alguien que se va a unir y vuelve enseguida |
+| Avatar del jugador | 60 min | Cambia si se cambia de ropa. Comprobar los 3 grupos seguidos cuesta UNA peticion |
+| Icono de la comunidad | 12 h | Practicamente nunca cambia, y solo hay 3 comunidades: ~3 peticiones al dia |
+| Imagen que Roblox no dio | 5 min (avatar) / 30 min (icono) | Tambien se cachea el "no hay", pero poco: suele ser un render pendiente que se resuelve solo |
+
 ## Ejecutar
 
 ```bash

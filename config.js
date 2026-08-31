@@ -30,6 +30,35 @@ module.exports = {
     ROBLOX_GROUP_DAYS_REQ: 15,
     ROBLOX_GROUP_LINK:     'https://www.roblox.com/es/communities/282134403/Noctra-Study',
 
+    // ── Check Group's ────────────────────────────────────────────────────────
+    // Días mínimos de antigüedad DENTRO de una comunidad de Roblox para que esa
+    // comunidad pueda enviarle Robux a un usuario. Roblox exige 14 días de
+    // membresía antes de permitir un payout de grupo hacia esa cuenta, así que
+    // este es el número que decide "Elegible / No elegible" en el panel.
+    //
+    // ÚNICA fuente de verdad de ese mínimo: no lo copies a ningún otro archivo.
+    // Para cambiarlo, cámbialo AQUÍ y en ningún sitio más — handlers/
+    // checkGroupFlow.js, utils/groupMembership.js y el texto del propio panel
+    // lo leen todos de aquí.
+    //
+    // No confundir con ROBLOX_GROUP_DAYS_REQ de arriba: ese es el requisito
+    // PROPIO del bot para el flujo del canal de verificación, no el mínimo que
+    // impone Roblox para poder pagar.
+    MIN_GROUP_DAYS: 14,
+
+    // La comunidad de Roblox que hay detrás de cada botón del panel de Check
+    // Group's. Las claves son exactamente el sufijo del customId del botón
+    // (cg_noctra -> noctra) y las mismas que usa el modal (cg_modal_noctra).
+    //
+    // groupId en null = "botón que existe, pero sin comunidad asignada
+    // todavía": el flujo lo detecta y responde que ese grupo aún no está
+    // configurado, en vez de preguntarle a Roblox por un id inventado.
+    CHECK_GROUPS: {
+        noctra:    { label: '7x (Antes Noctra Study)', groupId: 282134403 },
+        community: { label: "7x Community's",          groupId: 59218460 },
+        group7x:   { label: '#7x $tudio',              groupId: 1101699267 },
+    },
+
     // Cumulative Robux purchased (all-time) to qualify for the Rich Client role
     RICH_CLIENT_ROBUX_THRESHOLD: 50000,
 

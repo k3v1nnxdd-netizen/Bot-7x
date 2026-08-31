@@ -9,6 +9,7 @@ const {
     limitedFriendsRequest, observeFriendsLimit,
     limitedThumbnailRequest, observeThumbnailLimit,
     limitedGroupsRequest, observeGroupsLimit,
+    limitedOpenCloudGroupsRequest, observeOpenCloudGroupsLimit,
     limitedAvatarRequest, observeAvatarLimit,
     limitedCatalogRequest, observeCatalogLimit,
     limitedBundlesRequest, observeBundlesLimit,
@@ -159,6 +160,110 @@ async function getGroupInfo(groupId) {
         memberCount: group.memberCount ?? null,
         ownerName: group.owner?.username ?? null,
         ownerId: group.owner?.userId != null ? String(group.owner.userId) : null,
+    };
+}
+
+// ── Roblox Open Cloud ────────────────────────────────────────────────────────
+// Everything above this point talks to Roblox's PUBLIC endpoints, which need
+// no credentials. Open Cloud does, and that changes the rules for this one
+// section, so it's fenced off deliberately.
+//
+// THE KEY IS READ ONCE, HERE, and only ever leaves this module inside the
+// x-api-key header of the request below. That matters more than it looks,
+// because of one specific trap this project has already been bitten by (see
+// utils/outfitApi.js's docstring): an axios error object carries
+// `err.config.headers` — the API key INCLUDED — so a plain
+// `console.error(err)` in any catch block up the stack would print the key
+// straight into the Railway logs, where it stays. Nothing outside this module
+// is ever handed a raw axios error from an Open Cloud call: toOpenCloudError()
+// below converts every single failure into an OpenCloudError carrying a short
+// code plus a message that is safe to show a human, and drops the original on
+// the floor. The rate limiter's own logging is safe for the same reason — it
+// only ever prints RESPONSE headers and the request url/method, never the
+// request headers.
+const OPEN_CLOUD_KEY = process.env.ROBLOX_OPEN_CLOUD_KEY || null;
+
+// Codes, not prose: the caller decides what to tell the user (see
+// utils/groupMembership.js). `code` is the only thing anyone is meant to
+// branch on.
+class OpenCloudError extends Error {
+    constructor(code, message) {
+        super(message);
+        this.name = 'OpenCloudError';
+        this.code = code;
+    }
+}
+
+function isOpenCloudConfigured() {
+    return Boolean(OPEN_CLOUD_KEY);
+}
+
+// The ONLY place an Open Cloud axios error is allowed to be inspected.
+// Returns an OpenCloudError; never rethrows the original, never logs it.
+function toOpenCloudError(err) {
+    if (err instanceof OpenCloudError) return err;
+    // The bucket's circuit breaker decided not to even try — that's a
+    // temporary "Roblox is exhausted", not a verdict about the user.
+    if (err?.circuitOpen) return new OpenCloudError('rate_limited', 'Roblox está limitando las consultas ahora mismo.');
+
+    const status = err?.response?.status;
+    if (status === 401 || status === 403) return new OpenCloudError('unauthorized', 'La API key de Open Cloud no es válida o no tiene permiso sobre esta comunidad.');
+    if (status === 404) return new OpenCloudError('group_not_found', 'Roblox no encuentra esa comunidad.');
+    if (status === 400) return new OpenCloudError('invalid_request', 'Roblox rechazó la consulta de membresía.');
+    if (status === 429) return new OpenCloudError('rate_limited', 'Roblox está limitando las consultas ahora mismo.');
+    if (status >= 500) return new OpenCloudError('upstream', 'Roblox no está respondiendo correctamente.');
+    return new OpenCloudError('network', 'No se pudo contactar con Roblox.');
+}
+
+// ONE membership: the one belonging to `userId` in `groupId`, or null if
+// that user simply isn't in the community.
+//
+// This is THE reason Open Cloud is used here at all — it's the only Roblox
+// API that reports `createTime`, the exact instant the membership was
+// created. Nothing on the public API exposes that, which is why the old
+// approach could only ever approximate "how long has this user been in the
+// group" from member ordering.
+//
+// Note what this does NOT do: it never lists the community's members. The
+// `filter` below is applied by ROBLOX, server-side, so a community with
+// 300k members costs exactly the same one request as a community with 3 —
+// and maxPageSize is 1 because a user has at most one membership per group,
+// so a second page can't exist by construction.
+async function getGroupMembership(groupId, userId) {
+    if (!OPEN_CLOUD_KEY) {
+        throw new OpenCloudError('not_configured', 'Falta la variable de entorno ROBLOX_OPEN_CLOUD_KEY.');
+    }
+
+    // La query se arma a mano, NO con `params:` de axios, y es a propósito: el
+    // serializador de axios codifica el espacio como `+` y deja la comilla sin
+    // escapar, así que `user == 'users/156'` sale como
+    // `user+%3D%3D+'users%2F156'`. Que Roblox acepte o no ese `+` como espacio
+    // no es algo que convenga averiguar en producción — encodeURIComponent
+    // produce la forma canónica (%20) que documenta Roblox.
+    const filtro = encodeURIComponent(`user == 'users/${userId}'`);
+    const url = `https://apis.roblox.com/cloud/v2/groups/${encodeURIComponent(groupId)}/memberships?maxPageSize=1&filter=${filtro}`;
+
+    let res;
+    try {
+        res = await limitedOpenCloudGroupsRequest(() => api.get(url, {
+            headers: { 'x-api-key': OPEN_CLOUD_KEY },
+        }));
+    } catch (err) {
+        throw toOpenCloudError(err);
+    }
+
+    observeOpenCloudGroupsLimit(res.headers);
+
+    const membership = res.data?.groupMemberships?.[0];
+    if (!membership) return null; // filter matched nothing -> not a member
+
+    // createTime is an RFC-3339 string ("2026-02-14T10:00:00.123Z"). It is
+    // returned as-is: parsing/day-math belongs to the caller, and a malformed
+    // value must be visible as such rather than silently become "0 días".
+    return {
+        createTime: membership.createTime ?? null,
+        role: membership.role ?? null,
+        user: membership.user ?? null,
     };
 }
 
@@ -347,9 +452,13 @@ module.exports = {
     isUserInGroup,
     getGroupInfo,
     getGroupIcon,
+    getGroupMembership,
+    isOpenCloudConfigured,
+    OpenCloudError,
     getWornAssetIds,
     getAssetDetails,
     getBundlesForComponentAsset,
     getAssetRAP,
     getCollectibleRAP,
+    __test: { toOpenCloudError },
 };

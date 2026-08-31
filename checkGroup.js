@@ -13,12 +13,13 @@ function buildCheckGroupEmbed() {
             '<:point:1501212595464700104> Presiona el botón del grupo en el que deseas comprobar si eres elegible para recibir envíos de Robux.\n\n' +
             '<:point:1501212595464700104> **7x (Antes Noctra Study)**: Verifica si eres elegible para este grupo.\n\n' +
             "<:point:1501212595464700104> **7x Community's**: Verifica si eres elegible para este grupo.\n\n" +
-            '<:point:1501212595464700104> **#7x Group**: Verifica si eres elegible para este grupo.\n\n' +
+            '<:point:1501212595464700104> **#7x $tudio**: Verifica si eres elegible para este grupo.\n\n' +
             '**Información importante**\n\n' +
+            `<:point:1501212595464700104> Roblox exige **${config.MIN_GROUP_DAYS} días** dentro de una comunidad antes de poder enviarte Robux desde ella. El bot consulta tu fecha de ingreso directamente en Roblox y calcula los días exactos.\n\n` +
             '<:point:1501212595464700104> Se recomienda estar en los 3 grupos, ya que si alguno presenta problemas o alcanza sus límites, podremos realizar el envío desde otra comunidad.\n\n' +
             '<:point:1501212595464700104> Los envíos se realizan principalmente por 7x (Antes Noctra Study), aunque esto puede cambiar en cualquier momento.\n\n' +
             '<:point:1501212595464700104> No se realizan envíos mediante Roblox Plus/Premium.\n\n' +
-            '<:truepurple:1501214679400190086> Mientras esperas, revisa periódicamente el canal de resultados, ya que ahí se notificará si eres elegible o no para recibir envíos de Robux.'
+            '<:truepurple:1501214679400190086> El resultado se publica al instante en el canal de resultados, con tu fecha de ingreso y tus días de antigüedad.'
         );
 }
 
@@ -34,7 +35,7 @@ function buildCheckGroupRow() {
             .setStyle(ButtonStyle.Secondary),
         new ButtonBuilder()
             .setCustomId('cg_group7x')
-            .setLabel('#7x Group')
+            .setLabel('#7x $tudio')
             .setStyle(ButtonStyle.Secondary),
     );
 }

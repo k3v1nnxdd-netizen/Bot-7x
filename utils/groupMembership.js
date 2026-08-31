@@ -200,19 +200,7 @@ async function checkMembership(groupKey, username) {
     }
 
     const user = await resolveRobloxUser(username);
-
-    let membership;
-    try {
-        membership = await resolveMembership(group.groupId, user.id);
-    } catch (err) {
-        // La identidad SÍ se resolvió; lo que falló fue la membresía. Se
-        // adjunta lo ya sabido para que la tarjeta de "NO VERIFICADO" pueda
-        // salir igual de completa (avatar, display name, UserId) en vez de
-        // quedarse sólo con el texto que el usuario escribió en el modal.
-        err.robloxUser = user;
-        err.group = group;
-        throw err;
-    }
+    const membership = await resolveMembership(group.groupId, user.id);
 
     const base = {
         groupKey: group.key,

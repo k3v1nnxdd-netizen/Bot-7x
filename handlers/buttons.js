@@ -50,7 +50,6 @@ const TICKET_BUTTONS = new Set(['confirmar_pago', 'cerrar_ticket', 'confirmar_ce
 // cada boton del panel es literalmente `cg_<clave>`, asi que anadir una cuarta
 // comunidad en config no puede dejarse a medias aqui.
 const CHECKGROUP_BUTTONS = new Set(Object.keys(config.CHECK_GROUPS).map(clave => `cg_${clave}`));
-const CHECKGROUP_RESULT_BUTTONS = new Set(['cg_elig_yes', 'cg_elig_no']);
 
 function isTicketChannel(interaction) {
     return (
@@ -102,16 +101,6 @@ async function guardButton(interaction) {
     // Check Group panel buttons must come from the check group channel
     if (CHECKGROUP_BUTTONS.has(interaction.customId) && interaction.channelId !== config.CHANNELS.CHECKGROUP) {
         await safeReply(interaction, { content: 'Usa los botones del panel oficial de Check Group.', ephemeral: true });
-        return false;
-    }
-
-    // Check Group eligibility buttons (and their confirm/cancel follow-ups)
-    // must come from the results channel
-    const isCheckGroupResultButton = CHECKGROUP_RESULT_BUTTONS.has(interaction.customId)
-        || interaction.customId.startsWith('cg_elig_confirm:')
-        || interaction.customId.startsWith('cg_elig_cancel:');
-    if (isCheckGroupResultButton && interaction.channelId !== config.CHANNELS.CHECKGROUP_RESULTS) {
-        await safeReply(interaction, { content: 'Este boton solo funciona en el canal de resultados.', ephemeral: true });
         return false;
     }
 

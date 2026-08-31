@@ -207,15 +207,17 @@ if (RUN_BOT) {
             );
         }
 
-        // Mismo criterio para Check Group's: sin la key de Open Cloud el panel
-        // sigue funcionando, pero no puede leer la fecha de ingreso real de
-        // Roblox, asi que cada solicitud cae al flujo manual de siempre
-        // (tarjeta NO VERIFICADO + botones del owner). Mejor verlo aqui que
-        // descubrirlo cuando un cliente pulse el boton.
+        // Sin la key de Open Cloud, Check Group's NO puede funcionar: es la
+        // unica fuente de la fecha de ingreso (createTime), y el sistema es
+        // 100% automatico, asi que no hay ningun modo degradado al que caer.
+        // Cada solicitud respondera con un error al usuario hasta que la
+        // variable exista. Mejor verlo en el arranque que descubrirlo cuando un
+        // cliente pulse el boton.
         if (!roblox.isOpenCloudConfigured()) {
-            console.warn(
-                "[bot] ROBLOX_OPEN_CLOUD_KEY no esta definida — Check Group's no podra consultar la " +
-                'fecha de ingreso (createTime) en Roblox y todas las solicitudes iran a revision manual.'
+            console.error(
+                "[bot] FALTA ROBLOX_OPEN_CLOUD_KEY — Check Group's no puede consultar la fecha de ingreso " +
+                '(createTime) en Roblox. Todas las solicitudes fallaran con un aviso al usuario hasta que ' +
+                'se defina esa variable de entorno en Railway.'
             );
         }
 

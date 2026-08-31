@@ -7,7 +7,8 @@ const {
     ModalBuilder, TextInputBuilder, TextInputStyle,
 } = require('discord.js');
 const { safeReply, safeEditReply, safeDeferReply, safeShowModal } = require('../utils/safe');
-const { checkMembership, getGroup, getPlayerAvatar, getCommunityIcon, GroupCheckError } = require('../utils/groupMembership');
+const { checkMembership, getGroup, getPlayerAvatar, getCommunityIcon, isValidUsername, GroupCheckError } = require('../utils/groupMembership');
+const { lock, lockedUntil, registerHit, slotFreesAt } = require('../utils/spam');
 const config = require('../config');
 
 const EMBED_COLOR = 0x2B2D31; // gray, per request
@@ -79,12 +80,15 @@ async function handleCheckGroupButton(interaction) {
 // Compacta y horizontal: tres columnas (inline) y nada más. Los emojis del
 // servidor van SIEMPRE en el value de un field — Discord no los renderiza en un
 // título, en el NAME de un field ni en el footer; ahí se imprimen crudos, como
-// `<:true:1501213776878501899>`.
+// `<a:add:1540603311890104321>`.
 
+// `notEligible` cubre tanto NO ELEGIBLE como NO PERTENECE: desde el punto de
+// vista de quien lo pregunta son el mismo "hoy no", y usar dos iconos distintos
+// solo haria dudar de si significan cosas distintas.
 const EMOJI = {
-    point: '<:point:1501212595464700104>',
-    ok:    '<:true:1501213776878501899>',
-    alert: '<:alert:1501220021035204658>',
+    point:       '<:point:1501212595464700104>',
+    eligible:    '<a:add:1540603311890104321>',
+    notEligible: '<a:remove:1540604743234228364>',
 };
 
 const FIELD = {
@@ -102,9 +106,9 @@ const NONE = '—';
 
 function statusValue(status) {
     switch (status) {
-        case 'eligible':     return `${EMOJI.ok} **ELEGIBLE**`;
-        case 'not_eligible': return `${EMOJI.alert} **NO ELEGIBLE**`;
-        case 'not_member':   return `${EMOJI.alert} **NO PERTENECE**`;
+        case 'eligible':     return `${EMOJI.eligible} **ELEGIBLE**`;
+        case 'not_eligible': return `${EMOJI.notEligible} **NO ELEGIBLE**`;
+        case 'not_member':   return `${EMOJI.notEligible} **NO PERTENECE**`;
         default:             return NONE;
     }
 }
@@ -195,6 +199,46 @@ async function fetchImages({ robloxUserId, groupId }) {
     return { avatarUrl, iconUrl };
 }
 
+// ── Anti-spam ────────────────────────────────────────────────────────────────
+// Por usuario de Discord, y comprobado ANTES de tocar Roblox y antes de
+// publicar nada: un usuario bloqueado no cuesta ni una petición ni un mensaje
+// en el canal. Los números viven en config.CHECKGROUP_ANTISPAM.
+//
+// Lo global ya está cubierto en otra capa: src/roblox/rateLimiter.js pacea cada
+// ruta de Roblox con su propio token bucket y abre el circuito si Roblox se
+// queja. Esto de aquí es lo que faltaba — el techo POR PERSONA, que es lo único
+// que puede parar a alguien decidido a llenar el canal de resultados.
+const COOLDOWN_KEY = userId => `cg:cooldown:${userId}`;
+const QUOTA_KEY    = userId => `cg:quota:${userId}`;
+
+const relativeTs = ms => `<t:${Math.ceil(ms / 1000)}:R>`;
+
+// Devuelve el mensaje a enseñar si hay que frenar al usuario, o null si puede
+// seguir. No registra nada: sólo mira.
+function spamBlockMessage(userId) {
+    const { MAX_PER_WINDOW, WINDOW_MS } = config.CHECKGROUP_ANTISPAM;
+
+    const hasta = lockedUntil(COOLDOWN_KEY(userId));
+    if (hasta !== null) {
+        return `⏳ Acabas de hacer una comprobación. Podrás hacer otra ${relativeTs(hasta)}.`;
+    }
+
+    const libreEn = slotFreesAt(QUOTA_KEY(userId), WINDOW_MS, MAX_PER_WINDOW);
+    if (libreEn !== null) {
+        return `⏳ Has hecho ${MAX_PER_WINDOW} comprobaciones en poco tiempo. Podrás volver a intentarlo ${relativeTs(libreEn)}.`;
+    }
+
+    return null;
+}
+
+// Se llama justo antes de empezar el trabajo de verdad. A partir de aquí la
+// comprobación ya cuenta, aunque Roblox acabe fallando: la petición se hizo.
+function registerAttempt(userId) {
+    const { COOLDOWN_MS, WINDOW_MS } = config.CHECKGROUP_ANTISPAM;
+    lock(COOLDOWN_KEY(userId), COOLDOWN_MS);
+    registerHit(QUOTA_KEY(userId), WINDOW_MS);
+}
+
 function requesterNameOf(interaction) {
     return interaction.member?.displayName
         ?? interaction.user?.displayName
@@ -213,6 +257,26 @@ async function handleCheckGroupModal(interaction) {
     if (!username) {
         return safeReply(interaction, { content: '❌ Ingresa un nombre de usuario válido.', ephemeral: true });
     }
+
+    // El formato se valida ANTES de gastar cuota: una errata no cuesta ninguna
+    // petición a Roblox, así que tampoco debe gastarle a nadie su cupo. (La
+    // misma validación vive dentro de checkMembership; aquí sólo decide si esto
+    // llega a contar como intento.)
+    if (!isValidUsername(username)) {
+        return safeReply(interaction, { content: USER_FIXABLE.invalid_username(), ephemeral: true });
+    }
+
+    // Anti-spam: si está frenado, se corta aquí — sin petición a Roblox y sin
+    // nada publicado en el canal.
+    const frenado = spamBlockMessage(interaction.user.id);
+    if (frenado) {
+        console.warn(`[checkGroupFlow] ${interaction.user.id} frenado por anti-spam en ${groupKey}.`);
+        return safeReply(interaction, { content: frenado, ephemeral: true });
+    }
+    // Se registra ANTES de trabajar, no después: si se hiciera al final, dos
+    // envíos simultáneos pasarían los dos el control antes de que ninguno
+    // hubiera contado.
+    registerAttempt(interaction.user.id);
 
     if (!await safeDeferReply(interaction, { ephemeral: true })) return;
 
@@ -275,10 +339,10 @@ async function handleCheckGroupModal(interaction) {
     }
 
     const resumen = !result.isMember
-        ? `${EMOJI.alert} **${result.robloxUsername}** no pertenece a **${group.label}**.`
+        ? `${EMOJI.notEligible} **${result.robloxUsername}** no pertenece a **${group.label}**.`
         : result.eligible
-            ? `${EMOJI.ok} **${result.robloxUsername}** lleva **${result.days} día${result.days === 1 ? '' : 's'}** en **${group.label}**: elegible.`
-            : `${EMOJI.alert} **${result.robloxUsername}** lleva **${result.days} día${result.days === 1 ? '' : 's'}** en **${group.label}**: aún no cumple los **${config.MIN_GROUP_DAYS} días** mínimos.`;
+            ? `${EMOJI.eligible} **${result.robloxUsername}** lleva **${result.days} día${result.days === 1 ? '' : 's'}** en **${group.label}**: elegible.`
+            : `${EMOJI.notEligible} **${result.robloxUsername}** lleva **${result.days} día${result.days === 1 ? '' : 's'}** en **${group.label}**: aún no cumple los **${config.MIN_GROUP_DAYS} días** mínimos.`;
 
     await safeEditReply(interaction, {
         content: `${resumen}\n${EMOJI.point} Resultado publicado en <#${config.CHANNELS.CHECKGROUP_RESULTS}>.`,

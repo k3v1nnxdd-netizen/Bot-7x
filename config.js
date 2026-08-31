@@ -59,6 +59,25 @@ module.exports = {
         group7x:   { label: '#7x $tudio',              groupId: 1101699267 },
     },
 
+    // Anti-spam de Check Group's, por usuario de Discord. Cada comprobación que
+    // llega a Roblox cuesta hasta tres peticiones (usuario, membresía, avatar) y
+    // publica un mensaje en el canal de resultados, así que estos dos límites
+    // protegen las dos cosas a la vez: la cuota de Roblox y el canal.
+    //
+    // Hacen falta LOS DOS, porque responden a preguntas distintas:
+    //   COOLDOWN_MS    — corta la ráfaga (dobles clics, alguien probando 10
+    //                    usernames seguidos).
+    //   MAX_PER_WINDOW — corta el goteo sostenido. Sin él, un cooldown de 15 s
+    //                    todavía permite 240 comprobaciones por hora.
+    //
+    // 6 cada 10 minutos da de sobra para el uso real: comprobar las 3
+    // comunidades y repetirlo entero una segunda vez.
+    CHECKGROUP_ANTISPAM: {
+        COOLDOWN_MS:    15_000,
+        MAX_PER_WINDOW: 6,
+        WINDOW_MS:      10 * 60_000,
+    },
+
     // Cumulative Robux purchased (all-time) to qualify for the Rich Client role
     RICH_CLIENT_ROBUX_THRESHOLD: 50000,
 

@@ -65,6 +65,12 @@ module.exports = async function run() {
     const originalGetHeadshot = roblox.getHeadshot;
     const originalGetGroupIcon = roblox.getGroupIcon;
 
+    // El anti-spam es de verdad (15 s de cooldown, 6 por 10 min), así que para
+    // los bloques que ejercitan el handler varias veces seguidas se abre la mano
+    // y se restaura al final. La sección 16 lo prueba con sus propios números.
+    const antispamOriginal = { ...config.CHECKGROUP_ANTISPAM };
+    Object.assign(config.CHECKGROUP_ANTISPAM, { COOLDOWN_MS: 0, MAX_PER_WINDOW: 10_000, WINDOW_MS: 60_000 });
+
     // Cada test declara qué contesta Roblox. `llamadas` es lo que permite
     // afirmar que se consultó UNA membresía filtrada, y no un listado.
     const llamadas = [];
@@ -275,6 +281,16 @@ module.exports = async function run() {
         assert(campo(flow.FIELD.JOINED) === `<t:${unixIngreso}:D>`, 'la fecha de ingreso es un timestamp de Discord (zona horaria de cada quien)');
         assert(campo(flow.FIELD.AGE) === '**198 días**', 'la antigüedad son los días calculados desde createTime');
         assert(campo(flow.FIELD.STATUS).includes('ELEGIBLE'), 'el estado da el veredicto');
+
+        // Los dos emojis del veredicto, escritos aquí a mano a propósito: si
+        // alguien cambia un id en checkGroupFlow.js, este archivo tiene que
+        // discrepar. Un id equivocado no rompe nada — simplemente se imprime
+        // crudo en el canal, que es justo el fallo que nadie revisa.
+        const E_ELEGIBLE = '<a:add:1540603311890104321>';
+        const E_NO_ELEGIBLE = '<a:remove:1540604743234228364>';
+        assert(flow.statusValue('eligible') === `${E_ELEGIBLE} **ELEGIBLE**`, 'ELEGIBLE lleva el emoji add');
+        assert(flow.statusValue('not_eligible') === `${E_NO_ELEGIBLE} **NO ELEGIBLE**`, 'NO ELEGIBLE lleva el emoji remove');
+        assert(flow.statusValue('not_member') === `${E_NO_ELEGIBLE} **NO PERTENECE**`, 'NO PERTENECE lleva el mismo emoji remove: para quien pregunta es el mismo "hoy no"');
         assert(!todo.includes('2026'), 'ninguna fecha se escribe a mano: sólo va el timestamp');
 
         // Lo que ya NO debe aparecer en ningún sitio de la tarjeta.
@@ -352,13 +368,13 @@ module.exports = async function run() {
         const efimeros = [];
         const canalFalso = { id: config.CHANNELS.CHECKGROUP_RESULTS, send: async payload => { enviados.push(payload); return { id: 'msg' }; } };
 
-        const interaccionFalsa = (nombreUsuario) => {
+        const interaccionFalsa = (nombreUsuario, discordId = '996310284803248158') => {
             const i = {
                 customId: `cg_modal_${GROUP_KEY}`,
                 replied: false,
                 deferred: false,
                 fields: { getTextInputValue: () => nombreUsuario },
-                user: { id: '996310284803248158', username: 'kevin' },
+                user: { id: discordId, username: 'kevin' },
                 member: { displayName: 'Kevin' },
                 client: {
                     channels: {
@@ -426,11 +442,70 @@ module.exports = async function run() {
         assert(Object.keys(config.CHECK_GROUPS).length === 3, 'no hay más comunidades configuradas de las tres esperadas');
         assert(config.CHANNELS.CHECKGROUP_RESULTS === '1534758835531808869', 'el canal de resultados es el 1534758835531808869');
         assert(enviados.every(() => canalFalso.id === '1534758835531808869'), 'y es el único canal al que se publica');
+        // ── 16. Anti-spam: por usuario, y ANTES de tocar Roblox ─────────────
+        // Lo que se prueba no es "se muestra un aviso" sino las dos
+        // consecuencias que importan: que una solicitud frenada NO llega a
+        // Roblox y NO publica nada en el canal.
+        Object.assign(config.CHECKGROUP_ANTISPAM, { COOLDOWN_MS: 30_000, MAX_PER_WINDOW: 3, WINDOW_MS: 60_000 });
+        respuestaMembresia = { createTime: haceDias(198), role: null, user: null };
+
+        // 16a. Cooldown: la segunda seguida se corta en seco.
+        enviados.length = 0; efimeros.length = 0; llamadas.length = 0;
+        const spammer = '111111111111111111';
+        await handleCheckGroupModal(interaccionFalsa(usuarioNuevo(), spammer));
+        assert(enviados.length === 1, 'la primera comprobación pasa con normalidad');
+        const llamadasTrasPrimera = llamadas.length;
+
+        efimeros.length = 0;
+        await handleCheckGroupModal(interaccionFalsa(usuarioNuevo(), spammer));
+        assert(enviados.length === 1, 'la segunda seguida NO publica nada en el canal');
+        assert(llamadas.length === llamadasTrasPrimera, 'y NO gasta ninguna petición a Roblox');
+        assert(efimeros.length === 1 && efimeros[0].content.includes('Podrás hacer otra'), 'al usuario se le dice que espere');
+        assert(/<t:\d+:R>/.test(efimeros[0].content), 'con un timestamp de Discord, no con un "espera un momento" inútil');
+
+        // 16b. Cuota: aunque pase el cooldown, no se puede seguir indefinidamente.
+        Object.assign(config.CHECKGROUP_ANTISPAM, { COOLDOWN_MS: 0, MAX_PER_WINDOW: 3, WINDOW_MS: 60_000 });
+        enviados.length = 0; efimeros.length = 0;
+        const cuotero = '222222222222222222';
+        for (let i = 0; i < 3; i++) await handleCheckGroupModal(interaccionFalsa(usuarioNuevo(), cuotero));
+        assert(enviados.length === 3, `se permiten las 3 del periodo (publicadas ${enviados.length})`);
+
+        efimeros.length = 0;
+        const llamadasTrasCuota = llamadas.length;
+        await handleCheckGroupModal(interaccionFalsa(usuarioNuevo(), cuotero));
+        assert(enviados.length === 3, 'la cuarta ya no publica nada');
+        assert(llamadas.length === llamadasTrasCuota, 'ni llega a Roblox');
+        assert(efimeros[0].content.includes('3 comprobaciones'), 'y se le dice cuántas lleva');
+        assert(/<t:\d+:R>/.test(efimeros[0].content), 'y cuándo podrá volver a intentarlo');
+
+        // 16c. El freno es POR USUARIO: otro no hereda el castigo.
+        enviados.length = 0; efimeros.length = 0;
+        await handleCheckGroupModal(interaccionFalsa(usuarioNuevo(), '333333333333333333'));
+        assert(enviados.length === 1, 'otro usuario distinto no queda frenado por el spam del primero');
+
+        // 16d. Una errata no gasta cuota: no cuesta ninguna petición a Roblox.
+        enviados.length = 0; efimeros.length = 0;
+        const torpe = '444444444444444444';
+        for (let i = 0; i < 5; i++) await handleCheckGroupModal(interaccionFalsa('no válido!', torpe));
+        assert(enviados.length === 0, 'un username mal escrito nunca publica nada');
+        assert(efimeros.every(e => e.content.includes('3-20 caracteres')), 'se le explica qué formato se espera');
+        efimeros.length = 0;
+        await handleCheckGroupModal(interaccionFalsa(usuarioNuevo(), torpe));
+        assert(enviados.length === 1, 'y sus 5 erratas no le han gastado el cupo: la siguiente buena pasa');
+
+        // 16e. Los límites salen de config, no están escritos en el flujo.
+        const fuenteFlujo = require('fs').readFileSync(require('path').join(__dirname, '..', '..', 'handlers', 'checkGroupFlow.js'), 'utf8');
+        assert(fuenteFlujo.includes('config.CHECKGROUP_ANTISPAM'), 'el flujo lee los límites de config');
+        assert(!/COOLDOWN_MS\s*[:=]\s*\d/.test(fuenteFlujo), 'y no tiene ningún número de anti-spam escrito a mano');
+        for (const clave of ['COOLDOWN_MS', 'MAX_PER_WINDOW', 'WINDOW_MS']) {
+            assert(typeof antispamOriginal[clave] === 'number' && antispamOriginal[clave] > 0, `config.CHECKGROUP_ANTISPAM.${clave} está definido`);
+        }
     } finally {
         roblox.getUserByUsername = originalGetUserByUsername;
         roblox.getGroupMembership = originalGetGroupMembership;
         roblox.getHeadshot = originalGetHeadshot;
         roblox.getGroupIcon = originalGetGroupIcon;
+        Object.assign(config.CHECKGROUP_ANTISPAM, antispamOriginal);
     }
 
     return finish();

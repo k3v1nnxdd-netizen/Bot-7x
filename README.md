@@ -213,6 +213,45 @@ El detalle tecnico (que grupo, que usuario, que codigo de error) se queda en la
 consola de Railway. Los unicos errores que se le explican al usuario son los que
 puede arreglar el mismo: username inexistente o mal escrito.
 
+### Anti-spam
+
+Dos limites por usuario de Discord, comprobados ANTES de tocar Roblox y antes de
+publicar nada: una solicitud frenada no cuesta ni una peticion ni un mensaje en
+el canal.
+
+```js
+// config.js
+CHECKGROUP_ANTISPAM: {
+    COOLDOWN_MS:    15_000,      // entre una comprobacion y la siguiente
+    MAX_PER_WINDOW: 6,           // comprobaciones...
+    WINDOW_MS:      10 * 60_000, // ...por cada 10 minutos (ventana deslizante)
+},
+```
+
+Hacen falta los dos, porque responden a preguntas distintas: el cooldown corta
+la rafaga (dobles clics, alguien probando diez usernames seguidos) y la cuota
+corta el goteo sostenido — sin ella, 15 s de cooldown todavia permiten 240
+comprobaciones por hora. La ventana es DESLIZANTE y no por cubos fijos: con
+cubos, quien gasta su cuota al final de uno puede gastar otra entera al empezar
+el siguiente y colar el doble de golpe justo en la frontera.
+
+6 cada 10 minutos da de sobra para el uso real: comprobar las 3 comunidades y
+repetirlo entero una segunda vez.
+
+Al usuario frenado se le dice **cuando** podra volver, con un timestamp de
+Discord relativo, no con un "espera un momento" que no dice nada. Y una errata
+en el username **no gasta cuota**: el formato se valida antes, y una errata no
+cuesta ninguna peticion a Roblox.
+
+Esto es el techo POR PERSONA. El techo global ya estaba en otra capa:
+`src/roblox/rateLimiter.js` pacea cada ruta de Roblox con su propio token bucket
+y abre el circuito si Roblox se queja. Y la cache de mas abajo hace que repetir
+la misma consulta no llegue siquiera a salir.
+
+La mecanica vive en `utils/spam.js`, que ya tenia los cooldowns por clave que
+usa el resto del bot; lo nuevo es la cuota por ventana deslizante, que es
+reutilizable desde cualquier otro flujo.
+
 ### Cache
 
 Todo en memoria (`src/cache/memoryCache.js`), y cada TTL elegido por lo que de

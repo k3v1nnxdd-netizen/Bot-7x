@@ -9,7 +9,7 @@ function buildCalcEmbed() {
         .setDescription(
             '# 7x Community - Robux\n\n' +
             '¿Quieres saber cuántos Robux puedes comprar o cuánto costarán los que necesitas?\n\n' +
-            '<:money:1501213606077792266> = Ingresa la cantidad de dinero que tienes y el bot te dirá cuántos Robux puedes obtener.\n\n' +
+            '<:money:1544123920897019906> = Ingresa la cantidad de dinero que tienes y el bot te dirá cuántos Robux puedes obtener.\n\n' +
             '<a:robuxxx:1510070809366892604> = Ingresa la cantidad de Robux que deseas y el bot calculará el precio exacto.\n\n' +
             '<:point:1501212595464700104> Cálculo instantáneo y automático.\n' +
             '<:point:1501212595464700104> Precios actualizados.\n' +
@@ -22,7 +22,7 @@ function buildCalcRow() {
     return new ActionRowBuilder().addComponents(
         new ButtonBuilder()
             .setCustomId('calc_dinero')
-            .setEmoji({ id: '1501213606077792266', name: 'money' })
+            .setEmoji({ id: '1544123920897019906', name: 'money' })
             .setStyle(ButtonStyle.Secondary),
         new ButtonBuilder()
             .setCustomId('calc_robux')

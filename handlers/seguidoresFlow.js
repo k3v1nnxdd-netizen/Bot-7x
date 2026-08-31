@@ -322,7 +322,7 @@ async function sendFinalInfo(channel, userId, platformKey, platformLabel, qty, p
         .setDescription(
             `<a:boost:1525333836181934081> **Plataforma**\n\`\`\`${platformLabel}\`\`\`\n` +
             `<:followers7x:1525326777071960124> **Seguidores solicitados**\n\`\`\`${fmtQty(qty)}\`\`\`\n` +
-            `<:money:1501213606077792266> **Precio a pagar**\n\`\`\`$${fmtMoney(price)} MXN\`\`\`\n\n` +
+            `<:money:1544123920897019906> **Precio a pagar**\n\`\`\`$${fmtMoney(price)} MXN\`\`\`\n\n` +
             '<:alert:1501220021035204658> Recuerda enviar tu comprobante de pago una vez hayas realizado el pago, ' +
             'junto con la palabra **PAGO REALIZADO**, para que nuestro equipo pueda validarlo.'
         )

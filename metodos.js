@@ -41,7 +41,7 @@ function buildMetodosRow() {
                     .setLabel('Transferencia')
                     .setDescription('Mercado Pago MX')
                     .setValue('transferencia')
-                    .setEmoji({ id: '1501213606077792266', name: 'money' }),
+                    .setEmoji({ id: '1544123920897019906', name: 'money' }),
                 new StringSelectMenuOptionBuilder()
                     .setLabel('Depósito OXXO')
                     .setDescription('Depósito mediante código QR en tiendas OXXO')

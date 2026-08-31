@@ -234,16 +234,16 @@ async function handleComprarModal(interaction) {
 
         if (couponApplied) {
             descLines +=
-                `<:money:1501213606077792266> **Precio original**\n\`\`\`${priceText} MXN\`\`\`\n` +
+                `<:money:1544123920897019906> **Precio original**\n\`\`\`${priceText} MXN\`\`\`\n` +
                 `<:true:1501213776878501899> **Descuento aplicado — ${codigoRaw.toUpperCase()} (${couponObj.discount}%)**\n\`\`\`Ahorras $${savedNum} MXN\`\`\`\n` +
-                `<:money:1501213606077792266> **Precio final a pagar**\n\`\`\`$${finalPriceNum} MXN\`\`\`\n`;
+                `<:money:1544123920897019906> **Precio final a pagar**\n\`\`\`$${finalPriceNum} MXN\`\`\`\n`;
         } else if (couponInvalid) {
             descLines +=
                 `<:alert:1501220021035204658> **Código usado: ${codigoRaw.toUpperCase()}**\n\`\`\`Inválido o sin usos disponibles\`\`\`\n` +
-                `<:money:1501213606077792266> **Precio a pagar**\n\`\`\`${priceText} MXN\`\`\`\n`;
+                `<:money:1544123920897019906> **Precio a pagar**\n\`\`\`${priceText} MXN\`\`\`\n`;
         } else {
             descLines +=
-                `<:money:1501213606077792266> **Precio a pagar**\n\`\`\`${priceText} MXN\`\`\`\n`;
+                `<:money:1544123920897019906> **Precio a pagar**\n\`\`\`${priceText} MXN\`\`\`\n`;
         }
 
         descLines += `<:truepurple:1501214679400190086> **¿Miembro de comunidad?**\n\`\`\`${esMiembro}\`\`\``;

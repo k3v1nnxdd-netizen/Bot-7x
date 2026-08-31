@@ -130,7 +130,10 @@ fuente de verificacion, estado de membresia como bloque aparte, minimo requerido
 como bloque aparte y hora de solicitud.
 
 Si no pertenece, se publica igual con `NO PERTENECE` y guiones en fecha y
-antiguedad: nunca un numero inventado.
+antiguedad: nunca un numero inventado. En ese caso, y solo en ese, se anade un
+cuarto campo con el **link de la comunidad** para que pueda unirse y volver a
+comprobarlo — el link tambien va en su respuesta efimera, para que no tenga que
+ir al canal a buscarlo. Vive junto al label y al ID en `config.CHECK_GROUPS`.
 
 Las dos imagenes se piden a Roblox en vivo:
 
@@ -165,9 +168,9 @@ en el canal de verificacion y sigue siendo independiente.
 ```js
 // config.js
 CHECK_GROUPS: {
-    noctra:    { label: '7x (Antes Noctra Study)', groupId: 282134403 },
-    community: { label: "7x Community's",          groupId: 59218460 },
-    group7x:   { label: '#7x $tudio',              groupId: 1101699267 },
+    noctra:    { label: '7x (Antes Noctra Study)', groupId: 282134403,  link: 'https://www.roblox.com/es/communities/282134403/7x#!/about' },
+    community: { label: "7x Community's",          groupId: 59218460,   link: 'https://www.roblox.com/es/communities/59218460/7x-Community-s' },
+    group7x:   { label: '#7x $tudio',              groupId: 1101699267, link: 'https://www.roblox.com/es/communities/1101699267/7x-tudio' },
 },
 ```
 

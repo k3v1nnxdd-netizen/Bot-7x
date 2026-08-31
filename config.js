@@ -53,10 +53,12 @@ module.exports = {
     // groupId en null = "botón que existe, pero sin comunidad asignada
     // todavía": el flujo lo detecta y responde que ese grupo aún no está
     // configurado, en vez de preguntarle a Roblox por un id inventado.
+    // `link` es a dónde se manda a quien resulta NO PERTENECER: la tarjeta lo
+    // enseña sólo en ese caso, para que pueda unirse y volver a comprobarlo.
     CHECK_GROUPS: {
-        noctra:    { label: '7x (Antes Noctra Study)', groupId: 282134403 },
-        community: { label: "7x Community's",          groupId: 59218460 },
-        group7x:   { label: '#7x $tudio',              groupId: 1101699267 },
+        noctra:    { label: '7x (Antes Noctra Study)', groupId: 282134403,  link: 'https://www.roblox.com/es/communities/282134403/7x#!/about' },
+        community: { label: "7x Community's",          groupId: 59218460,   link: 'https://www.roblox.com/es/communities/59218460/7x-Community-s' },
+        group7x:   { label: '#7x $tudio',              groupId: 1101699267, link: 'https://www.roblox.com/es/communities/1101699267/7x-tudio' },
     },
 
     // Anti-spam de Check Group's, por usuario de Discord. Cada comprobación que

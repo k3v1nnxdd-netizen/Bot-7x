@@ -81,7 +81,7 @@ function isValidUsername(username) {
 function getGroup(groupKey) {
     const group = config.CHECK_GROUPS[groupKey];
     if (!group) return null;
-    return { key: groupKey, label: group.label, groupId: group.groupId };
+    return { key: groupKey, label: group.label, groupId: group.groupId, link: group.link ?? null };
 }
 
 async function resolveRobloxUser(username) {
@@ -206,6 +206,7 @@ async function checkMembership(groupKey, username) {
         groupKey: group.key,
         groupLabel: group.label,
         groupId: group.groupId,
+        groupLink: group.link,
         robloxUserId: user.id,
         robloxUsername: user.name,
         robloxDisplayName: user.displayName,

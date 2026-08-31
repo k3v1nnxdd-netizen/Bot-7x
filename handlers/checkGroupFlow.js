@@ -95,6 +95,7 @@ const FIELD = {
     JOINED: 'Se unió',
     AGE:    'Antigüedad',
     STATUS: 'Estado',
+    JOIN:   'Únete a la comunidad',
 };
 
 // Un field necesita nombre; para la línea de "le faltan N días" no hay ninguno
@@ -122,7 +123,7 @@ function missingDaysLine(days) {
 // nombre. Icono de la comunidad = thumbnail, arriba a la derecha. Ninguna
 // imagen grande: eso es lo que hacía la tarjeta demasiado alta.
 function buildResultEmbed({
-    groupKey, groupLabel,
+    groupKey, groupLabel, groupLink = null,
     robloxUsername, status,
     joinedAt = null, days = null,
     avatarUrl = null, iconUrl = null,
@@ -145,6 +146,17 @@ function buildResultEmbed({
     // Sólo si de verdad falta algo. En un no-miembro sería un número inventado.
     if (status === 'not_eligible' && days !== null) {
         embed.addFields({ name: BLANK_FIELD_NAME, value: missingDaysLine(days), inline: false });
+    }
+
+    // A quien no pertenece se le da el siguiente paso, no sólo el "no": el link
+    // de la comunidad para unirse y volver a comprobarlo. Si el grupo no tiene
+    // link configurado, la tarjeta sale igual sin este campo.
+    if (status === 'not_member' && groupLink) {
+        embed.addFields({
+            name: FIELD.JOIN,
+            value: `${EMOJI.point} Únete y vuelve a comprobarlo: [**${groupLabel}**](${groupLink})`,
+            inline: false,
+        });
     }
 
     if (requesterName) embed.setFooter({ text: `Solicitado por ${requesterName}`.slice(0, 2048) });
@@ -320,6 +332,7 @@ async function handleCheckGroupModal(interaction) {
         const { embed, fallbackFile } = buildResultEmbed({
             groupKey,
             groupLabel: result.groupLabel,
+            groupLink: result.groupLink,
             robloxUsername: result.robloxUsername,
             status,
             joinedAt: result.joinedAt,
@@ -338,8 +351,12 @@ async function handleCheckGroupModal(interaction) {
         return safeEditReply(interaction, { content: '❌ Ocurrió un error al publicar tu resultado. Intenta de nuevo.' });
     }
 
+    // El link también va en el efímero: quien no pertenece lo tiene ahí mismo,
+    // sin tener que ir al canal de resultados a buscarlo.
+    const comoEntrar = group.link ? ` Únete aquí: ${group.link}` : '';
+
     const resumen = !result.isMember
-        ? `${EMOJI.notEligible} **${result.robloxUsername}** no pertenece a **${group.label}**.`
+        ? `${EMOJI.notEligible} **${result.robloxUsername}** no pertenece a **${group.label}**.${comoEntrar}`
         : result.eligible
             ? `${EMOJI.eligible} **${result.robloxUsername}** lleva **${result.days} día${result.days === 1 ? '' : 's'}** en **${group.label}**: elegible.`
             : `${EMOJI.notEligible} **${result.robloxUsername}** lleva **${result.days} día${result.days === 1 ? '' : 's'}** en **${group.label}**: aún no cumple los **${config.MIN_GROUP_DAYS} días** mínimos.`;

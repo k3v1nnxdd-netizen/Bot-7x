@@ -330,13 +330,47 @@ module.exports = async function run() {
 
         // ── 12. No pertenece: veredicto, sin datos inventados ───────────────
         const noMiembro = flow.buildResultEmbed({
-            groupKey: GROUP_KEY, groupLabel: GROUP.label, robloxUsername: USERNAME,
+            groupKey: GROUP_KEY, groupLabel: GROUP.label, groupLink: GROUP.link, robloxUsername: USERNAME,
             status: 'not_member', requesterName: 'Kevin',
         }).embed.data;
         const campoNo = nombre => (noMiembro.fields ?? []).find(f => f.name === nombre)?.value ?? '';
         assert(campoNo(flow.FIELD.STATUS).includes('NO PERTENECE'), 'un no-miembro lo dice claramente');
         assert(campoNo(flow.FIELD.JOINED) === '—' && campoNo(flow.FIELD.AGE) === '—', 'sin fecha de ingreso ni días inventados');
-        assert((noMiembro.fields ?? []).length === 3, 'y sin línea de días faltantes');
+        assert(!(noMiembro.fields ?? []).some(f => f.name === flow.BLANK_FIELD_NAME), 'y sin línea de días faltantes');
+
+        // A quien no pertenece se le da el siguiente paso, no sólo el "no".
+        assert(campoNo(flow.FIELD.JOIN).includes(`(${GROUP.link})`), 'un no-miembro recibe el link de la comunidad');
+        assert(campoNo(flow.FIELD.JOIN).includes(`[**${GROUP.label}**]`), 'como enlace con el nombre de la comunidad, no como URL pelada');
+        assert((noMiembro.fields ?? [])[3]?.inline === false, 'el link va en su propia fila, debajo de las tres columnas');
+
+        // Y sólo a quien no pertenece: al resto ese campo le sobra.
+        for (const estado of ['eligible', 'not_eligible']) {
+            const otro = flow.buildResultEmbed({
+                groupKey: GROUP_KEY, groupLabel: GROUP.label, groupLink: GROUP.link, robloxUsername: USERNAME,
+                status: estado, joinedAt: ingreso, days: estado === 'eligible' ? 198 : 3, requesterName: 'Kevin',
+            }).embed.data;
+            assert(!(otro.fields ?? []).some(f => f.name === flow.FIELD.JOIN), `un "${estado}" no lleva el link: ya está dentro`);
+        }
+
+        // Un grupo sin link configurado no rompe la tarjeta.
+        const sinLink = flow.buildResultEmbed({
+            groupKey: GROUP_KEY, groupLabel: GROUP.label, robloxUsername: USERNAME, status: 'not_member',
+        }).embed.data;
+        assert((sinLink.fields ?? []).length === 3, 'sin link configurado la tarjeta sale igual, sin ese campo');
+
+        // Los tres links, escritos aquí a mano: si alguien cambia uno en
+        // config.js, este archivo tiene que discrepar. Un link roto manda al
+        // cliente a una página que no existe y nadie se entera.
+        const LINKS = {
+            noctra:    'https://www.roblox.com/es/communities/282134403/7x#!/about',
+            community: 'https://www.roblox.com/es/communities/59218460/7x-Community-s',
+            group7x:   'https://www.roblox.com/es/communities/1101699267/7x-tudio',
+        };
+        for (const [clave, url] of Object.entries(LINKS)) {
+            assert(config.CHECK_GROUPS[clave]?.link === url, `el link de ${clave} apunta a su comunidad`);
+            assert(url.includes(String(config.CHECK_GROUPS[clave].groupId)), `y lleva dentro su propio groupId (${config.CHECK_GROUPS[clave].groupId})`);
+            assert(!url.includes(')'), 'y no lleva parentesis, que romperian el enlace de markdown');
+        }
 
         // Sin icono de Roblox se cae al PNG local, y sólo entonces.
         const { embed: sinIcono, fallbackFile: local } = flow.buildResultEmbed({
@@ -432,6 +466,8 @@ module.exports = async function run() {
         assert(enviados.length === 1, 'un "no pertenece" sí es un veredicto y se publica');
         assert(enviados[0].components === undefined, 'tampoco lleva botones');
         assert(JSON.stringify(enviados[0].embeds[0].data).includes('NO PERTENECE'), 'y dice NO PERTENECE');
+        assert(JSON.stringify(enviados[0].embeds[0].data).includes(GROUP.link), 'la tarjeta publicada lleva el link real de la comunidad');
+        assert(efimeros[0].content.includes(GROUP.link), 'y el usuario lo recibe también en su respuesta efímera, sin ir al canal');
 
         // ── 15. Los tres grupos y el canal de resultados ─────────────────────
         const ESPERADOS = { noctra: 282134403, community: 59218460, group7x: 1101699267 };

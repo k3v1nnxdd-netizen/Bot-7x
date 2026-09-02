@@ -17,52 +17,33 @@ const v2 = require('./utils/panelV2');
 // ── Banner ────────────────────────────────────────────────────────────────────
 // Va DENTRO del contenedor, entre el texto y el botón. Se sube como adjunto y se
 // referencia con attachment://. Mismo criterio que el panel de tickets: la
-// imagen tiene que ser bastante ancha (el lienzo mide 970 px, 92 frames a 30
-// fps) porque Discord nunca amplía una imagen, y por debajo del ancho del bloque
-// quedaría un hueco al lado.
-//
-// El arte ocupa el 75% de ese lienzo y el resto es margen transparente a partes
-// iguales: así el GIF se ve más pequeño dentro del panel sin descolgarse hacia un
-// lado. Pesa 5,9 MiB, con el límite de subida de Discord en 10 MiB.
+// imagen tiene que ser bastante ancha (esta mide 970x371, 92 frames a 30 fps)
+// porque Discord nunca amplía una imagen, y por debajo del ancho del bloque
+// quedaría un hueco al lado. Pesa 9,3 MiB, con el límite de subida en 10 MiB.
 const BANNER = v2.pickBanner(['./7xcomunidades30fps.gif'], '7xcomunidades.gif');
 
 const ACCENT = 0x2B2D31;
 const TITULO = "7x Community - Group's";
 
-const E = {
-    grupo: '<:followers7x:1525326777071960124>',
-    point: '<:point:1501212595464700104>',
-    rules: '<:rules:1525317070764511343>',
-};
+function buildVerifText() {
+    return (
+        `# ${TITULO}\n\n` +
+        "<:followers7x:1525326777071960124> **7x Community's**\n" +
+        'https://www.roblox.com/share/g/59218460\n\n' +
+        '<:followers7x:1525326777071960124> **Noctra Study**\n' +
+        'https://www.roblox.com/share/g/282134403\n\n' +
+        '<:followers7x:1525326777071960124> **7x $tudio**\n' +
+        'https://www.roblox.com/share/g/1101699267'
+    );
+}
 
-// ── Contenido ─────────────────────────────────────────────────────────────────
-// Cada aviso va en dos líneas: primero la frase en negrita con lo que hay que
-// saber y debajo el detalle. Leerlo cuesta bastante menos que en un párrafo
-// largo, que es como acababa saliendo antes.
-
-const GRUPOS = [
-    `# ${TITULO}`,
-    '',
-    `${E.grupo} **7x Community's**`,
-    'https://www.roblox.com/share/g/59218460',
-    '',
-    `${E.grupo} **Noctra Study**`,
-    'https://www.roblox.com/share/g/282134403',
-    '',
-    `${E.grupo} **7x $tudio**`,
-    'https://www.roblox.com/share/g/1101699267',
-].join('\n');
-
-const AVISOS = [
-    `${E.point} **Actualmente los Robux se envían únicamente mediante el grupo *Noctra Study*.**`,
-    'Con el paso del tiempo también se utilizarán las demás comunidades para realizar los pagos.',
-    '',
-    `${E.rules} **Roblox exige permanecer al menos ${config.MIN_GROUP_DAYS} días dentro del grupo antes de poder recibir pagos de Robux.**`,
-    'Por eso es importante que te unas cuanto antes.',
-    '',
-    `${E.point} **Es obligatorio unirse a todas las comunidades**, no solo a una.`,
-    'En cualquier momento los pagos pueden realizarse desde cualquiera de estos grupos.',
-].join('\n');
+function buildVerifAviso() {
+    return (
+        '<:point:1501212595464700104> **Actualmente los Robux se envían únicamente mediante el grupo *Noctra Study*.** Sin embargo, con el paso del tiempo también se utilizarán las demás comunidades para realizar los pagos.\n\n' +
+        `<:rules:1525317070764511343> **Roblox exige que un usuario permanezca al menos ${config.MIN_GROUP_DAYS} días dentro del grupo antes de poder recibir pagos de Robux.** Por ello, es importante unirte cuanto antes.\n\n` +
+        '<:point:1501212595464700104> **Es obligatorio unirse a todas las comunidades**, no solo a una. En cualquier momento los pagos pueden realizarse desde cualquiera de estos grupos.'
+    );
+}
 
 // Mismo patrón que el botón del panel de seguidores: un botón de enlace que
 // apunta a un canal del propio servidor. Discord no tiene un botón que "navegue
@@ -85,11 +66,11 @@ function buildVerifRow() {
 function buildVerifContainer() {
     const container = new ContainerBuilder()
         .setAccentColor(ACCENT)
-        .addTextDisplayComponents(new TextDisplayBuilder().setContent(GRUPOS))
+        .addTextDisplayComponents(new TextDisplayBuilder().setContent(buildVerifText()))
         .addSeparatorComponents(
             new SeparatorBuilder().setDivider(true).setSpacing(SeparatorSpacingSize.Small)
         )
-        .addTextDisplayComponents(new TextDisplayBuilder().setContent(AVISOS))
+        .addTextDisplayComponents(new TextDisplayBuilder().setContent(buildVerifAviso()))
         .addSeparatorComponents(
             new SeparatorBuilder().setDivider(true).setSpacing(SeparatorSpacingSize.Small)
         );

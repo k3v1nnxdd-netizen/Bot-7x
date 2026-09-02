@@ -1,6 +1,7 @@
 'use strict';
 
 const fs = require('fs');
+const crypto = require('crypto');
 const {
     ActionRowBuilder,
     ButtonBuilder,
@@ -19,16 +20,23 @@ const config = require('./config');
 // El GIF va DENTRO del contenedor, justo encima de los botones. Se sube como
 // adjunto y se referencia con attachment://, igual que en reglas.js/metodos.js.
 //
-// 7xticketbanner.gif es el MISMO GIF que 7xticket916x350.gif (mismos frames,
-// mismos bytes de imagen) pero con el lienzo ampliado a 600 px y la animación
-// recolocada en el centro: el arte mide 400x153 y Discord nunca amplía una
-// imagen, así que sin ese margen transparente se queda pegada a la izquierda
-// del contenedor. Un banner de ~1200 px de ancho de verdad se vería a todo lo
-// ancho y sería mejor todavía. Si falta el fichero centrado, se usa el original.
+// 7xticketbanner.gif es 7xticket916x350.gif reescalado a 1000x382 (mismos 180
+// frames y mismos tiempos). El arte original mide 400x153 y Discord nunca
+// amplía una imagen: a ese tamaño se quedaba corto dentro del contenedor y
+// dejaba hueco al lado. A 1000 px de ancho lo escala para que ocupe TODO el
+// ancho del bloque, alineado con el texto y los botones. Si falta el reescalado,
+// se usa el original.
+//
+// El nombre del adjunto lleva el hash del fichero: es lo único del GIF que
+// sobrevive en el mensaje ya publicado (Discord devuelve su URL de CDN, firmada
+// y con caducidad), así que es lo que permite a isUpToDate() darse cuenta de que
+// el GIF ha cambiado y reeditar el panel.
 const BANNER_CANDIDATES = ['./7xticketbanner.gif', './7xticket916x350.gif'];
 const BANNER_PATH   = BANNER_CANDIDATES.find(p => fs.existsSync(p)) ?? null;
-const BANNER_NAME   = '7xticket.gif';
 const BANNER_EXISTS = BANNER_PATH !== null;
+const BANNER_NAME   = BANNER_EXISTS
+    ? `7xticket-${crypto.createHash('sha1').update(fs.readFileSync(BANNER_PATH)).digest('hex').slice(0, 8)}.gif`
+    : '7xticket.gif';
 
 const ACCENT = 0x2B2D31;
 
@@ -163,6 +171,12 @@ function isPanelMsg(msg, botId) {
     return msg.embeds[0]?.title?.includes('7x COMMUNITY') ?? false;
 }
 
+// Nombre de fichero de una URL de media, sin los parámetros de firma que añade
+// la CDN de Discord: `.../7xticket-ab12cd34.gif?ex=…` -> `7xticket-ab12cd34.gif`.
+function mediaName(url) {
+    return typeof url === 'string' ? url.split('?')[0].split('/').pop() : '';
+}
+
 // Firma de lo que se ve: color, textos, nº de imágenes y botones. Sirve para no
 // reeditar (ni resubir el GIF de 4,6 MB) en cada arranque si nada ha cambiado.
 function signature(node, out = []) {
@@ -174,7 +188,7 @@ function signature(node, out = []) {
     switch (node.type) {
         case 17: out.push(`accent:${node.accent_color ?? ''}`); break;
         case 10: out.push(`text:${node.content}`); break;
-        case 12: out.push(`media:${(node.items ?? []).length}`); break;
+        case 12: out.push(`media:${(node.items ?? []).map(i => mediaName(i.media?.url)).join(',')}`); break;
         case 2:  out.push(`btn:${node.custom_id}|${node.label}|${node.style}|${node.emoji?.id ?? node.emoji?.name ?? ''}`); break;
     }
     signature(node.components, out);

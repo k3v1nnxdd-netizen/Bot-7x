@@ -1,7 +1,5 @@
 'use strict';
 
-const fs = require('fs');
-const crypto = require('crypto');
 const {
     ActionRowBuilder,
     ButtonBuilder,
@@ -9,12 +7,12 @@ const {
     ContainerBuilder,
     MediaGalleryBuilder,
     MediaGalleryItemBuilder,
-    MessageFlags,
     SeparatorBuilder,
     SeparatorSpacingSize,
     TextDisplayBuilder,
 } = require('discord.js');
 const config = require('./config');
+const v2 = require('./utils/panelV2');
 
 // ── Banner ────────────────────────────────────────────────────────────────────
 // El GIF va DENTRO del contenedor, justo encima de los botones. Se sube como
@@ -28,17 +26,8 @@ const config = require('./config');
 //
 // Ese fichero pesa 9,3 MiB y el límite de subida de Discord son 10 MiB: si
 // alguna vez se cambia por otro más pesado, el panel dejará de publicarse.
-//
-// El nombre del adjunto lleva el hash del fichero: es lo único del GIF que
-// sobrevive en el mensaje ya publicado (Discord devuelve su URL de CDN, firmada
-// y con caducidad), así que es lo que permite a isUpToDate() darse cuenta de que
-// el GIF ha cambiado y reeditar el panel.
 const BANNER_CANDIDATES = ['./7xticket30fps.gif', './7xticket916x350.gif'];
-const BANNER_PATH   = BANNER_CANDIDATES.find(p => fs.existsSync(p)) ?? null;
-const BANNER_EXISTS = BANNER_PATH !== null;
-const BANNER_NAME   = BANNER_EXISTS
-    ? `7xticket-${crypto.createHash('sha1').update(fs.readFileSync(BANNER_PATH)).digest('hex').slice(0, 8)}.gif`
-    : '7xticket.gif';
+const BANNER = v2.pickBanner(BANNER_CANDIDATES, '7xticket.gif');
 
 const ACCENT = 0x2B2D31;
 
@@ -119,11 +108,11 @@ function buildContainer() {
         );
 
     // El GIF cierra el bloque de texto y deja los botones justo debajo.
-    if (BANNER_EXISTS) {
+    if (BANNER.exists) {
         container
             .addMediaGalleryComponents(
                 new MediaGalleryBuilder().addItems(
-                    new MediaGalleryItemBuilder().setURL(`attachment://${BANNER_NAME}`)
+                    new MediaGalleryItemBuilder().setURL(`attachment://${BANNER.name}`)
                 )
             )
             .addSeparatorComponents(
@@ -135,92 +124,23 @@ function buildContainer() {
 }
 
 function buildPayload() {
-    return {
-        flags: MessageFlags.IsComponentsV2,
-        components: [buildContainer()],
-        ...(BANNER_EXISTS && { files: [{ attachment: BANNER_PATH, name: BANNER_NAME }] }),
-    };
+    return v2.payload(buildContainer(), BANNER);
 }
 
-// El edit tiene que limpiar lo que dejó el panel viejo (embed) y volver a subir
-// el adjunto: `attachments: []` descarta el GIF anterior antes de subir el nuevo.
-function buildEditPayload() {
-    return { ...buildPayload(), content: null, embeds: [], attachments: [] };
-}
-
-// ── Identificación y firma ────────────────────────────────────────────────────
-
-function rawComponents(msg) {
-    return msg.components.map(c => (typeof c.toJSON === 'function' ? c.toJSON() : c));
-}
-
-function collectButtons(node, out = []) {
-    if (Array.isArray(node)) {
-        for (const child of node) collectButtons(child, out);
-        return out;
-    }
-    if (!node || typeof node !== 'object') return out;
-    if (node.type === 2 && node.custom_id) out.push(node);
-    collectButtons(node.components, out);
-    return out;
-}
+// ── Identificación ────────────────────────────────────────────────────────────
 
 // Reconoce tanto el panel nuevo (contenedor V2) como el viejo (embed), porque
 // los customId de los botones no han cambiado.
 function isPanelMsg(msg, botId) {
     if (msg.author.id !== botId) return false;
-    if (collectButtons(rawComponents(msg)).some(b => b.custom_id === 'comprar')) return true;
+    if (v2.collectButtons(msg).some(b => b.custom_id === 'comprar')) return true;
     return msg.embeds[0]?.title?.includes('7x COMMUNITY') ?? false;
-}
-
-// Nombre de fichero de una URL de media, sin los parámetros de firma que añade
-// la CDN de Discord: `.../7xticket-ab12cd34.gif?ex=…` -> `7xticket-ab12cd34.gif`.
-function mediaName(url) {
-    return typeof url === 'string' ? url.split('?')[0].split('/').pop() : '';
-}
-
-// Firma de lo que se ve: color, textos, nº de imágenes y botones. Sirve para no
-// reeditar (ni resubir el GIF de 4,6 MB) en cada arranque si nada ha cambiado.
-function signature(node, out = []) {
-    if (Array.isArray(node)) {
-        for (const child of node) signature(child, out);
-        return out;
-    }
-    if (!node || typeof node !== 'object') return out;
-    switch (node.type) {
-        case 17: out.push(`accent:${node.accent_color ?? ''}`); break;
-        case 10: out.push(`text:${node.content}`); break;
-        case 12: out.push(`media:${(node.items ?? []).map(i => mediaName(i.media?.url)).join(',')}`); break;
-        case 2:  out.push(`btn:${node.custom_id}|${node.label}|${node.style}|${node.emoji?.id ?? node.emoji?.name ?? ''}`); break;
-    }
-    signature(node.components, out);
-    return out;
-}
-
-function isUpToDate(msg) {
-    const wanted  = signature([buildContainer().toJSON()]).join('\n');
-    const current = signature(rawComponents(msg)).join('\n');
-    return wanted === current;
 }
 
 // ── ensurePanel ───────────────────────────────────────────────────────────────
 // El ÚNICO sitio desde el que se envía el panel.
 // Usa channel.messages.fetch() a secas — fetchPinned/fetchPins devuelven tipos
 // distintos según el parche de discord.js. Los fijados se detectan con m.pinned.
-
-async function updatePanel(msg) {
-    try {
-        await msg.edit(buildEditPayload());
-        return msg;
-    } catch (err) {
-        // Un mensaje enviado sin el flag de Components V2 puede rechazar el edit.
-        // En ese caso se sustituye: se borra el viejo y se manda el nuevo.
-        console.warn('[panel] Edit rechazado, recreando el panel:', err.message);
-        const channel = msg.channel;
-        await msg.delete().catch(e => console.warn('[panel] Could not delete old panel:', e.message));
-        return channel.send(buildPayload());
-    }
-}
 
 async function ensurePanel(client) {
     const channel = client.channels.cache.get(config.CHANNELS.PANEL);
@@ -229,7 +149,7 @@ async function ensurePanel(client) {
         return;
     }
 
-    if (!BANNER_EXISTS) {
+    if (!BANNER.exists) {
         console.warn(`[panel] Banner no encontrado (${BANNER_CANDIDATES.join(', ')}) — el panel se enviará sin GIF.`);
     }
 
@@ -239,18 +159,20 @@ async function ensurePanel(client) {
         // Prefer a pinned panel — edit it in place to reflect current layout
         const pinned = messages.find(m => m.pinned && isPanelMsg(m, client.user.id));
         if (pinned) {
-            if (isUpToDate(pinned)) {
+            if (v2.isUpToDate(pinned, buildContainer())) {
                 console.log('[panel] Pinned panel already up to date — nothing to do.');
                 return;
             }
-            await updatePanel(pinned);
+            await v2.editOrRecreate(pinned, buildContainer(), BANNER, 'panel');
             console.log('[panel] Pinned panel updated in place.');
             return;
         }
         // Any panel in history — edit and pin it
         const existing = messages.find(m => isPanelMsg(m, client.user.id));
         if (existing) {
-            const msg = isUpToDate(existing) ? existing : await updatePanel(existing);
+            const msg = v2.isUpToDate(existing, buildContainer())
+                ? existing
+                : await v2.editOrRecreate(existing, buildContainer(), BANNER, 'panel');
             await msg.pin().catch(err => console.warn('[panel] Could not pin:', err.message));
             console.log('[panel] Found in history — updated and pinned.');
             return;

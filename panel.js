@@ -16,11 +16,19 @@ const {
 const config = require('./config');
 
 // ── Banner ────────────────────────────────────────────────────────────────────
-// El GIF va DENTRO del contenedor (arriba, como cabecera). Se sube como adjunto
-// y se referencia con attachment://, igual que en reglas.js / metodos.js.
-const BANNER_PATH   = './7xticket916x350.gif';
+// El GIF va DENTRO del contenedor, justo encima de los botones. Se sube como
+// adjunto y se referencia con attachment://, igual que en reglas.js/metodos.js.
+//
+// 7xticketbanner.gif es el MISMO GIF que 7xticket916x350.gif (mismos frames,
+// mismos bytes de imagen) pero con el lienzo ampliado a 600 px y la animación
+// recolocada en el centro: el arte mide 400x153 y Discord nunca amplía una
+// imagen, así que sin ese margen transparente se queda pegada a la izquierda
+// del contenedor. Un banner de ~1200 px de ancho de verdad se vería a todo lo
+// ancho y sería mejor todavía. Si falta el fichero centrado, se usa el original.
+const BANNER_CANDIDATES = ['./7xticketbanner.gif', './7xticket916x350.gif'];
+const BANNER_PATH   = BANNER_CANDIDATES.find(p => fs.existsSync(p)) ?? null;
 const BANNER_NAME   = '7xticket.gif';
-const BANNER_EXISTS = fs.existsSync(BANNER_PATH);
+const BANNER_EXISTS = BANNER_PATH !== null;
 
 const ACCENT = 0x2B2D31;
 
@@ -89,17 +97,8 @@ function buildButtons() {
 }
 
 function buildContainer() {
-    const container = new ContainerBuilder().setAccentColor(ACCENT);
-
-    if (BANNER_EXISTS) {
-        container.addMediaGalleryComponents(
-            new MediaGalleryBuilder().addItems(
-                new MediaGalleryItemBuilder().setURL(`attachment://${BANNER_NAME}`)
-            )
-        );
-    }
-
-    container
+    const container = new ContainerBuilder()
+        .setAccentColor(ACCENT)
         .addTextDisplayComponents(new TextDisplayBuilder().setContent(`${HEADER}\n\n${OPCIONES}`))
         .addSeparatorComponents(
             new SeparatorBuilder().setDivider(true).setSpacing(SeparatorSpacingSize.Small)
@@ -107,10 +106,22 @@ function buildContainer() {
         .addTextDisplayComponents(new TextDisplayBuilder().setContent(AVISO))
         .addSeparatorComponents(
             new SeparatorBuilder().setDivider(true).setSpacing(SeparatorSpacingSize.Small)
-        )
-        .addActionRowComponents(buildButtons());
+        );
 
-    return container;
+    // El GIF cierra el bloque de texto y deja los botones justo debajo.
+    if (BANNER_EXISTS) {
+        container
+            .addMediaGalleryComponents(
+                new MediaGalleryBuilder().addItems(
+                    new MediaGalleryItemBuilder().setURL(`attachment://${BANNER_NAME}`)
+                )
+            )
+            .addSeparatorComponents(
+                new SeparatorBuilder().setDivider(false).setSpacing(SeparatorSpacingSize.Small)
+            );
+    }
+
+    return container.addActionRowComponents(buildButtons());
 }
 
 function buildPayload() {
@@ -203,7 +214,7 @@ async function ensurePanel(client) {
     }
 
     if (!BANNER_EXISTS) {
-        console.warn(`[panel] Banner no encontrado en ${BANNER_PATH} — el panel se enviará sin GIF.`);
+        console.warn(`[panel] Banner no encontrado (${BANNER_CANDIDATES.join(', ')}) — el panel se enviará sin GIF.`);
     }
 
     // ── 1. Scan last 100 messages ─────────────────────────────────────────────

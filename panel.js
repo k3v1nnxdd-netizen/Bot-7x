@@ -20,20 +20,20 @@ const config = require('./config');
 // El GIF va DENTRO del contenedor, justo encima de los botones. Se sube como
 // adjunto y se referencia con attachment://, igual que en reglas.js/metodos.js.
 //
-// 7x-ticket-hq.gif es el banner en alta (1024x391). Discord NUNCA amplía una
-// imagen: con el arte antiguo, de 400x153, el banner se quedaba corto dentro del
-// contenedor y dejaba hueco al lado. A 1024 px Discord lo ajusta al ancho del
-// bloque, así que ocupa TODO el ancho, alineado con el texto y los botones.
-// 7xticket916x350.gif queda solo de respaldo por si falta el de alta.
+// 7xticket30fps.gif es el banner en alta (1024x391, 92 frames a 30 fps).
+// Discord NUNCA amplía una imagen: con el arte antiguo, de 400x153, el banner se
+// quedaba corto dentro del contenedor y dejaba hueco al lado. A 1024 px Discord
+// lo ajusta al ancho del bloque, así que ocupa TODO el ancho, alineado con el
+// texto y los botones. 7xticket916x350.gif queda solo de respaldo.
 //
-// Ese fichero pesa 9,5 MiB y el límite de subida de Discord son 10 MiB: si
+// Ese fichero pesa 9,3 MiB y el límite de subida de Discord son 10 MiB: si
 // alguna vez se cambia por otro más pesado, el panel dejará de publicarse.
 //
 // El nombre del adjunto lleva el hash del fichero: es lo único del GIF que
 // sobrevive en el mensaje ya publicado (Discord devuelve su URL de CDN, firmada
 // y con caducidad), así que es lo que permite a isUpToDate() darse cuenta de que
 // el GIF ha cambiado y reeditar el panel.
-const BANNER_CANDIDATES = ['./7x-ticket-hq.gif', './7xticket916x350.gif'];
+const BANNER_CANDIDATES = ['./7xticket30fps.gif', './7xticket916x350.gif'];
 const BANNER_PATH   = BANNER_CANDIDATES.find(p => fs.existsSync(p)) ?? null;
 const BANNER_EXISTS = BANNER_PATH !== null;
 const BANNER_NAME   = BANNER_EXISTS

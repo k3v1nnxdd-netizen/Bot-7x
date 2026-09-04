@@ -106,6 +106,15 @@ const buckets = {
     // /v1/catalog/batch. Bucket propio y no el de `catalogDetails`: si Roblox
     // aprieta uno de los dos, el otro sigue atendiendo.
     bundleDetails: makeBucket('bundleDetails'),
+
+    // Busqueda de outfits del plugin de Studio. Dos buckets propios y
+    // SEPARADOS de todo lo anterior a proposito: es el unico camino que hace
+    // rafagas (un avatar por candidato), y si Roblox le aprieta el limite, eso
+    // no puede dejar sin servicio a los juegos con licencia — que son los que
+    // pagan. Al reves tampoco: una tarde de mucho trafico de juego no puede
+    // congelar la herramienta interna.
+    groupMembers: makeBucket('groupMembers'),
+    userAvatar: makeBucket('userAvatar'),
 };
 
 function retryAfterSecondsFrom(until) {

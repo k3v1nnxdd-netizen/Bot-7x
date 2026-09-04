@@ -11,6 +11,7 @@ const catalogRoute = require('./api/routes/catalog');
 const pluginRoute = require('./api/routes/plugin');
 const { requireApiKey } = require('./security/apiKey');
 const { requireAdminKey } = require('./security/adminKey');
+const { requirePluginKey } = require('./security/pluginKey');
 const { requireLicenseTokenHeader, requireLicensedGame } = require('./security/licenseGuard');
 const { rateLimit } = require('./security/rateLimit');
 const { requestLogger } = require('./observability/requestLogger');
@@ -134,10 +135,17 @@ function createApp() {
     // herramienta interna ensuciaria justo la señal que sirve para vigilar la
     // carga real.
     //
-    // TODAVIA SIN CREDENCIAL: esta primera version solo confirma que el plugin
-    // conecta y devuelve una respuesta fija (ver api/routes/plugin.js). Hay que
-    // ponerle una antes de que sirva datos de verdad.
-    app.use('/plugin', rateLimit, pluginRoute);
+    // CREDENCIAL PROPIA Y EXCLUSIVA: `x-plugin-key` (PLUGIN_API_KEY). Ni la
+    // key del juego ni la de admin ni un token de licencia abren esto, y esta
+    // no abre nada de lo otro. Es lo que permite revocarle el acceso al plugin
+    // sin tocarle el juego a ningun cliente, y al reves.
+    //
+    // La comprobacion va DELANTE del router, o sea antes del parser de cuerpo
+    // que este monta dentro: una peticion sin credencial se rechaza sin leer ni
+    // un byte del body y sin acercarse a Roblox. Importa mas aqui que en
+    // ningun otro sitio — una sola peticion de esta ruta puede convertirse en
+    // cientos de llamadas salientes.
+    app.use('/plugin', rateLimit, requirePluginKey, pluginRoute);
 
     app.use(notFoundHandler);
     app.use(errorHandler);

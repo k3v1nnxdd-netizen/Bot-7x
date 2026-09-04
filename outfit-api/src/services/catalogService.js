@@ -433,4 +433,18 @@ async function resolveBatch({ assetIds = [], bundleIds = [], resolveBundles = tr
     };
 }
 
-module.exports = { resolveBatch };
+module.exports = {
+    resolveBatch,
+
+    // Exportada tal cual para que la busqueda del plugin ponga precio a un
+    // avatar sin reimplementar el patron "lee N claves de cache, agrupa las
+    // que falten en UN lote, guarda cada una por separado". Comparte con
+    // /v1/catalog/batch la misma clave de cache (v1:asset:catalog:<id>), el
+    // mismo single-flight y el mismo bucket del limitador: un asset que ya
+    // resolvio un juego lo lee el plugin gratis, y al reves.
+    //
+    // Contrato: (assetIds, fallos) -> Map<assetId, ficha>, con `fallos` un
+    // objeto { assetIds: [] } donde deja los ids que NO pudo resolver. No
+    // lanza: un fallo de Roblox se reporta ahi, no rompiendo al llamador.
+    resolverFichasDeAsset,
+};

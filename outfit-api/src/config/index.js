@@ -44,6 +44,21 @@ const apiKey = process.env.OUTFIT_API_KEY || null;
 // Viaja en su propio header (`x-admin-key`), tambien solo por cabecera.
 const adminApiKey = process.env.ADMIN_API_KEY || null;
 
+// TERCER secreto, y de nuevo SEPARADO de los dos anteriores. Lo manda el
+// plugin de Roblox Studio en su propia cabecera (`x-plugin-key`) y solo abre
+// las rutas /plugin.
+//
+// Por que otra clave y no reutilizar alguna: el plugin es un binario privado
+// que se instala en Studio, un sitio distinto del .rbxl que se vende y del
+// panel de administracion. Si compartiera secreto con el juego, filtrarse el
+// .rbxl abriria tambien la busqueda; si lo compartiera con /admin, un plugin
+// perdido daria control sobre las licencias. Tres publicos, tres claves, y
+// ninguna abre la puerta de otra.
+//
+// Sin ella definida, /plugin responde 503 (igual que /admin sin su clave): la
+// ruta queda APAGADA, no abierta.
+const pluginApiKey = process.env.PLUGIN_API_KEY || null;
+
 const logLevel = (process.env.LOG_LEVEL || 'info').toLowerCase();
 
 // Un unico driver soportado hoy. La variable existe para que activar Redis
@@ -92,6 +107,18 @@ const ttl = {
     // mueve y se cachea con el TTL de catalogo (1 h). Meterlos en la misma
     // entrada obligaria a repreguntar la composicion cada hora sin motivo.
     bundleDetails: intFromEnv('TTL_BUNDLE_DETAILS_MS', 24 * 60 * 60_000),
+
+    // Miembros de un grupo, por pagina de cursor. 10 min: una comunidad gana y
+    // pierde gente continuamente, pero para MUESTREAR candidatos da igual que
+    // la foto sea de hace un rato — y sin esta cache, dos busquedas seguidas
+    // sobre el mismo grupo repetirian pagina por pagina el mismo recorrido.
+    groupMembers: intFromEnv('TTL_GROUP_MEMBERS_MS', 10 * 60_000),
+
+    // Avatar ACTUAL de un usuario. 10 min por lo mismo que la lista de
+    // outfits: un jugador se cambia de ropa cuando quiere, y una foto de hace
+    // minutos sigue siendo un outfit real suyo. Es la cache que hace que
+    // repetir una busqueda no vuelva a pagar el avatar de cada candidato.
+    userAvatar: intFromEnv('TTL_USER_AVATAR_MS', 10 * 60_000),
 };
 
 // Guardia anti-abuso de NUESTRA API, por IP de origen. El default es
@@ -183,6 +210,51 @@ const maxCatalogBatchSize = intFromEnv('MAX_CATALOG_BATCH_SIZE', 100);
 // vez garantizan que UNA peticion nuestra nunca se parta en dos lotes de
 // Roblox: 80 items caben de sobra en los 120 que admite items/details
 // (comprobado en vivo: 121 -> 400 "Invalid count").
+// ── Busqueda de outfits para el plugin de Studio ─────────────────────────────
+//
+// TODO ESTE BLOQUE EXISTE PARA QUE LA BUSQUEDA NO PUEDA IRSE DE LAS MANOS.
+// Cada candidato cuesta como minimo una llamada a Roblox (su avatar) y a
+// menudo dos (la ficha de catalogo de lo que lleva puesto), asi que sin topes
+// duros un `amount` alto sobre un grupo grande se traduce en miles de
+// peticiones salientes y en una respuesta que no llega nunca.
+//
+// Los tres topes son independientes y el primero que se cumpla corta la
+// busqueda; se devuelve lo encontrado hasta ese momento en vez de un error,
+// porque media lista es util y un timeout no.
+const pluginSearch = {
+    // Paginas de miembros (100 por pagina) que se llegan a pedir como maximo.
+    // 10 paginas = hasta 1000 candidatos en el bombo del que se muestrea.
+    maxMemberPages: intFromEnv('PLUGIN_SEARCH_MAX_MEMBER_PAGES', 10),
+
+    // Candidatos que se llegan a EXAMINAR (avatar + precio) como maximo. Es el
+    // tope que de verdad acota el gasto: el bombo puede tener 1000 usuarios,
+    // pero no se miran todos si no hace falta.
+    maxCandidates: intFromEnv('PLUGIN_SEARCH_MAX_CANDIDATES', 600),
+
+    // Cuantos candidatos se examinan por cada resultado pedido. Con el filtro
+    // de precio la mayoria no encaja, asi que hace falta mirar bastantes mas
+    // de los que se piden — pero proporcionalmente: pedir 5 no puede costar lo
+    // mismo que pedir 500.
+    candidatesPerResult: intFromEnv('PLUGIN_SEARCH_CANDIDATES_PER_RESULT', 4),
+
+    // Suelo del calculo anterior. Con `amount` bajo y un rango de precio
+    // estrecho, 4 candidatos por resultado no encontrarian nada; este minimo
+    // garantiza una muestra con sentido aunque se pida un solo outfit.
+    minCandidates: intFromEnv('PLUGIN_SEARCH_MIN_CANDIDATES', 60),
+
+    // Presupuesto de TIEMPO de la busqueda entera. Es el tope que le importa a
+    // quien espera delante de Studio: agotarlo devuelve lo que se lleve
+    // encontrado, nunca un error. Es tambien la red que sostiene el peor caso
+    // cuando Roblox va lento y los otros dos topes irian sobrados.
+    timeBudgetMs: intFromEnv('PLUGIN_SEARCH_TIME_BUDGET_MS', 25_000),
+
+    // Candidatos que se examinan en paralelo. Por encima del gate global de
+    // salida (UPSTREAM_MAX_CONCURRENT) no se gana nada — el limitador ya
+    // serializa —, pero mantener varios en vuelo evita que el gate se quede
+    // ocioso entre llamada y llamada.
+    concurrency: intFromEnv('PLUGIN_SEARCH_CONCURRENCY', 4),
+};
+
 const catalogBatch = {
     maxAssetIds: intFromEnv('CATALOG_BATCH_MAX_ASSETS', 64),
     maxBundleIds: intFromEnv('CATALOG_BATCH_MAX_BUNDLES', 32),
@@ -241,6 +313,20 @@ if (!adminApiKey) {
     );
 }
 
+if (!pluginApiKey) {
+    console.warn(
+        '[config] PLUGIN_API_KEY no esta definida — POST /plugin/outfits/search respondera 503 ' +
+        'plugin_disabled. El resto del servicio no se ve afectado. Genera una con: ' +
+        'node -e "console.log(require(\'crypto\').randomBytes(32).toString(\'hex\'))"'
+    );
+} else if (pluginApiKey === apiKey || pluginApiKey === adminApiKey) {
+    console.error(
+        '[config] ERROR: PLUGIN_API_KEY coincide con OUTFIT_API_KEY o con ADMIN_API_KEY. Eso anula la ' +
+        'separacion entre los tres publicos: el plugin de Studio, el juego vendido y el panel de ' +
+        'administracion tienen que poder revocarse por separado. Cambiala.'
+    );
+}
+
 if (!database.url) {
     console.warn(
         '[config] DATABASE_URL no esta definida — el servicio arranca y la API de outfits ' +
@@ -259,6 +345,7 @@ module.exports = {
     port,
     apiKey,
     adminApiKey,
+    pluginApiKey,
     logLevel,
     cacheDriver,
     ttl,
@@ -271,5 +358,6 @@ module.exports = {
     maxBundleLookupsPerRequest,
     maxCatalogBatchSize,
     catalogBatch,
+    pluginSearch,
     serviceName: 'outfit-api',
 };

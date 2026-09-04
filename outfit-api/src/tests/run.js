@@ -15,6 +15,10 @@ process.env.OUTFIT_API_KEY = process.env.OUTFIT_API_KEY_TEST || 'clave-de-prueba
 // Distinta de la anterior a proposito: varios tests comprueban justamente que
 // una no sirve para lo de la otra.
 process.env.ADMIN_API_KEY = process.env.ADMIN_API_KEY_TEST || 'clave-admin-de-pruebas-distinta-de-la-otra';
+// Tercera clave, y distinta de las dos anteriores por la misma razon: hay
+// casos que comprueban justamente que la del plugin no abre /admin ni /v1, y
+// que ninguna de esas dos abre /plugin.
+process.env.PLUGIN_API_KEY = process.env.PLUGIN_API_KEY_TEST || 'clave-plugin-de-pruebas-distinta-de-las-otras-dos';
 process.env.LOG_LEVEL = 'error';          // sin ruido de peticiones en la salida
 process.env.CACHE_MAX_ENTRIES = '5';      // tope bajo para poder verificar la expulsion LRU
 process.env.RATE_LIMIT_MAX = '25';        // tope bajo para poder verificar el 429 propio

@@ -20,6 +20,8 @@ const { NotFoundError, UpstreamError } = require('./errors');
 //      explicita (?bundles=1) — ver getBundlesForAsset y su advertencia.
 //   5. GET  apis.roblox.com/universes/v1/places/{id}/universe  placeId -> universeId
 //   6. GET  develop.roblox.com/v1/universes/{id}            universeId -> dueño REAL
+//   7. GET  groups.roblox.com/v1/groups/{id}/users         miembros del grupo
+//   8. GET  avatar.roblox.com/v1/users/{id}/avatar         avatar ACTUAL del usuario
 //
 // Las dos ultimas son la verificacion de licencia. La 6 NO es games.roblox.com
 // a proposito: ver la nota larga sobre la ficha censurada en getUniverseOwner.
@@ -518,8 +520,91 @@ async function getUniverseOwner(universeId) {
     };
 }
 
+// ── 7. miembros de un grupo (comunidad) ──────────────────────────────────────
+
+// GET https://groups.roblox.com/v1/groups/{groupId}/users?limit=100&cursor=&sortOrder=
+//
+// PUBLICO y sin credenciales, como todo lo demas de este modulo. Es la unica
+// via oficial para enumerar una comunidad, y pagina POR CURSOR — no admite
+// offset ni salto a una pagina N. Eso condiciona el muestreo aguas arriba:
+// para variar la muestra hay que jugar con `sortOrder` y barajar lo que se
+// trae, porque "dame 100 miembros al azar" no existe en la API (ver
+// services/pluginSearchService.js).
+//
+// El maximo real de `limit` es 100; valores mayores los rechaza con 400.
+//
+// Cada elemento llega como { user: {userId, username, displayName,
+// hasVerifiedBadge}, role: {...} }. Se aplana a lo unico que necesita la
+// busqueda — id y nombre — y se descarta el resto: el rol no interesa y
+// arrastrarlo solo engordaria la cache.
+async function listGroupMembers(groupId, { limit = 100, cursor = null, sortOrder = 'Asc' } = {}) {
+    const params = { limit, sortOrder };
+    if (cursor) params.cursor = cursor;
+
+    const response = await rateLimiter.run('groupMembers', () => http_.get(
+        `https://groups.roblox.com/v1/groups/${groupId}/users`,
+        { params }
+    ), { notFoundCode: 'group_not_found' });
+
+    const data = Array.isArray(response.data?.data) ? response.data.data : [];
+    const next = response.data?.nextPageCursor;
+
+    return {
+        members: data
+            .map(entry => ({
+                userId: entry?.user?.userId ?? null,
+                username: entry?.user?.username ?? null,
+            }))
+            // Un miembro sin id no sirve para nada aguas abajo, y colarlo
+            // obligaria a cada consumidor a volver a comprobarlo.
+            .filter(m => m.userId != null),
+        // Roblox cierra el recorrido con null (a diferencia del listado de
+        // outfits, que manda cadena vacia). Se normaliza a null cualquiera de
+        // las dos formas para que quien pagine solo tenga que mirar una.
+        nextCursor: typeof next === 'string' && next.length > 0 ? next : null,
+    };
+}
+
+// ── 8. avatar ACTUAL de un usuario ───────────────────────────────────────────
+
+// GET https://avatar.roblox.com/v1/users/{userId}/avatar
+//
+// Lo que el jugador lleva puesto AHORA MISMO, que no es lo mismo que un outfit
+// guardado suyo (eso es el endpoint 2/3). Para la busqueda del plugin es
+// justo lo que hace falta: un avatar real, montado por una persona.
+//
+// Devuelve la misma forma que los detalles de un outfit — scales, bodyColors,
+// playerAvatarType y `assets`, cada uno { id, name, assetType{id,name} } — asi
+// que reconstruirlo mas adelante como HumanoidDescription no necesitara un
+// normalizador nuevo. Aqui solo se aplanan los assets, que es lo unico que se
+// usa hoy para poner precio al conjunto.
+//
+// Un usuario baneado o inexistente responde 404 y sale por NotFoundError, que
+// es lo que permite descartarlo y seguir con el siguiente candidato.
+async function getCurrentAvatar(userId) {
+    const response = await rateLimiter.run('userAvatar', () => http_.get(
+        `https://avatar.roblox.com/v1/users/${userId}/avatar`
+    ), { notFoundCode: 'user_not_found' });
+
+    const assets = Array.isArray(response.data?.assets) ? response.data.assets : [];
+
+    return {
+        assets: assets
+            .map(asset => ({
+                id: asset?.id ?? null,
+                name: asset?.name ?? null,
+                assetTypeId: asset?.assetType?.id ?? null,
+                assetTypeName: asset?.assetType?.name ?? null,
+            }))
+            .filter(asset => asset.id != null),
+        playerAvatarType: response.data?.playerAvatarType ?? null,
+    };
+}
+
 module.exports = {
     lookupUserByUsername,
+    listGroupMembers,
+    getCurrentAvatar,
     listOutfits,
     getOutfitDetailsRaw,
     getBundlesForAsset,

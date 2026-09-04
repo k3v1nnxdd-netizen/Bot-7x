@@ -572,39 +572,87 @@ function parseCatalogBatchBody(body) {
 // experiencia: no hay `game.GameId` real que comprobar en Studio, y esta
 // primera version existe solo para verificar la conexion plugin -> API.
 //
-// `amount` es lo UNICO que se acepta hoy. Se valida aqui, en la frontera, y
-// no en el handler, por lo mismo que el resto: el dia que esta ruta empiece a
-// buscar miembros de verdad, cada unidad de `amount` sera una llamada a
-// Roblox, y un numero absurdo tiene que costar microsegundos en vez de trafico
-// saliente.
+// Se valida aqui, en la frontera, y no en el handler, por lo mismo que el
+// resto: cada unidad de `amount` es una llamada potencial a Roblox (el avatar
+// de un candidato no admite lote), asi que un numero absurdo tiene que costar
+// microsegundos en vez de trafico saliente.
 const PLUGIN_SEARCH_MIN_AMOUNT = 1;
 const PLUGIN_SEARCH_MAX_AMOUNT = 500;
 
-// NUMERO JSON, no cadena. `JSONEncode({amount = 100})` en Lua produce un
-// numero, asi que aceptar tambien "100" solo serviria para que un plugin que
-// manda el texto de una caja sin convertirlo pareciera funcionar — y fallara
-// mas tarde, cuando el valor se use para contar. Se rechaza aqui, con un
-// mensaje que dice exactamente que se esperaba.
+// Entero JSON acotado por abajo y, opcionalmente, por arriba. Separado de
+// parseBoundedInt, que resuelve el caso de las QUERY STRINGS y por eso espera
+// una cadena de digitos: aqui los valores vienen de un cuerpo JSON, donde el
+// tipo numero existe de verdad.
 //
-// `typeof NaN` e `Infinity` son 'number', asi que la comprobacion de entero es
-// la que de verdad los para; el orden importa.
-function parsePluginAmount(raw) {
-    const invalido = () => new ValidationError(
-        `amount debe ser un numero entero entre ${PLUGIN_SEARCH_MIN_AMOUNT} y ${PLUGIN_SEARCH_MAX_AMOUNT}`
-    );
+// NUMERO, NO CADENA. `JSONEncode({amount = 100})` en Lua produce un numero,
+// asi que aceptar tambien "100" solo serviria para que un plugin que manda el
+// texto de una caja sin convertirlo pareciera funcionar, y fallara mas tarde
+// al usar el valor para contar o comparar precios.
+function parsePluginInt(raw, label, { min, max = null }) {
+    // Con un techo enorme (el entero seguro de JS, para los ids) el rango no
+    // se imprime: "entre 1 y 9007199254740991" no ayuda a nadie. Se dice lo
+    // que de verdad hay que corregir.
+    const limite = max === null || max === Number.MAX_SAFE_INTEGER
+        ? `mayor o igual que ${min}`
+        : `entre ${min} y ${max}`;
+    const invalido = () => new ValidationError(`${label} debe ser un numero entero ${limite}`);
 
+    // `typeof NaN` e `Infinity` son 'number': la comprobacion de entero es la
+    // que de verdad los para, asi que el orden importa.
     if (typeof raw !== 'number' || !Number.isInteger(raw)) throw invalido();
-    if (raw < PLUGIN_SEARCH_MIN_AMOUNT || raw > PLUGIN_SEARCH_MAX_AMOUNT) throw invalido();
+    if (raw < min) throw invalido();
+    if (max !== null && raw > max) throw invalido();
     return raw;
 }
 
 function parsePluginSearchBody(body) {
     if (body === undefined || body === null || typeof body !== 'object' || Array.isArray(body)) {
         throw new ValidationError(
-            'Manda un cuerpo JSON con {"amount": 100} y la cabecera Content-Type: application/json'
+            'Manda un cuerpo JSON con {"amount": 100, "groupId": 59218460} ' +
+            'y la cabecera Content-Type: application/json'
         );
     }
-    return { amount: parsePluginAmount(body.amount) };
+
+    const amount = parsePluginInt(body.amount, 'amount', {
+        min: PLUGIN_SEARCH_MIN_AMOUNT, max: PLUGIN_SEARCH_MAX_AMOUNT,
+    });
+
+    // OBLIGATORIO: sin grupo no hay a quien buscar.
+    //
+    // ESTRICTAMENTE NUMERO JSON, y a proposito NO se usa aqui
+    // parseRobloxNumericId (el parser compartido con creatorId / gameId /
+    // placeId, que acepta tambien la cadena "59218460"). Esta ruta tiene un
+    // solo cliente, el plugin, y su contrato es estricto: 59218460, no
+    // "59218460". Un id que llega como texto es señal de que el plugin lo saco
+    // de una caja sin convertirlo, y dejarlo pasar solo aplaza el problema.
+    //
+    // El techo de PLUGIN_MAX_GROUP_ID no es decorativo: por encima del entero
+    // seguro de JavaScript, Number ya no distingue dos ids contiguos, y
+    // consultariamos un grupo distinto del pedido sin enterarnos.
+    const groupId = parsePluginInt(body.groupId, 'groupId', {
+        min: 1, max: Number.MAX_SAFE_INTEGER,
+    });
+
+    // minPrice / maxPrice son OPCIONALES, al contrario que los dos anteriores.
+    // Ausentes significan "sin suelo" y "sin techo", que es el comportamiento
+    // util por defecto: quien no filtra por precio no deberia tener que
+    // escribir 0 y un numero enorme para decirlo. Si vienen, se validan.
+    const minPrice = body.minPrice === undefined || body.minPrice === null
+        ? 0
+        : parsePluginInt(body.minPrice, 'minPrice', { min: 0 });
+
+    const maxPrice = body.maxPrice === undefined || body.maxPrice === null
+        ? null
+        : parsePluginInt(body.maxPrice, 'maxPrice', { min: 0 });
+
+    // El rango se comprueba DESPUES de validar los dos por separado, para que
+    // un maxPrice negativo se explique como negativo y no como "menor que
+    // minPrice", que mandaria a mirar el campo equivocado.
+    if (maxPrice !== null && maxPrice < minPrice) {
+        throw new ValidationError(`maxPrice (${maxPrice}) no puede ser menor que minPrice (${minPrice})`);
+    }
+
+    return { amount, groupId, minPrice, maxPrice };
 }
 
 module.exports = {

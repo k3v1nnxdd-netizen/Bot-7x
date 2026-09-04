@@ -5,6 +5,7 @@ const logger = require('./src/observability/logger');
 const { createApp } = require('./src/app');
 const db = require('./src/db/pool');
 const { ensureSchema } = require('./src/db/schema');
+const jobs = require('./src/services/pluginSearch/jobs');
 
 const app = createApp();
 
@@ -23,7 +24,29 @@ const server = app.listen(config.port, () => {
 // ensureSchema() ya lo registra y deja constancia en /v1/metrics — porque la
 // API de outfits no depende de la base para nada y no tiene por que caer con
 // ella.
-ensureSchema();
+ensureSchema().then(async () => {
+    // NINGUN TRABAJO PUEDE QUEDARSE 'running' PARA SIEMPRE. Un proceso que
+    // muere deja los suyos escritos como en curso, y sin esto el plugin
+    // esperaria un resultado que no va a llegar nunca. Se decide por LATIDO y no
+    // por instancia, asi que un redeploy con dos replicas solapadas no mata los
+    // trabajos vivos de la que sigue en pie.
+    //
+    // Va DESPUES del esquema (las tablas tienen que existir) y sin bloquear el
+    // arranque: si falla, se registra y el servicio sigue sirviendo.
+    const recuperacion = await jobs.recuperarAlArrancar();
+    if (recuperacion.expirados > 0 || recuperacion.borrados > 0) {
+        logger.info('Trabajos de busqueda recuperados al arrancar', recuperacion);
+    }
+}).catch(err => {
+    logger.warn('No se pudo recuperar el estado de los trabajos al arrancar', { detail: err?.message });
+});
+
+// Recolector de trabajos vencidos. `unref` para que no impida apagar el
+// proceso: es mantenimiento, no trabajo pendiente.
+const limpiezaDeTrabajos = setInterval(() => {
+    jobs.recuperarAlArrancar().catch(() => { /* ya se registra dentro */ });
+}, config.pluginJobs.cleanupIntervalMs);
+limpiezaDeTrabajos.unref();
 
 // keepAliveTimeout debe SUPERAR el idle timeout del proxy que tengamos
 // delante (el edge de Railway ronda los 60s, como casi todos). Si nuestro
@@ -54,6 +77,8 @@ function shutdown(signal) {
     // Primero se dejan terminar las peticiones vivas y solo despues se
     // devuelven las conexiones a Postgres: al reves, una peticion en curso se
     // quedaria sin base a mitad. close() nunca lanza.
+    clearInterval(limpiezaDeTrabajos);
+
     server.close(async () => {
         await db.close();
         logger.info('Servidor cerrado limpiamente');

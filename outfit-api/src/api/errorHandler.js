@@ -2,6 +2,7 @@
 
 const logger = require('../observability/logger');
 const { ValidationError } = require('../validation/params');
+const { ColaLlenaError, EsperaAgotadaError } = require('../services/pluginSearch/groupQueue');
 const {
     NotFoundError, UpstreamRateLimitedError, CircuitOpenError, UpstreamError,
 } = require('../roblox/errors');
@@ -48,6 +49,25 @@ function errorHandler(err, req, res, next) {
     }
     if (err?.type === 'entity.too.large') {
         return send(res, 413, 'payload_too_large', 'El cuerpo de la peticion es demasiado grande');
+    }
+
+    // Cola por comunidad (busqueda del plugin). Las dos son condiciones
+    // NORMALES de un sistema con un solo recorrido por grupo, no fallos:
+    //
+    //   429 queue_full    -> hay demasiadas esperando ese grupo. Es un limite
+    //                        NUESTRO y quien llama debe bajar el ritmo, igual
+    //                        que con el limitador por IP.
+    //   503 queue_timeout -> se espero el turno y no llego a tiempo. El sistema
+    //                        esta ocupado, no roto: reintentar mas tarde tiene
+    //                        sentido, y por eso lleva Retry-After.
+    if (err instanceof ColaLlenaError) {
+        return send(res, 429, err.code, 'Ya hay demasiadas busquedas esperando turno para ese grupo');
+    }
+    if (err instanceof EsperaAgotadaError) {
+        res.set('Retry-After', '10');
+        return send(res, 503, err.code,
+            'Otra busqueda esta recorriendo ese grupo y se agoto la espera de turno',
+            { retryAfterSeconds: 10 });
     }
 
     if (err instanceof NotFoundError) {

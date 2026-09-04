@@ -663,23 +663,51 @@ function parsePluginSearchBody(body) {
     //                      El totalPrice es entonces el coste de lo comprable, y
     //                      cada outfit dice con priceComplete si esta entero.
     //
-    // Booleano de verdad, no "1"/"true": esto viene en un cuerpo JSON, donde el
-    // tipo existe. La forma laxa es para las query strings, que no lo tienen.
-    let requireCompletePrice = true;
-    if (body.requireCompletePrice !== undefined && body.requireCompletePrice !== null) {
-        if (typeof body.requireCompletePrice !== 'boolean') {
-            throw new ValidationError('requireCompletePrice debe ser true o false');
-        }
-        requireCompletePrice = body.requireCompletePrice;
-    }
+    const requireCompletePrice = parsePluginBool(body.requireCompletePrice, 'requireCompletePrice', true);
 
-    return { amount, groupId, minPrice, maxPrice, requireCompletePrice };
+    // MODO ASINCRONO. Opcional y por defecto APAGADO, para que el plugin que ya
+    // existe siga funcionando exactamente igual sin tocar una linea.
+    //
+    //   false (default) -> POST responde cuando la busqueda termina.
+    //   true            -> POST responde con un searchId en cuanto arranca, y el
+    //                      progreso se consulta con GET. Es lo unico que permite
+    //                      enseñar una barra real: RequestAsync de Roblox no
+    //                      devuelve nada hasta que el servidor acaba.
+    const asincrono = parsePluginBool(body.async, 'async', false);
+
+    return { amount, groupId, minPrice, maxPrice, requireCompletePrice, async: asincrono };
+}
+
+// Booleano de un cuerpo JSON. Estricto a proposito: aqui el tipo existe de
+// verdad, y aceptar "1"/"true" solo serviria para que un cliente que manda el
+// texto de una casilla pareciera funcionar. La forma laxa es para las query
+// strings, que no tienen tipos (ver parseBooleanFlag).
+function parsePluginBool(raw, label, porDefecto) {
+    if (raw === undefined || raw === null) return porDefecto;
+    if (typeof raw !== 'boolean') {
+        throw new ValidationError(`${label} debe ser true o false`);
+    }
+    return raw;
+}
+
+// Identificador de una busqueda asincrona, tal como lo emite jobs.js: el
+// prefijo "s_" y 32 hexadecimales (128 bits de aleatoriedad). Se valida la FORMA antes de ir al registro
+// para que una ruta con basura no llegue siquiera a buscarse, y sobre todo para
+// que nada raro acabe en el log de acceso a traves de la URL.
+const SEARCH_ID_PATTERN = /^s_[0-9a-f]{32}$/;
+
+function parseSearchId(raw) {
+    if (typeof raw !== 'string' || !SEARCH_ID_PATTERN.test(raw)) {
+        throw new ValidationError('searchId no tiene el formato de un identificador de busqueda');
+    }
+    return raw;
 }
 
 module.exports = {
     ValidationError,
     parseCatalogBatchBody,
     parsePluginSearchBody,
+    parseSearchId,
     parseLicenseVerifyBody,
     parseLicenseTokenHeader,
     parseLicenseContextHeaders,

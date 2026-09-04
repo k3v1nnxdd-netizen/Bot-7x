@@ -22,6 +22,160 @@ const logger = require('../observability/logger');
 // conversion, y contra una clave primaria TEXT se busca igual de rapido.
 const DDL = [
     {
+        // ── Rotacion de la busqueda del plugin, por comunidad ────────────
+        //
+        // Recuerda POR DONDE IBA el recorrido de cada grupo para que dos
+        // busquedas seguidas no devuelvan a la misma gente. Sobrevive a
+        // redeploys, que es justo el motivo de que esto viva en Postgres y no
+        // en memoria: Railway reinicia el proceso en cada despliegue.
+        //
+        // NO SE GUARDA UN INDICE NUMERICO, y es la decision central de esta
+        // tabla. La API de grupos de Roblox pagina con cursores OPACOS: no
+        // existe 'el miembro numero 437' ni hay forma de saltar a el. Guardar
+        // un contador propio seria inventarse una posicion que Roblox no
+        // garantiza y que dejaria de significar nada en cuanto alguien entre o
+        // salga del grupo. Lo que se guarda es exactamente lo que Roblox si
+        // define: su cursor, mas cuantos miembros de ESA pagina ya se miraron.
+        nombre: 'plugin_group_rotation',
+        sql: `
+            CREATE TABLE IF NOT EXISTS plugin_group_rotation (
+                group_id TEXT PRIMARY KEY,
+
+                -- Sentido del recorrido. Se fija al crear la fila y NO cambia:
+                -- alternarlo rompería la continuidad que da sentido a todo esto.
+                sort_order TEXT NOT NULL DEFAULT 'Asc',
+
+                -- Cursor OPACO de Roblox. NULL = primera pagina del ciclo.
+                current_cursor TEXT,
+
+                -- Miembros ya consumidos de la pagina que abre current_cursor.
+                -- Es lo unico que permite reanudar A MITAD de pagina sin
+                -- inventarse posiciones globales.
+                intra_page_offset INTEGER NOT NULL DEFAULT 0,
+
+                -- Ultimo miembro procesado. No se usa para navegar (con cursores
+                -- opacos no se puede), sino para dos cosas: dejar constancia de
+                -- donde se quedo y poder reanudar de forma inclusiva.
+                last_user_id TEXT,
+
+                -- Vueltas completas dadas a la comunidad. Sube en cada
+                -- wrap-around y sirve para saber si un grupo pequeño se esta
+                -- reciclando demasiado rapido.
+                cycle_number INTEGER NOT NULL DEFAULT 1,
+
+                -- Veces que Roblox rechazo el cursor guardado y hubo que
+                -- reiniciar el ciclo. Si esto crece, es que los cursores caducan
+                -- antes de lo que dura el intervalo entre busquedas.
+                cursor_resets INTEGER NOT NULL DEFAULT 0,
+
+                -- Lease: quien esta recorriendo este grupo ahora mismo y hasta
+                -- cuando. Es lo que impide que dos busquedas simultaneas del
+                -- mismo grupo avancen el mismo cursor y lo corrompan. Con
+                -- caducidad, para que un proceso que muera no bloquee el grupo
+                -- para siempre.
+                lease_owner TEXT,
+                lease_expires_at TIMESTAMPTZ,
+
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        `,
+    },
+    {
+        // ── Trabajos de busqueda ─────────────────────────────────────────
+        //
+        // Un searchId tiene que poder consultarse DESPUES de un redeploy y
+        // DESDE OTRA INSTANCIA. Con el estado solo en memoria, un GET que cae
+        // en la replica equivocada responde 404 aunque el trabajo exista.
+        //
+        // NO ES UN STREAM DE ESCRITURAS. El estado caliente vive en memoria y
+        // aqui se vuelca por HITOS (cuando sube `found`) o cada
+        // PLUGIN_JOB_SNAPSHOT_MS, que ademas hace de latido. Una busqueda
+        // entera son unas pocas filas escritas, no cientos.
+        //
+        // De jugadores no se guarda mas de lo que ya devuelve la API: el
+        // resultado es la misma lista de outfits que recibio el plugin, y
+        // caduca sola.
+        nombre: 'plugin_search_jobs',
+        sql: `
+            CREATE TABLE IF NOT EXISTS plugin_search_jobs (
+                search_id TEXT PRIMARY KEY,
+                group_id TEXT NOT NULL,
+
+                -- queued | running | completed | partial | failed | expired
+                status TEXT NOT NULL,
+
+                requested INTEGER NOT NULL,
+                found INTEGER NOT NULL DEFAULT 0,
+                candidates_examined INTEGER NOT NULL DEFAULT 0,
+                stopped_by TEXT,
+
+                -- Foto del progreso tal cual se le devuelve al plugin, para que
+                -- un GET tras un reinicio enseñe lo mismo que enseñaba antes.
+                progress JSONB,
+
+                -- Outfits y stats. Solo se escribe al terminar: guardarlo a
+                -- medias invitaria a pintar resultados que aun pueden cambiar.
+                result JSONB,
+
+                error_code TEXT,
+                instance_id TEXT,
+
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                started_at TIMESTAMPTZ,
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                completed_at TIMESTAMPTZ,
+
+                -- Latido del proceso que lo esta ejecutando. Sin el no hay forma
+                -- de distinguir un trabajo vivo pero lento de uno cuyo proceso
+                -- murio, y los segundos quedarian 'running' para siempre.
+                heartbeat_at TIMESTAMPTZ,
+
+                -- Cuando deja de conservarse. Lo pone el proceso al terminar.
+                expires_at TIMESTAMPTZ
+            )
+        `,
+        columnas: [
+            // El recolector borra por fecha de caducidad, y el arranque busca
+            // huerfanos por estado. Sin estos dos indices las dos cosas serian
+            // barridos completos en cuanto la tabla crezca.
+            "CREATE INDEX IF NOT EXISTS plugin_search_jobs_expires_idx ON plugin_search_jobs (expires_at)",
+            "CREATE INDEX IF NOT EXISTS plugin_search_jobs_status_idx ON plugin_search_jobs (status, heartbeat_at)",
+        ],
+    },
+    {
+        // ── Aprendizaje por comunidad, para estimar el tiempo restante ───
+        //
+        // Medias exponenciales (EWMA), no acumulados: una comunidad cambia, y
+        // una media historica tardaria cientos de busquedas en enterarse. Con
+        // EWMA la estimacion se adapta en unas pocas.
+        //
+        // NO HAY NI UN DATO DE JUGADOR AQUI: cuatro medias y un contador. Lo
+        // que se aprende es como se comporta la BUSQUEDA sobre ese grupo, no
+        // quien esta en el.
+        nombre: 'plugin_group_stats',
+        sql: `
+            CREATE TABLE IF NOT EXISTS plugin_group_stats (
+                group_id TEXT PRIMARY KEY,
+
+                -- Proporcion de candidatos que acaban siendo outfits validos.
+                -- Es el numero que de verdad predice cuanto queda.
+                avg_acceptance_rate DOUBLE PRECISION,
+
+                -- Coste medio de examinar un candidato, de punta a punta.
+                avg_candidate_latency_ms DOUBLE PRECISION,
+
+                -- Candidatos que hace falta mirar por cada resultado. Es el
+                -- inverso de la aceptacion, guardado aparte porque se usa tal
+                -- cual para dimensionar la siguiente busqueda.
+                avg_candidates_per_result DOUBLE PRECISION,
+
+                avg_search_duration_ms DOUBLE PRECISION,
+                searches_completed INTEGER NOT NULL DEFAULT 0,
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        `,
+    },
+    {
         nombre: 'group_whitelist',
         sql: `
             CREATE TABLE IF NOT EXISTS group_whitelist (

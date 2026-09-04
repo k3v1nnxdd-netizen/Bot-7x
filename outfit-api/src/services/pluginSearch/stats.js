@@ -45,8 +45,8 @@ function crearStats() {
 
     const contadores = {
         // Descubrimiento
-        candidatesDiscovered: 0,
         memberPagesFetched: 0,
+        emptySegments: 0,
 
         // Trabajo hecho
         avatarRequests: 0,        // llamadas al avatar, incluidas las que fallaron
@@ -85,6 +85,11 @@ function crearStats() {
 
     let parada = PARADA.SIN_CANDIDATOS;
 
+    // Donde empezo y donde acabo el recorrido de la comunidad. No es adorno:
+    // es lo que permite comprobar desde el log que dos busquedas seguidas del
+    // mismo grupo NO recorrieron el mismo tramo.
+    let rotacion = null;
+
     return {
         contadores,
 
@@ -122,6 +127,10 @@ function crearStats() {
             parada = motivo;
         },
 
+        anotarRotacion(datos) {
+            rotacion = datos;
+        },
+
         get parada() {
             return parada;
         },
@@ -136,9 +145,20 @@ function crearStats() {
                 + contadores.rejectedMinPrice + contadores.rejectedMaxPrice;
 
             return {
-                candidatesDiscovered: contadores.candidatesDiscovered,
                 candidatesExamined: contadores.accepted + rechazados,
                 memberPagesFetched: contadores.memberPagesFetched,
+                emptySegments: contadores.emptySegments,
+
+                // Rotacion: en que modo fue, por que ciclo va la comunidad y
+                // entre que dos puntos se recorrio esta vez. Los cursores NO se
+                // publican enteros — son opacos y largos — sino resumidos, que
+                // es lo unico que hace falta para ver que hubo avance.
+                rotationMode: rotacion?.modo ?? null,
+                rotationCycle: rotacion?.cycle ?? null,
+                rotationStart: describirPosicion(rotacion?.inicio),
+                rotationEnd: describirPosicion(rotacion?.fin),
+                rotationWraps: rotacion?.wraps ?? 0,
+                rotationCursorResets: rotacion?.cursorResets ?? 0,
                 avatarRequests: contadores.avatarRequests,
                 avatarsFetched: contadores.avatarsFetched,
 
@@ -180,10 +200,28 @@ function crearStats() {
                 // momento" en vez de "no se encontro nada".
                 stoppedByCatalogRateLimit: parada === PARADA.LIMITE_CATALOGO,
 
+                // Proporcion de candidatos que acabaron siendo outfits validos.
+                // Es el numero que de verdad explica cuanto costo la busqueda, y
+                // el que alimenta la estimacion de la siguiente.
+                acceptanceRate: contadores.accepted + rechazados > 0
+                    ? Math.round((contadores.accepted / (contadores.accepted + rechazados)) * 1000) / 1000
+                    : 0,
+
                 durationMs: Date.now() - empezado,
             };
         },
     };
+}
+
+// Un cursor de Roblox es una cadena opaca y larga. En el log solo interesa
+// PODER COMPARAR dos posiciones, asi que se resume: 'first' para el principio
+// del ciclo y un prefijo corto del cursor para el resto. Suficiente para ver de
+// un vistazo que la busqueda de hoy empezo donde acabo la de ayer, sin
+// arrastrar trescientos caracteres por linea.
+function describirPosicion(posicion) {
+    if (!posicion) return null;
+    const cursor = posicion.cursor ? String(posicion.cursor).slice(0, 12) : 'first';
+    return { cursor, offset: posicion.offset, cycle: posicion.cycle };
 }
 
 module.exports = { crearStats, PARADA };

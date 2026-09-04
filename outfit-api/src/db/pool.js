@@ -246,9 +246,25 @@ function getMetrics() {
     };
 }
 
+// Cliente DEDICADO y de larga vida, fuera del ciclo de `query()`.
+//
+// Existe para UNA cosa: LISTEN/NOTIFY. Una suscripcion LISTEN vive en la
+// CONEXION, asi que no puede montarse sobre el pool — `query()` pide un cliente
+// y lo devuelve, y con el se iria la suscripcion. Quien lo pida es responsable
+// de soltarlo (`release()`) y de volver a pedirlo si la conexion se cae.
+//
+// No se usa para consultas normales: gastaria una de las pocas conexiones del
+// plan de Railway sin motivo.
+async function conexionDedicada() {
+    const activePool = getPool();
+    if (!activePool) throw notConfigured();
+    return activePool.connect();
+}
+
 module.exports = {
     isConfigured,
     query,
+    conexionDedicada,
     withTransaction,
     close,
     getMetrics,

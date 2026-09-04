@@ -279,6 +279,123 @@ const pluginSearch = {
     maxBundleLookups: intFromEnv('PLUGIN_SEARCH_MAX_BUNDLE_LOOKUPS', 12),
 };
 
+// ── Rotacion persistente por comunidad ───────────────────────────────────────
+//
+// Cada groupId recorre su comunidad EN ORDEN y recuerda por donde iba, de modo
+// que dos busquedas seguidas no devuelven a la misma gente. El estado vive en
+// Postgres (ver src/db/pluginRotationRepo.js) y sobrevive a redeploys.
+//
+// Sin DATABASE_URL todo esto se desactiva solo y la busqueda vuelve al muestreo
+// aleatorio de siempre: la API de outfits nunca ha dependido de la base y no va
+// a empezar ahora.
+const pluginRotation = {
+    // Cuanto vale un lease sobre la rotacion de un grupo. Tiene que superar la
+    // duracion maxima de una busqueda (el presupuesto de tiempo) con margen: si
+    // expirase a mitad, otra busqueda podria empezar a avanzar el mismo cursor.
+    // Y no puede ser eterno, porque un proceso que muera con el lease cogido
+    // dejaria el grupo bloqueado hasta el fin de los tiempos.
+    leaseMs: intFromEnv('PLUGIN_ROTATION_LEASE_MS', 90_000),
+
+    // Al reanudar, se vuelve a mirar al ultimo miembro procesado?
+    //
+    // Activado (lo pedido) hace que la busqueda B empiece EN el usuario donde
+    // termino la A. Cuesta un candidato repetido por busqueda — despreciable — y
+    // a cambio no se pierde a nadie si la busqueda anterior murio justo despues
+    // de procesarlo y antes de persistir.
+    resumeInclusive: (process.env.PLUGIN_ROTATION_RESUME_INCLUSIVE ?? 'true') !== 'false',
+
+    // Miembros que entrega la rotacion por segmento. Es el tamaño de ola: se
+    // mantiene igual para que el lote de catalogo siga siendo el mismo de siempre
+    // y no cambie el perfil de trafico que ya esta estabilizado.
+    segmentSize: intFromEnv('PLUGIN_ROTATION_SEGMENT_SIZE', 25),
+
+    // Segmentos seguidos sin ningun miembro nuevo antes de dar la comunidad por
+    // agotada EN ESTA busqueda. Con 2 basta: el primero puede ser el solape del
+    // wrap-around, dos seguidos ya significan que se dio la vuelta entera.
+    emptySegmentsBeforeExhausted: intFromEnv('PLUGIN_ROTATION_EMPTY_SEGMENTS', 2),
+};
+
+// ── Trabajos de busqueda (modo asincrono) y estimacion de tiempo ─────────────
+// ── Cola por comunidad ───────────────────────────────────────────────────────
+//
+// UNA sola busqueda recorre un grupo a la vez. La segunda no adelanta ni va por
+// otro lado: espera su turno y arranca donde termino la anterior. Grupos
+// distintos no se estorban en absoluto — la cola es por groupId.
+const pluginQueue = {
+    // Busquedas que pueden estar esperando turno POR GRUPO. Pasado el tope se
+    // rechaza de inmediato en vez de acumular gente que no va a llegar a
+    // tiempo: una cola que crece sin limite solo sirve para que todos esperen
+    // mucho y se rindan.
+    maxWaiting: intFromEnv('PLUGIN_QUEUE_MAX_WAITING', 8),
+
+    // Espera maxima en cola antes de rendirse. Tiene que dar para que termine
+    // la busqueda de delante (su presupuesto de tiempo) con margen; mas alla de
+    // eso, quien espera prefiere un 'ahora no' claro a un socket colgado.
+    waitTimeoutMs: intFromEnv('PLUGIN_QUEUE_WAIT_TIMEOUT_MS', 45_000),
+
+    // Solo para el caso multi-instancia: si el lease del grupo lo tiene OTRO
+    // proceso, no se puede esperar a una promesa local. Se espera una vez hasta
+    // que ese lease caduque (mas este margen) y se reintenta. Un solo temporizador,
+    // nunca un bucle de sondeo.
+    foreignLeaseGraceMs: intFromEnv('PLUGIN_QUEUE_FOREIGN_LEASE_GRACE_MS', 250),
+};
+
+const pluginJobs = {
+    // Cuanto se conserva un trabajo terminado para que el plugin recoja su
+    // resultado. Corto a proposito: son resultados de una busqueda, no un
+    // almacen. Pasado el plazo responde 'expired' y el plugin lanza otra, que es
+    // mas barato que guardar resultados que ya nadie va a mirar.
+    resultTtlMs: intFromEnv('PLUGIN_JOB_RESULT_TTL_MS', 120_000),
+
+    // Techo de trabajos vivos en memoria a la vez. Es una cota de RAM, no un
+    // limitador de carga: de eso ya se encargan el limitador por IP y los
+    // presupuestos de la propia busqueda.
+    maxLive: intFromEnv('PLUGIN_JOB_MAX_LIVE', 64),
+
+    // Cada cuanto conviene que el plugin vuelva a preguntar. Se devuelve en la
+    // respuesta para que el cliente no tenga que elegirlo (ni equivocarse).
+    pollIntervalMs: intFromEnv('PLUGIN_JOB_POLL_INTERVAL_MS', 700),
+
+    // Cada cuanto se vuelca a Postgres el estado de un trabajo en curso.
+    // NO se escribe en cada cambio: una busqueda cambia de progreso varias
+    // veces por segundo y eso convertiria la base en un stream de escrituras
+    // sin ganar nada. Se guarda por HITOS (cada vez que sube `found`) y, si
+    // no hay hitos, cada este intervalo — que ademas hace de latido.
+    snapshotMs: intFromEnv('PLUGIN_JOB_SNAPSHOT_MS', 2_000),
+
+    // Sin latido durante este tiempo, un trabajo en curso se da por muerto.
+    // Es lo que impide que un proceso que se cayo deje jobs eternamente
+    // 'running' en la base. Holgado respecto a snapshotMs para no matar a un
+    // trabajo vivo que solo va lento.
+    heartbeatTimeoutMs: intFromEnv('PLUGIN_JOB_HEARTBEAT_TIMEOUT_MS', 60_000),
+
+    // Cuanto sobrevive un trabajo TERMINADO en la base, con sus resultados.
+    // Es lo que permite recoger el resultado tras un redeploy o desde otra
+    // instancia. Pasado el plazo se borra: son resultados de una busqueda, no
+    // un almacen.
+    retentionMs: intFromEnv('PLUGIN_JOB_RETENTION_MS', 30 * 60_000),
+
+    // Cada cuanto pasa el recolector de trabajos vencidos.
+    cleanupIntervalMs: intFromEnv('PLUGIN_JOB_CLEANUP_INTERVAL_MS', 5 * 60_000),
+};
+
+const pluginEta = {
+    // Peso del dato nuevo en la media exponencial. 0.3 se adapta en unas pocas
+    // busquedas sin dar bandazos por una sola rara. Una media aritmetica
+    // historica tardaria cientos de busquedas en reaccionar a un cambio real de
+    // la comunidad.
+    ewmaAlpha: Number(process.env.PLUGIN_ETA_EWMA_ALPHA ?? 0.3),
+
+    // Candidatos examinados por debajo de los cuales NO se da estimacion. Con dos
+    // o tres muestras la tasa de aceptacion es ruido, y una ETA inventada es peor
+    // que 'calculando': la primera se cree y la segunda no.
+    minSamples: intFromEnv('PLUGIN_ETA_MIN_SAMPLES', 8),
+
+    // Techo de la estimacion. Nunca se promete mas alla de lo que la propia
+    // busqueda va a durar, porque a esa hora se corta igualmente.
+    maxEstimateMs: intFromEnv('PLUGIN_ETA_MAX_MS', 120_000),
+};
+
 const catalogBatch = {
     maxAssetIds: intFromEnv('CATALOG_BATCH_MAX_ASSETS', 64),
     maxBundleIds: intFromEnv('CATALOG_BATCH_MAX_BUNDLES', 32),
@@ -383,5 +500,9 @@ module.exports = {
     maxCatalogBatchSize,
     catalogBatch,
     pluginSearch,
+    pluginRotation,
+    pluginQueue,
+    pluginJobs,
+    pluginEta,
     serviceName: 'outfit-api',
 };

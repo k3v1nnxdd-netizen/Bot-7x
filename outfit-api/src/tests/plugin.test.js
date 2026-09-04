@@ -526,16 +526,16 @@ module.exports = async function run() {
 
     // ── Muestreo ─────────────────────────────────────────────────────────────
 
-    test('el orden de los resultados varia entre busquedas (se baraja)', async () => {
-        const firmas = new Set();
-        for (let intento = 0; intento < 8; intento++) {
-            poblar({ miembros: 200, precioDe: () => 100 });
-            const res = await buscar(port, cuerpo({ amount: 20 }));
-            firmas.add(res.body.outfits.map(o => o.userId).join(','));
-        }
-        // Con 200 miembros y 20 resultados, ocho busquedas identicas serian
-        // practicamente imposibles si de verdad se baraja.
-        assert.ok(firmas.size > 1, 'las 8 busquedas devolvieron exactamente los mismos usuarios en el mismo orden');
+    test('dos busquedas seguidas NO devuelven a la misma gente', async () => {
+        // La variedad ya no sale de barajar un bombo: sale de que la rotacion
+        // avanza. Sin base de datos el modo es efimero y cada busqueda empieza
+        // de cero, asi que aqui solo se comprueba lo que aplica en ese modo:
+        // que dentro de UNA busqueda nadie se repite.
+        poblar({ miembros: 200, precioDe: () => 100 });
+        const res = await buscar(port, cuerpo({ amount: 20 }));
+
+        const ids = res.body.outfits.map(o => o.userId);
+        assert.strictEqual(new Set(ids).size, ids.length, 'hay userIds repetidos en una misma busqueda');
     });
 
     // ── La cache se reutiliza ────────────────────────────────────────────────
@@ -1423,7 +1423,7 @@ module.exports = async function run() {
         assert.strictEqual(stats.assetIdsRequested, 3, 'se pidieron mas assets de los necesarios');
         assert.strictEqual(stats.catalogBatches, 1);
         assert.strictEqual(stats.avatarsFetched, 20);
-        assert.strictEqual(stats.candidatesDiscovered, 20);
+        assert.strictEqual(stats.candidatesExamined, 20);
     });
 
     test('stoppedBy es completed cuando se llena el pedido', async () => {
@@ -1444,7 +1444,8 @@ module.exports = async function run() {
     // Contadores enteros de stats. Los dos campos de parada (stoppedBy,
     // stoppedByCatalogRateLimit) van aparte porque no son numeros.
     const CONTADORES_STATS = [
-        'candidatesDiscovered', 'candidatesExamined', 'memberPagesFetched',
+        'candidatesExamined', 'memberPagesFetched', 'emptySegments',
+        'rotationCycle', 'rotationWraps', 'rotationCursorResets',
         'avatarRequests', 'avatarsFetched',
         'assetIdsSeen', 'assetIdsUnique', 'assetIdsRequested', 'catalogBatches',
         'bundleLookups', 'bundleLookupsSkipped', 'bundleSpecialHits', 'bundleBatches',
@@ -1454,9 +1455,16 @@ module.exports = async function run() {
         'rejectedMinPrice', 'rejectedMaxPrice',
         'assetsPriced', 'assetsUnpriced', 'assetsLimited', 'assetsOffSale',
         'assetsBundled', 'assetsDeleted',
-        'durationMs',
+        'acceptanceRate', 'durationMs',
     ];
-    const CLAVES_STATS = [...CONTADORES_STATS, 'stoppedBy', 'stoppedByCatalogRateLimit'];
+
+    // Los que no son contadores enteros: modo de rotacion, las dos posiciones
+    // del recorrido y los dos campos de parada.
+    const NO_CONTADORES = [
+        'rotationMode', 'rotationStart', 'rotationEnd',
+        'stoppedBy', 'stoppedByCatalogRateLimit',
+    ];
+    const CLAVES_STATS = [...CONTADORES_STATS, ...NO_CONTADORES];
 
     // Conjunto CERRADO de motivos de parada: un valor fuera de esta lista seria
     // una fuga de detalle interno hacia el cliente.
@@ -1481,9 +1489,12 @@ module.exports = async function run() {
         assert.deepStrictEqual(Object.keys(res.body.stats).sort(), [...CLAVES_STATS].sort());
 
         for (const clave of CONTADORES_STATS) {
-            assert.ok(Number.isInteger(res.body.stats[clave]), `${clave} no es un entero`);
-            assert.ok(res.body.stats[clave] >= 0, `${clave} es negativo`);
+            const valor = res.body.stats[clave];
+            assert.ok(Number.isFinite(valor), `${clave} no es un numero finito`);
+            assert.ok(valor >= 0, `${clave} es negativo`);
         }
+        assert.strictEqual(typeof res.body.stats.rotationMode, 'string');
+        assert.ok(['leased', 'concurrent', 'ephemeral'].includes(res.body.stats.rotationMode));
         assert.ok(PARADAS_VALIDAS.includes(res.body.stats.stoppedBy),
             `stoppedBy fuera del conjunto cerrado: ${res.body.stats.stoppedBy}`);
         assert.strictEqual(typeof res.body.stats.stoppedByCatalogRateLimit, 'boolean');
@@ -1500,9 +1511,10 @@ module.exports = async function run() {
         assert.ok(Array.isArray(res.body.outfits));
         assert.deepStrictEqual(Object.keys(res.body.outfits[0]).sort(), ['bundledItems', 'limitedItems', 'offSaleItems', 'priceComplete',
                 'pricedItems', 'totalPrice', 'unpricedItems', 'userId', 'username']);
-        // Y stats como quinta clave, sin tocar las anteriores.
+        // stats, progress y searchId se añaden AL LADO; las cuatro de siempre
+        // conservan nombre, tipo y significado.
         assert.deepStrictEqual(Object.keys(res.body).sort(),
-            ['found', 'outfits', 'requested', 'stats', 'success']);
+            ['found', 'outfits', 'progress', 'requested', 'searchId', 'stats', 'success']);
     });
 
     test('accepted coincide con found cuando la busqueda no se llena', async () => {
@@ -1668,6 +1680,14 @@ module.exports = async function run() {
                 assert.ok(PARADAS_VALIDAS.includes(valor), `stoppedBy con valor libre: ${valor}`);
             } else if (clave === 'stoppedByCatalogRateLimit') {
                 assert.strictEqual(typeof valor, 'boolean');
+            } else if (clave === 'rotationMode') {
+                assert.ok(['leased', 'concurrent', 'ephemeral'].includes(valor));
+            } else if (clave === 'rotationStart' || clave === 'rotationEnd') {
+                // Posicion del recorrido: el cursor va RESUMIDO, nunca entero.
+                assert.strictEqual(typeof valor.cursor, 'string');
+                assert.ok(valor.cursor.length <= 12, 'el cursor deberia ir resumido en el log');
+                assert.strictEqual(typeof valor.offset, 'number');
+                assert.strictEqual(typeof valor.cycle, 'number');
             } else {
                 assert.strictEqual(typeof valor, 'number', `${clave} no es numero`);
             }
@@ -1916,7 +1936,9 @@ module.exports = async function run() {
             for (const campo of OBLIGATORIOS) {
                 assert.ok(campo in linea.fields, `al resumen le falta el campo ${campo}`);
             }
-            assert.strictEqual(linea.fields.avatarRequests, 5 * config.pluginSearch.candidatesPerResult);
+            // El tramo se dimensiona por lo que FALTA, no por un factor fijo: con
+            // todos los candidatos validos bastan 5 avatares para 5 resultados.
+            assert.strictEqual(linea.fields.avatarRequests, 5);
             assert.strictEqual(linea.fields.memberPagesFetched, 1);
             assert.ok(linea.fields.catalogBatches >= 1);
         } finally {

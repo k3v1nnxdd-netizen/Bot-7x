@@ -4,71 +4,66 @@ const express = require('express');
 const router = express.Router();
 const logger = require('../../observability/logger');
 const pluginSearch = require('../../services/pluginSearchService');
-const { parsePluginSearchBody, ValidationError } = require('../../validation/params');
+const jobs = require('../../services/pluginSearch/jobs');
+const { parsePluginSearchBody, parseSearchId, ValidationError } = require('../../validation/params');
+const { NotFoundError } = require('../../roblox/errors');
+const { ColaLlenaError, EsperaAgotadaError } = require('../../services/pluginSearch/groupQueue');
 
 // Rutas del PLUGIN PRIVADO de Roblox Studio ("7x Outfit Importer").
 //
-// Cliente distinto de todos los demas, y por eso router propio: el plugin
-// corre dentro de Studio, no dentro de una experiencia publicada. No tiene
-// `game.GameId` real que verificar, asi que la cadena de autorizacion de
-// /v1/users y /v1/outfits (token -> licencia -> propiedad del juego) no se
-// puede aplicar aqui tal cual. Va FUERA de /v1 por lo mismo que /admin: /v1 es
-// el contrato que consume el juego vendido y se versiona para no romperlo.
+// Cliente distinto de todos los demas, y por eso router propio: el plugin corre
+// dentro de Studio, no dentro de una experiencia publicada. Va FUERA de /v1 por
+// lo mismo que /admin: /v1 es el contrato que consume el juego vendido.
 //
-// CREDENCIAL PROPIA Y EXCLUSIVA: `x-plugin-key` (PLUGIN_API_KEY), comprobada
-// en src/app.js ANTES de llegar aqui — o sea, antes incluso del parser de
-// cuerpo que monta este router. Ni la key del juego, ni la de admin, ni un
-// token de licencia abren esta ruta; y esta clave no abre ninguna de las
-// otras. Ver src/security/pluginKey.js.
+// CREDENCIAL PROPIA Y EXCLUSIVA: `x-plugin-key` (PLUGIN_API_KEY), comprobada en
+// src/app.js ANTES de llegar aqui — o sea, antes incluso del parser de cuerpo
+// que monta este router. Ni la key del juego, ni la de admin, ni un token de
+// licencia abren estas rutas; y esta clave no abre ninguna de las otras.
 //
-// Que este autenticada importa mas aqui que en ninguna otra ruta: una sola
-// peticion se traduce en decenas o cientos de llamadas a Roblox. Delante
-// quedan ademas el limitador por IP que comparte con el resto del servicio y
-// los topes duros de la propia busqueda (config.pluginSearch).
+// ── DOS MODOS, Y POR QUE ─────────────────────────────────────────────────────
+//
+// SINCRONO (default): POST devuelve cuando la busqueda termina. Es el
+// comportamiento historico y sigue intacto, asi que un plugin que no cambie
+// sigue funcionando exactamente igual.
+//
+// ASINCRONO (`"async": true`): POST devuelve un `searchId` en cuanto arranca y
+// el plugin pregunta por el con GET. Existe por una razon concreta:
+// `HttpService:RequestAsync` de Roblox devuelve cuando el servidor termina, asi
+// que en modo sincrono el plugin NO PUEDE enseñar progreso real durante una
+// busqueda de 10-25 segundos — solo puede inventarse un contador. Partirlo en
+// arrancar + preguntar es lo que permite una barra que no miente.
 
-// Parser de cuerpo montado SOLO en este router, igual que hacen
-// /admin/groups (4kb) y /v1/license/verify (2kb). La API de outfits sigue sin
-// parser a nivel de app. 1kb sobra para cuatro numeros, y convierte un cuerpo
-// desmedido en un 413 barato en vez de en memoria ocupada.
+// Parser de cuerpo montado SOLO en este router, igual que hacen /admin/groups
+// (4kb) y /v1/license/verify (2kb). La API de outfits sigue sin parser a nivel
+// de app. 1kb sobra para seis campos.
 router.use(express.json({ limit: '1kb' }));
 
 // POST /plugin/outfits/search
-//   body: { "amount": 100, "groupId": 59218460, "minPrice": 100, "maxPrice": 3000 }
-//     amount    entero 1..500        OBLIGATORIO
-//     groupId   entero positivo      OBLIGATORIO (numero JSON, no cadena)
-//     minPrice  entero >= 0          opcional (default 0, "sin suelo")
-//     maxPrice  entero >= minPrice   opcional (default sin techo)
-//     requireCompletePrice  booleano opcional (default true, estricto)
+//   body: { "amount": 10, "groupId": 59218460, "minPrice": 300, "maxPrice": 3000,
+//           "requireCompletePrice": false, "async": true }
+//     amount   entero 1..500      OBLIGATORIO — outfits VALIDOS que se quieren,
+//                                 no candidatos que se miran
+//     groupId  entero positivo    OBLIGATORIO (numero JSON, no cadena)
+//     minPrice entero >= 0        opcional (default 0)
+//     maxPrice entero >= minPrice opcional (default sin techo)
+//     requireCompletePrice booleano opcional (default true, estricto)
+//     async    booleano opcional  (default false, sincrono)
 //
-// requireCompletePrice decide QUE se hace con un avatar que lleva alguna pieza
-// no comprable (fuera de venta, limitada sin nadie revendiendola, retirada del
-// catalogo). Con true solo entran los que se pudieron valorar enteros; con
-// false entran tambien esos, siempre que algo se haya podido valorar, y cada
-// outfit dice en priceComplete si su totalPrice esta completo. En una comunidad
-// real la mayoria de avatares llevan alguna pieza asi, de modo que false es lo
-// que hace utilizable la busqueda; true es lo que hay que usar cuando el numero
-// tiene que ser exacto.
+//   200 (sincrono)  { success, requested, found, outfits[], stats, progress, searchId }
+//   202 (asincrono) { success, searchId, status:'queued', pollAfterMs, ... }
+//   400 cuerpo mal formado · 401 sin x-plugin-key · 404 grupo inexistente
+//   429 queue_full — ya hay demasiadas busquedas esperando turno de ese grupo
+//   503 Roblox limitando, PLUGIN_API_KEY sin configurar, o queue_timeout
 //
-//   200 { success:true, requested, found,
-//         outfits:[{userId,username,totalPrice,priceComplete,pricedItems,
-//                   unpricedItems,limitedItems,offSaleItems,bundledItems}],
-//         stats:{candidatesExamined,accepted,rejectedAvatarError,rejectedEmptyAvatar,
-//                rejectedCatalogError,rejectedUnknownPrice,rejectedMinPrice,rejectedMaxPrice} }
-//   400 { error: { code:'invalid_request', message } }   cuerpo mal formado
-//   401 { error: { code:'unauthorized', ... } }          falta o falla x-plugin-key
-//   404 { error: { code:'group_not_found', ... } }       Roblox no conoce el grupo
-//   503 { error: { code:'plugin_disabled', ... } }       falta PLUGIN_API_KEY en el servidor
-//   503 ...                                              Roblox limitando o caido
+// UNA SOLA BUSQUEDA RECORRE UN GRUPO A LA VEZ. Si llega otra del mismo groupId,
+// hace cola y arranca donde termino la anterior; el GET la enseña como
+// `queued` con su `queuePosition`. Grupos distintos corren en paralelo sin
+// estorbarse.
 //
-// `found` PUEDE SER MENOR QUE `requested` Y NO ES UN ERROR. Es el caso normal:
-// el grupo puede tener menos miembros que outfits pedidos, el rango de precio
-// puede descartar a casi todos, la busqueda tiene topes de candidatos y de
-// tiempo, y ademas se descarta a todo aquel cuyo avatar no permita calcular un
-// precio ENTERO y fiable (ver services/pluginSearchService.js). Devolver 40 de
-// 100 es un resultado, no un fallo, y el plugin debe pintarlo como tal. El motivo exacto
-// por el que paro cada busqueda queda en el log del servicio, no en la
-// respuesta: al plugin no le sirve para nada y la forma de la respuesta es
-// contrato con el.
+// `found` PUEDE SER MENOR QUE `requested` Y NO ES UN ERROR. La busqueda recorre
+// la comunidad sustituyendo candidatos invalidos hasta juntar lo pedido, pero
+// tiene presupuestos (tiempo, candidatos, limite de Roblox) y una comunidad
+// tiene los miembros que tiene. Devolver 7 de 10 es un resultado, no un fallo.
 router.post('/outfits/search', async (req, res) => {
     res.locals.routeLabel = 'POST /plugin/outfits/search';
 
@@ -76,10 +71,6 @@ router.post('/outfits/search', async (req, res) => {
     try {
         peticion = parsePluginSearchBody(req.body);
     } catch (err) {
-        // El 400 lo sigue construyendo el error handler central (aqui no se
-        // responde, se relanza) pero un cuerpo rechazado se deja registrado
-        // ademas en el log: mientras se integra el plugin, saber QUE mando es
-        // la mitad del trabajo de depurarlo, y el 4xx por si solo no lo dice.
         if (err instanceof ValidationError) {
             logger.warn('Peticion invalida del plugin', {
                 requestId: req.requestId,
@@ -92,30 +83,97 @@ router.post('/outfits/search', async (req, res) => {
         throw err;
     }
 
-    // Sin try/catch alrededor de la busqueda, como el resto de rutas: un fallo
-    // duro de Roblox (limite, caida, grupo inexistente) sube al error handler
-    // central, que es el unico sitio donde un error se traduce a HTTP. Los
-    // fallos BLANDOS (un usuario que no se puede consultar) no llegan hasta
-    // aqui: el servicio los descarta y sigue con el siguiente candidato.
-    const { outfits, stats } = await pluginSearch.searchOutfits(peticion, { requestId: req.requestId });
+    const trabajo = jobs.crear({ peticion, requestId: req.requestId });
+
+    // ── Modo asincrono: se responde YA y la busqueda sigue por su cuenta ─────
+    if (peticion.async) {
+        // Sin await: el trabajo corre en segundo plano y el plugin lo sigue por
+        // GET. `arrancar` no rechaza en este modo — captura dentro — asi que no
+        // puede dejar una promesa rechazada suelta en el proceso.
+        arrancar(trabajo, peticion);
+        return res.status(202).json({ success: true, ...jobs.presentar(trabajo) });
+    }
+
+    // ── Modo sincrono: el comportamiento de siempre ──────────────────────────
+    // Comparte el MISMO motor que el asincrono; lo unico que cambia es que aqui
+    // se espera. Dos caminos distintos acabarian divergiendo.
+    const resultado = await arrancar(trabajo, peticion, { relanzar: true });
 
     return res.json({
         success: true,
         requested: peticion.amount,
-        found: outfits.length,
-        outfits,
-
-        // ADITIVO: las cuatro claves de arriba no cambian ni de nombre ni de
-        // forma, asi que un plugin que no lea `stats` sigue funcionando igual.
-        //
-        // Son ocho enteros y nada mas: ni credenciales, ni ids, ni nombres de
-        // usuario, ni nada que venga de Roblox. Van en la respuesta y no solo
-        // en el log porque quien depura esto esta delante de Studio y no tiene
-        // acceso a los logs del servidor: sin ellos, un found:0 es
-        // indistinguible de "el grupo esta vacio", "Roblox no responde" y "el
-        // rango de precio no lo cumple nadie", y cada uno se arregla distinto.
-        stats,
+        found: resultado.outfits.length,
+        outfits: resultado.outfits,
+        stats: resultado.stats,
+        // Aditivo: el mismo bloque de progreso que devuelve el GET, para que el
+        // plugin pueda pintar el resumen final sin conocer dos formas distintas.
+        progress: resultado.progress,
+        searchId: trabajo.searchId,
     });
 });
+
+// GET /plugin/outfits/search/:searchId
+//
+//   200 { searchId, status, requested, found, progress, pollAfterMs, outfits[], stats }
+//   404 search_not_found — id desconocido, o el trabajo ya caduco
+//
+// El plugin consulta cada `pollAfterMs` (lo dice el servidor, para que el
+// cliente no tenga que elegirlo ni equivocarse). Mientras `status` sea `queued`
+// o `running`, `progress` trae encontrados, examinados y ETA; cuando pasa a
+// `completed` o `partial` llegan los outfits.
+//
+// UN ID DESCONOCIDO ES 404 Y NO UN ERROR RARO: tras un reinicio de Railway los
+// trabajos en vuelo se pierden (viven en memoria a proposito, ver jobs.js). El
+// plugin lanza otra busqueda y la comunidad continua donde iba, porque LA
+// ROTACION si esta en Postgres.
+router.get('/outfits/search/:searchId', async (req, res) => {
+    res.locals.routeLabel = 'GET /plugin/outfits/search/:searchId';
+
+    const searchId = parseSearchId(req.params.searchId);
+    // Busca primero en memoria y, si no esta, en Postgres: asi el GET funciona
+    // tras un redeploy y tambien cuando aterriza en otra replica.
+    const trabajo = await jobs.obtener(searchId);
+
+    if (!trabajo) {
+        throw new NotFoundError('search_not_found', 'Esa busqueda no existe o ya caduco');
+    }
+
+    return res.json(jobs.presentar(trabajo));
+});
+
+// Motor comun de los dos modos. NUNCA rechaza en modo asincrono: un fallo se
+// registra en el trabajo y el plugin lo ve como `failed`, en vez de convertirse
+// en una promesa rechazada sin dueño.
+async function arrancar(trabajo, peticion, { relanzar = false } = {}) {
+    jobs.marcarEnCurso(trabajo.searchId);
+
+    try {
+        const resultado = await pluginSearch.searchOutfits(peticion, {
+            requestId: trabajo.requestId,
+            onProgress: progreso => jobs.actualizarProgreso(trabajo.searchId, progreso),
+            onEncolado: posicion => jobs.marcarEnCola(trabajo.searchId, posicion),
+        });
+
+        jobs.terminar(trabajo.searchId, resultado);
+        return resultado;
+    } catch (err) {
+        jobs.fallar(trabajo.searchId, err);
+
+        // En sincrono el error sube al manejador central, que es el unico sitio
+        // donde un error se traduce a HTTP (404 de grupo inexistente, 503 de
+        // Roblox limitando, 429/503 de cola). En asincrono ya se respondio 202,
+        // asi que lo unico que queda es dejarlo registrado y que el GET lo
+        // cuente como `failed` con su codigo.
+        if (relanzar) throw err;
+
+        logger.warn('Busqueda asincrona del plugin fallida', {
+            requestId: trabajo.requestId,
+            searchId: trabajo.searchId,
+            code: err?.code ?? null,
+            detail: err?.message,
+        });
+        return null;
+    }
+}
 
 module.exports = router;

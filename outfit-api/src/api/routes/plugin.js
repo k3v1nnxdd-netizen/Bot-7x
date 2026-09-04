@@ -39,7 +39,9 @@ router.use(express.json({ limit: '1kb' }));
 //     minPrice  entero >= 0          opcional (default 0, "sin suelo")
 //     maxPrice  entero >= minPrice   opcional (default sin techo)
 //
-//   200 { success:true, requested, found, outfits:[{userId,username,totalPrice}] }
+//   200 { success:true, requested, found, outfits:[{userId,username,totalPrice}],
+//         stats:{candidatesExamined,accepted,rejectedAvatarError,rejectedEmptyAvatar,
+//                rejectedCatalogError,rejectedUnknownPrice,rejectedMinPrice,rejectedMaxPrice} }
 //   400 { error: { code:'invalid_request', message } }   cuerpo mal formado
 //   401 { error: { code:'unauthorized', ... } }          falta o falla x-plugin-key
 //   404 { error: { code:'group_not_found', ... } }       Roblox no conoce el grupo
@@ -83,13 +85,24 @@ router.post('/outfits/search', async (req, res) => {
     // central, que es el unico sitio donde un error se traduce a HTTP. Los
     // fallos BLANDOS (un usuario que no se puede consultar) no llegan hasta
     // aqui: el servicio los descarta y sigue con el siguiente candidato.
-    const outfits = await pluginSearch.searchOutfits(peticion, { requestId: req.requestId });
+    const { outfits, stats } = await pluginSearch.searchOutfits(peticion, { requestId: req.requestId });
 
     return res.json({
         success: true,
         requested: peticion.amount,
         found: outfits.length,
         outfits,
+
+        // ADITIVO: las cuatro claves de arriba no cambian ni de nombre ni de
+        // forma, asi que un plugin que no lea `stats` sigue funcionando igual.
+        //
+        // Son ocho enteros y nada mas: ni credenciales, ni ids, ni nombres de
+        // usuario, ni nada que venga de Roblox. Van en la respuesta y no solo
+        // en el log porque quien depura esto esta delante de Studio y no tiene
+        // acceso a los logs del servidor: sin ellos, un found:0 es
+        // indistinguible de "el grupo esta vacio", "Roblox no responde" y "el
+        // rango de precio no lo cumple nadie", y cada uno se arregla distinto.
+        stats,
     });
 });
 

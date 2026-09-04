@@ -601,6 +601,211 @@ module.exports = async function run() {
         assert.strictEqual(res.status, 200);
     });
 
+    // ── stats de diagnostico ─────────────────────────────────────────────────
+    //
+    // El valor de stats esta en que los numeros CUADREN: si un candidato se
+    // cuenta dos veces, o en la casilla equivocada, mandan a arreglar lo que no
+    // esta roto. Por eso casi todos estos casos comprueban dos cosas a la vez:
+    // que la casilla correcta subio, y que la invariante sigue en pie.
+
+    const CLAVES_STATS = [
+        'candidatesExamined', 'accepted', 'rejectedAvatarError', 'rejectedEmptyAvatar',
+        'rejectedCatalogError', 'rejectedUnknownPrice', 'rejectedMinPrice', 'rejectedMaxPrice',
+    ];
+
+    // candidatesExamined tiene que ser exactamente la suma del resto.
+    function comprobarInvariante(stats, contexto) {
+        const suma = stats.accepted + stats.rejectedAvatarError + stats.rejectedEmptyAvatar
+            + stats.rejectedCatalogError + stats.rejectedUnknownPrice
+            + stats.rejectedMinPrice + stats.rejectedMaxPrice;
+        assert.strictEqual(stats.candidatesExamined, suma,
+            `${contexto}: candidatesExamined=${stats.candidatesExamined} pero las casillas suman ${suma} ` +
+            `(${JSON.stringify(stats)})`);
+    }
+
+    test('stats viene en la respuesta con las ocho claves y nada mas', async () => {
+        poblar({ miembros: 10, precioDe: () => 100 });
+        const res = await buscar(port, cuerpo({ amount: 5 }));
+
+        assert.ok(res.body.stats, 'no vino el objeto stats');
+        assert.deepStrictEqual(Object.keys(res.body.stats).sort(), [...CLAVES_STATS].sort());
+        for (const clave of CLAVES_STATS) {
+            assert.strictEqual(typeof res.body.stats[clave], 'number', `${clave} no es un numero`);
+            assert.ok(Number.isInteger(res.body.stats[clave]), `${clave} no es entero`);
+            assert.ok(res.body.stats[clave] >= 0, `${clave} es negativo`);
+        }
+    });
+
+    test('stats es ADITIVO: el contrato anterior no se movio', async () => {
+        poblar({ miembros: 10, precioDe: () => 100 });
+        const res = await buscar(port, cuerpo({ amount: 3 }));
+
+        // Las cuatro claves de siempre, con los mismos tipos y significados.
+        assert.strictEqual(res.body.success, true);
+        assert.strictEqual(res.body.requested, 3);
+        assert.strictEqual(res.body.found, 3);
+        assert.ok(Array.isArray(res.body.outfits));
+        assert.deepStrictEqual(Object.keys(res.body.outfits[0]).sort(),
+            ['totalPrice', 'userId', 'username']);
+        // Y stats como quinta clave, sin tocar las anteriores.
+        assert.deepStrictEqual(Object.keys(res.body).sort(),
+            ['found', 'outfits', 'requested', 'stats', 'success']);
+    });
+
+    test('accepted coincide con found cuando la busqueda no se llena', async () => {
+        poblar({ miembros: 6, precioDe: () => 100 });
+        const res = await buscar(port, cuerpo({ amount: 50 }));
+        assert.strictEqual(res.body.found, 6);
+        assert.strictEqual(res.body.stats.accepted, 6);
+        assert.strictEqual(res.body.stats.candidatesExamined, 6);
+        comprobarInvariante(res.body.stats, 'todos aceptados');
+    });
+
+    test('rejectedAvatarError cuenta a los que no se pudieron consultar', async () => {
+        // Los pares fallan: 5 de 10.
+        poblar({ miembros: 10, precioDe: () => 100, avatarRoto: userId => userId % 2 === 0 });
+        const res = await buscar(port, cuerpo({ amount: 10 }));
+
+        assert.strictEqual(res.body.stats.rejectedAvatarError, 5);
+        assert.strictEqual(res.body.stats.accepted, 5);
+        assert.strictEqual(res.body.stats.rejectedUnknownPrice, 0, 'un fallo de avatar se conto como precio');
+        comprobarInvariante(res.body.stats, 'mitad con avatar roto');
+    });
+
+    test('rejectedEmptyAvatar se distingue de un error de avatar', async () => {
+        poblar({ miembros: 4, precioDe: () => 100 });
+        roblox.getCurrentAvatar = async () => ({ assets: [], playerAvatarType: 'R15' });
+
+        const res = await buscar(port, cuerpo({ amount: 4 }));
+        assert.strictEqual(res.body.stats.rejectedEmptyAvatar, 4);
+        assert.strictEqual(res.body.stats.rejectedAvatarError, 0, 'un avatar vacio se conto como error');
+        comprobarInvariante(res.body.stats, 'avatares vacios');
+
+        roblox.getCurrentAvatar = dobles.getCurrentAvatar;
+    });
+
+    test('rejectedCatalogError cuenta cuando Roblox no responde al catalogo', async () => {
+        poblar({ miembros: 5, catalogoRoto: true });
+        const res = await buscar(port, cuerpo({ amount: 5 }));
+
+        assert.strictEqual(res.body.stats.rejectedCatalogError, 5);
+        assert.strictEqual(res.body.stats.rejectedUnknownPrice, 0,
+            'un fallo de Roblox se conto como precio desconocido');
+        assert.strictEqual(res.body.stats.accepted, 0);
+        comprobarInvariante(res.body.stats, 'catalogo caido');
+    });
+
+    test('rejectedUnknownPrice cuenta a quien lleva algo sin precio fiable', async () => {
+        // Es el caso que de verdad se quiere diagnosticar: Roblox responde bien,
+        // pero el asset no tiene precio utilizable (limited / fuera de venta).
+        poblar({ miembros: 5 });
+        roblox.getCatalogItemDetails = async items => {
+            const mapa = new Map();
+            for (const item of items) {
+                mapa.set(roblox.catalogKey('Asset', item.id), {
+                    available: true, restrictions: ['Limited'], isLimited: true,
+                    price: null, lowestPrice: 15000,
+                });
+            }
+            return mapa;
+        };
+
+        const res = await buscar(port, cuerpo({ amount: 5, minPrice: 0 }));
+        assert.strictEqual(res.body.found, 0);
+        assert.strictEqual(res.body.stats.rejectedUnknownPrice, 5);
+        assert.strictEqual(res.body.stats.rejectedCatalogError, 0,
+            'un precio nulo se conto como fallo de Roblox');
+        assert.strictEqual(res.body.stats.rejectedMinPrice, 0,
+            'un precio nulo se conto como fuera de rango');
+        comprobarInvariante(res.body.stats, 'todo limiteds');
+
+        roblox.getCatalogItemDetails = dobles.getCatalogItemDetails;
+    });
+
+    test('rejectedMinPrice y rejectedMaxPrice cuentan cada lado por separado', async () => {
+        // Precios 0, 100, 200 ... 900.
+        poblar({ miembros: 10, precioDe: userId => (userId - 1000) * 100 });
+        const res = await buscar(port, cuerpo({ amount: 10, minPrice: 300, maxPrice: 600 }));
+
+        // Por debajo: 0, 100, 200 -> 3.  Dentro: 300..600 -> 4.  Por encima: 700, 800, 900 -> 3.
+        assert.strictEqual(res.body.stats.rejectedMinPrice, 3);
+        assert.strictEqual(res.body.stats.rejectedMaxPrice, 3);
+        assert.strictEqual(res.body.stats.accepted, 4);
+        assert.strictEqual(res.body.found, 4);
+        comprobarInvariante(res.body.stats, 'rango por los dos lados');
+    });
+
+    test('cada candidato se cuenta UNA sola vez, con causas mezcladas', async () => {
+        // Mundo variado a proposito: unos fallan el avatar, otros no tienen
+        // precio, otros se salen del rango y otros entran. Es el caso que
+        // pillaria un candidato contado dos veces.
+        poblar({
+            miembros: 12,
+            avatarRoto: userId => userId % 4 === 0,          // 3 de 12
+            precioDe: userId => (userId - 1000) * 100,
+        });
+        roblox.getCatalogItemDetails = async items => {
+            const mapa = new Map();
+            for (const item of items) {
+                const userId = Number(item.id) / 10;
+                const sinPrecio = userId % 4 === 1;          // otro grupo distinto
+                mapa.set(roblox.catalogKey('Asset', item.id), {
+                    available: true, restrictions: [], isLimited: sinPrecio,
+                    price: sinPrecio ? null : (userId - 1000) * 100,
+                });
+            }
+            return mapa;
+        };
+
+        const res = await buscar(port, cuerpo({ amount: 12, minPrice: 300, maxPrice: 800 }));
+        const stats = res.body.stats;
+
+        comprobarInvariante(stats, 'causas mezcladas');
+        assert.strictEqual(stats.candidatesExamined, 12, 'no se examinaron los 12 del grupo');
+        assert.strictEqual(stats.rejectedAvatarError, 3);
+        assert.strictEqual(stats.accepted, res.body.found);
+
+        roblox.getCatalogItemDetails = dobles.getCatalogItemDetails;
+    });
+
+    test('la invariante aguanta cuando la busqueda se llena antes de tiempo', async () => {
+        // Se para en cuanto tiene 3, a mitad de una tanda de 4.
+        poblar({ miembros: 200, precioDe: () => 100 });
+        const res = await buscar(port, cuerpo({ amount: 3 }));
+
+        assert.strictEqual(res.body.found, 3);
+        comprobarInvariante(res.body.stats, 'parada temprana');
+        // accepted puede pasarse de amount por lo que quede de la ultima tanda,
+        // pero nunca por mas que el tamaño de una tanda.
+        assert.ok(res.body.stats.accepted >= res.body.found, 'accepted por debajo de found');
+        assert.ok(res.body.stats.accepted <= res.body.found + config.pluginSearch.concurrency,
+            `accepted (${res.body.stats.accepted}) se paso de la ultima tanda`);
+    });
+
+    test('un grupo vacio da stats a cero, no un error', async () => {
+        poblar({ miembros: 0 });
+        const res = await buscar(port, cuerpo({ amount: 10 }));
+
+        assert.strictEqual(res.status, 200);
+        assert.strictEqual(res.body.found, 0);
+        assert.strictEqual(res.body.stats.candidatesExamined, 0);
+        comprobarInvariante(res.body.stats, 'grupo vacio');
+    });
+
+    test('stats no lleva credenciales ni datos de usuario', async () => {
+        poblar({ miembros: 5, precioDe: () => 100 });
+        const res = await buscar(port, cuerpo({ amount: 2 }));
+
+        const serializado = JSON.stringify(res.body.stats);
+        assert.ok(!serializado.includes(CLAVE_PLUGIN), 'la credencial se filtro en stats');
+        assert.ok(!serializado.includes(config.apiKey), 'la key del juego se filtro en stats');
+        assert.ok(!serializado.includes(config.adminApiKey), 'la key de admin se filtro en stats');
+        // Solo enteros: ni ids, ni nombres, ni nada que venga de Roblox.
+        for (const valor of Object.values(res.body.stats)) {
+            assert.strictEqual(typeof valor, 'number');
+        }
+    });
+
     // ── Credencial exclusiva del plugin ──────────────────────────────────────
     //
     // Lo que se protege aqui no es solo "hay 401 si falta la clave", sino el

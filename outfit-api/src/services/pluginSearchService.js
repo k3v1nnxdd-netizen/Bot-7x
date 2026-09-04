@@ -161,10 +161,21 @@ function precioDelAvatar(assetIds, fichas) {
     return total;
 }
 
-// Un candidato entero: avatar -> precio. Devuelve null cuando hay que
-// DESCARTARLO, que es la respuesta normal y no un error: un usuario baneado,
-// sin avatar consultable o con el catalogo caido no puede evaluarse, y la
-// busqueda tiene que seguir con el siguiente.
+// Un candidato entero: avatar -> precio.
+//
+// Devuelve SIEMPRE un veredicto con motivo, nunca null a secas:
+//   { ok: true,  candidato }
+//   { ok: false, motivo: 'avatarError' | 'emptyAvatar' | 'catalogError' | 'unknownPrice' }
+//
+// El motivo es lo que alimenta el bloque `stats` de la respuesta. Antes de
+// existir, un found:0 era indistinguible de un grupo vacio, de Roblox caido o
+// de un rango de precio imposible — y las tres cosas se arreglan de forma
+// distinta. Descartar candidatos es la operacion NORMAL de esta busqueda, no
+// un error, asi que merece contabilidad propia en vez de solo un log.
+//
+// Los dos `await` van cada uno en su try: asi esta funcion no puede rechazar
+// y todo candidato sale con motivo. Es lo que sostiene la invariante de
+// `stats` (examinados = aceptados + rechazados, sin huecos).
 async function evaluarCandidato(miembro, marcas) {
     let avatar;
     try {
@@ -181,18 +192,31 @@ async function evaluarCandidato(miembro, marcas) {
         logger.debug('Candidato descartado: no se pudo leer su avatar', {
             userId: miembro.userId, detail: err?.message,
         });
-        return null;
+        return { ok: false, motivo: 'avatarError' };
     }
 
     const assetIds = [...new Set(avatar.assets.map(a => String(a.id)))];
-    if (assetIds.length === 0) return null; // avatar vacio: no hay outfit que importar
+    // Avatar vacio: no hay outfit que importar. Se separa de avatarError
+    // porque no es un fallo — Roblox respondio perfectamente.
+    if (assetIds.length === 0) return { ok: false, motivo: 'emptyAvatar' };
 
     // Reutiliza el resolutor de /v1/catalog/batch: misma cache por asset
     // (v1:asset:catalog:<id>), mismo single-flight y mismo bucket del
     // limitador. Un sombrero que ya resolvio otro candidato, o un juego con
     // licencia, sale de cache y no cuesta ni una llamada.
     const fallos = { assetIds: [] };
-    const fichas = await resolverFichasDeAsset(assetIds, fallos);
+    let fichas;
+    try {
+        fichas = await resolverFichasDeAsset(assetIds, fallos);
+    } catch (err) {
+        // resolverFichasDeAsset documenta que no lanza (reporta en `fallos`),
+        // pero si algun dia lo hiciera, un candidato sin veredicto romperia la
+        // contabilidad de stats. Aqui se le pone motivo y se sigue.
+        logger.debug('Candidato descartado: fallo inesperado resolviendo su catalogo', {
+            userId: miembro.userId, detail: err?.message,
+        });
+        return { ok: false, motivo: 'catalogError' };
+    }
 
     // CUALQUIER hueco descalifica al candidato, no solo que fallen todos: un
     // solo asset sin precio fiable ya hace que el total no se pueda afirmar.
@@ -202,7 +226,7 @@ async function evaluarCandidato(miembro, marcas) {
         logger.debug('Candidato descartado: no se pudo consultar el precio de parte de su avatar', {
             userId: miembro.userId, assets: assetIds.length, sinResolver: fallos.assetIds.length,
         });
-        return null;
+        return { ok: false, motivo: 'catalogError' };
     }
 
     const totalPrice = precioDelAvatar(assetIds, fichas);
@@ -210,21 +234,92 @@ async function evaluarCandidato(miembro, marcas) {
         logger.debug('Candidato descartado: algun asset de su avatar no tiene precio fiable', {
             userId: miembro.userId, assets: assetIds.length,
         });
-        return null;
+        return { ok: false, motivo: 'unknownPrice' };
     }
 
     return {
-        userId: miembro.userId,
-        username: miembro.username,
-        totalPrice,
+        ok: true,
+        candidato: {
+            userId: miembro.userId,
+            username: miembro.username,
+            totalPrice,
+        },
     };
 }
 
 // ── Busqueda ────────────────────────────────────────────────────────────────
 
+// Contadores de diagnostico que viajan en la respuesta como `stats`.
+//
+// LA REGLA: cada candidato examinado cae en UNA sola casilla. La invariante
+// que lo garantiza, y que hay un test comprobando, es
+//
+//   candidatesExamined === accepted + todos los rejected*
+//
+// Sin ella los numeros no sirven para diagnosticar: un candidato contado dos
+// veces, o ninguna, manda a buscar el problema donde no esta. Por eso
+// `candidatesExamined` NO se lleva aparte sino que se calcula sumando las
+// casillas: no puede desviarse de ellas ni por un bug futuro.
+//
+// NO LLEVA NI UN DATO SENSIBLE: son ocho enteros. Ni la credencial del plugin,
+// ni ids de usuario, ni nombres, ni nada de lo que Roblox devolvio.
+function nuevasStats() {
+    return {
+        accepted: 0,
+        rejectedAvatarError: 0,
+        rejectedEmptyAvatar: 0,
+        rejectedCatalogError: 0,
+        rejectedUnknownPrice: 0,
+        rejectedMinPrice: 0,
+        rejectedMaxPrice: 0,
+    };
+}
+
+// Motivo interno -> casilla. Un motivo desconocido seria un bug silencioso que
+// descuadraria la invariante, asi que se hace ruido en vez de ignorarlo.
+const CASILLA_POR_MOTIVO = {
+    avatarError: 'rejectedAvatarError',
+    emptyAvatar: 'rejectedEmptyAvatar',
+    catalogError: 'rejectedCatalogError',
+    unknownPrice: 'rejectedUnknownPrice',
+    minPrice: 'rejectedMinPrice',
+    maxPrice: 'rejectedMaxPrice',
+};
+
+function anotar(stats, motivo) {
+    const casilla = CASILLA_POR_MOTIVO[motivo];
+    if (!casilla) {
+        logger.warn('Motivo de descarte desconocido en la busqueda del plugin', { motivo });
+        return;
+    }
+    stats[casilla]++;
+}
+
+// La forma publica, con las claves en el orden en que se leen al diagnosticar:
+// cuantos se miraron, cuantos entraron, y por que se cayo el resto.
+function publicar(stats) {
+    const rechazados = stats.rejectedAvatarError + stats.rejectedEmptyAvatar
+        + stats.rejectedCatalogError + stats.rejectedUnknownPrice
+        + stats.rejectedMinPrice + stats.rejectedMaxPrice;
+
+    return {
+        candidatesExamined: stats.accepted + rechazados,
+        accepted: stats.accepted,
+        rejectedAvatarError: stats.rejectedAvatarError,
+        rejectedEmptyAvatar: stats.rejectedEmptyAvatar,
+        rejectedCatalogError: stats.rejectedCatalogError,
+        rejectedUnknownPrice: stats.rejectedUnknownPrice,
+        rejectedMinPrice: stats.rejectedMinPrice,
+        rejectedMaxPrice: stats.rejectedMaxPrice,
+    };
+}
+
+// Devuelve { outfits, stats }. La forma de la respuesta HTTP la arma la ruta;
+// aqui solo se entrega el resultado y su contabilidad.
 async function searchOutfits({ amount, groupId, minPrice, maxPrice }, { requestId = null } = {}) {
     const empezado = Date.now();
     const marcas = { hits: 0, misses: 0, negativos: 0 };
+    const stats = nuevasStats();
     const { timeBudgetMs, concurrency } = config.pluginSearch;
     const cupo = cuposDeCandidatos(amount);
 
@@ -232,7 +327,7 @@ async function searchOutfits({ amount, groupId, minPrice, maxPrice }, { requestI
 
     const encontrados = [];
     const yaIncluidos = new Set(); // ningun userId repetido en la respuesta
-    let examinados = 0;
+    let intentados = 0;            // control del bucle; la cuenta buena es la de stats
     let motivoDeParada = 'candidatos_agotados';
 
     // Por tandas de `concurrency`: mantiene varias llamadas en vuelo sin
@@ -241,36 +336,62 @@ async function searchOutfits({ amount, groupId, minPrice, maxPrice }, { requestI
     // rechazos (503) en lugar de espera ordenada.
     for (let i = 0; i < candidatos.length; i += concurrency) {
         if (encontrados.length >= amount) { motivoDeParada = 'completo'; break; }
-        if (examinados >= cupo) { motivoDeParada = 'tope_de_candidatos'; break; }
+        if (intentados >= cupo) { motivoDeParada = 'tope_de_candidatos'; break; }
         if (Date.now() - empezado >= timeBudgetMs) { motivoDeParada = 'tiempo_agotado'; break; }
 
-        const tanda = candidatos.slice(i, i + concurrency);
-        examinados += tanda.length;
+        // El bombo ya viene sin duplicados de recogerCandidatos, pero si
+        // alguno se colara se descarta AQUI, antes de gastar una llamada en el
+        // y antes de contarlo: asi no puede aparecer dos veces en la respuesta
+        // ni desviar la invariante de stats.
+        const tanda = candidatos.slice(i, i + concurrency).filter(m => !yaIncluidos.has(m.userId));
+        if (tanda.length === 0) continue;
+        intentados += tanda.length;
 
         // allSettled y no all: un candidato que falle no puede tumbar a los
-        // otros tres de su tanda. evaluarCandidato ya devuelve null en vez de
-        // lanzar en el caso normal; esto cubre lo imprevisto.
+        // otros tres de su tanda. evaluarCandidato ya devuelve un veredicto con
+        // motivo en vez de lanzar; esto cubre lo imprevisto.
         const resultados = await Promise.allSettled(tanda.map(m => evaluarCandidato(m, marcas)));
 
         for (const resultado of resultados) {
-            if (resultado.status !== 'fulfilled' || resultado.value === null) continue;
-            const candidato = resultado.value;
+            if (resultado.status !== 'fulfilled') {
+                // No deberia ocurrir nunca (evaluarCandidato no rechaza). No se
+                // anota en ninguna casilla a proposito: inventarle un motivo
+                // ensuciaria el diagnostico justo cuando mas se necesita. Queda
+                // en el log, y la invariante de stats se mantiene intacta.
+                logger.warn('Candidato sin veredicto en la busqueda del plugin', {
+                    requestId, detail: resultado.reason?.message,
+                });
+                continue;
+            }
 
-            if (yaIncluidos.has(candidato.userId)) continue;
-            if (candidato.totalPrice < minPrice) continue;
-            if (maxPrice !== null && candidato.totalPrice > maxPrice) continue;
+            const veredicto = resultado.value;
+            if (!veredicto.ok) {
+                anotar(stats, veredicto.motivo);
+                continue;
+            }
 
+            // El filtro de precio es la ULTIMA puerta, y cada lado tiene su
+            // casilla: "se cayeron 55 por minPrice" y "se cayeron 55 porque no
+            // se les pudo poner precio" piden arreglos opuestos.
+            const candidato = veredicto.candidato;
+            if (candidato.totalPrice < minPrice) { anotar(stats, 'minPrice'); continue; }
+            if (maxPrice !== null && candidato.totalPrice > maxPrice) { anotar(stats, 'maxPrice'); continue; }
+
+            stats.accepted++;
             yaIncluidos.add(candidato.userId);
             encontrados.push(candidato);
-            if (encontrados.length >= amount) break;
         }
     }
 
     if (encontrados.length >= amount) motivoDeParada = 'completo';
 
+    const publicas = publicar(stats);
+
     // Una sola linea por busqueda, con lo que hace falta para entender por que
     // volvieron 12 y no 100: es la diferencia entre "el grupo es pequeño", "el
     // rango de precio es imposible" y "Roblox iba lento y se agoto el tiempo".
+    // Lleva las mismas casillas que la respuesta, para poder diagnosticar desde
+    // el log sin depender de que alguien pegue lo que le devolvio el plugin.
     logger.info('Busqueda de outfits del plugin', {
         requestId,
         groupId,
@@ -278,19 +399,24 @@ async function searchOutfits({ amount, groupId, minPrice, maxPrice }, { requestI
         minPrice,
         maxPrice,
         encontrados: encontrados.length,
-        examinados,
         candidatos: candidatos.length,
         paginasDeMiembros: paginas,
         sortOrder,
         motivoDeParada,
         cacheHits: marcas.hits,
         cacheMisses: marcas.misses,
+        ...publicas,
         durationMs: Date.now() - empezado,
     });
 
-    // slice defensivo: la ultima tanda puede meter varios a la vez y pasarse
-    // de `amount` por uno o dos.
-    return encontrados.slice(0, amount);
+    return {
+        // slice defensivo: la ultima tanda puede aceptar varios a la vez y
+        // pasarse de `amount` por uno o dos. Por eso `accepted` puede superar
+        // a `found` en un par de unidades: cuenta a los que pasaron TODOS los
+        // filtros, y found es lo que cabe en lo pedido.
+        outfits: encontrados.slice(0, amount),
+        stats: publicas,
+    };
 }
 
 module.exports = { searchOutfits, precioDelAvatar, barajar, cuposDeCandidatos };

@@ -2,6 +2,7 @@
 
 const config = require('../config');
 const logger = require('../observability/logger');
+const requestContext = require('../observability/requestContext');
 const { descubrirCandidatos } = require('./pluginSearch/memberPool');
 const { traerOla } = require('./pluginSearch/avatarWave');
 const { crearIndiceDeCatalogo } = require('./pluginSearch/catalogIndex');
@@ -75,7 +76,20 @@ function motivoParaParar({ encontrados, amount, examinados, cupo, empezado, indi
 }
 
 // Devuelve { outfits, stats }. La forma de la respuesta HTTP la arma la ruta.
-async function searchOutfits({ amount, groupId, minPrice, maxPrice }, { requestId = null } = {}) {
+//
+// Todo el cuerpo corre dentro de un contexto de correlacion (ver
+// observability/requestContext.js) para que las lineas que emite el limitador
+// cuando Roblox nos frena lleven el requestId de ESTA busqueda. Sin eso, un 429
+// en el log de Railway no se puede cruzar con la busqueda que lo provoco, que
+// es justo lo que hace falta para saber que endpoint esta limitando.
+function searchOutfits(peticion, opciones = {}) {
+    return requestContext.ejecutarCon(
+        { requestId: opciones.requestId ?? null },
+        () => ejecutarBusqueda(peticion, opciones)
+    );
+}
+
+async function ejecutarBusqueda({ amount, groupId, minPrice, maxPrice }, { requestId = null } = {}) {
     const empezado = Date.now();
     const stats = crearStats();
     const cupo = cuposDeCandidatos(amount);
@@ -157,7 +171,6 @@ async function searchOutfits({ amount, groupId, minPrice, maxPrice }, { requestI
         minPrice,
         maxPrice,
         found: encontrados.length,
-        memberPages: stats.contadores.memberPagesFetched,
         sortOrder,
         ...publicas,
     });

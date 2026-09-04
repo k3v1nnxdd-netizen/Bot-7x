@@ -5,6 +5,7 @@ const cacheStore = require('../cache/cacheStore');
 const singleFlight = require('../cache/singleFlight');
 const config = require('../config');
 const logger = require('../observability/logger');
+const requestContext = require('../observability/requestContext');
 const { describeAssetType, isBundleBacked, isBodyPart } = require('../catalog/assetTypes');
 const { specialBundleForAsset, specialLabel } = require('../catalog/specialBundles');
 
@@ -121,6 +122,10 @@ async function resolverFichasDeAsset(assetIds, fallos) {
     } catch (err) {
         fallos.assetIds.push(...faltantes);
         logger.warn('No se pudo resolver la ficha de catalogo de un lote', {
+            // null cuando quien llama no abrio contexto de correlacion (el
+            // camino de /v1/catalog/batch); util cuando si lo abrio (la
+            // busqueda del plugin), que es donde hace falta cruzarlo.
+            requestId: requestContext.requestId(),
             assets: faltantes.length, detail: err?.message,
         });
     }

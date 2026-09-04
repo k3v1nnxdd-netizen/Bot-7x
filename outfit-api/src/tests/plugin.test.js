@@ -8,6 +8,7 @@ const roblox = require('../roblox/client');
 const cache = require('../cache/cacheStore');
 const config = require('../config');
 const robloxRateLimiter = require('../roblox/rateLimiter');
+const logger = require('../observability/logger');
 
 // Tests de POST /plugin/outfits/search por HTTP real, SIN red: las tres
 // llamadas a Roblox que compone la busqueda (miembros del grupo, avatar de
@@ -1030,7 +1031,8 @@ module.exports = async function run() {
     // Contadores enteros de stats. Los dos campos de parada (stoppedBy,
     // stoppedByCatalogRateLimit) van aparte porque no son numeros.
     const CONTADORES_STATS = [
-        'candidatesDiscovered', 'candidatesExamined', 'avatarsFetched',
+        'candidatesDiscovered', 'candidatesExamined', 'memberPagesFetched',
+        'avatarRequests', 'avatarsFetched',
         'assetIdsSeen', 'assetIdsUnique', 'assetIdsRequested', 'catalogBatches',
         'cacheHits', 'cacheMisses',
         'accepted', 'rejectedAvatarError', 'rejectedEmptyAvatar',
@@ -1247,6 +1249,267 @@ module.exports = async function run() {
                 assert.strictEqual(typeof valor, 'number', `${clave} no es numero`);
             }
         }
+    });
+
+    // ── Diagnostico de limitacion en el log ──────────────────────────────────
+    //
+    // Estos casos existen por un incidente concreto: en produccion se veian
+    // 429 y "ruta en cooldown preventivo" sin poder saber QUE endpoint de
+    // Roblox estaba limitando ni a que busqueda pertenecia. Lo que se prueba
+    // aqui es que esa pregunta ya se puede responder con el log delante.
+    //
+    // El nivel de log del runner es 'error', asi que las lineas warn no se
+    // emiten. Se espia `logger.warn` directamente, que ademas es lo que
+    // interesa: se comprueban los CAMPOS estructurados, no el texto formateado.
+    function espiarLogger() {
+        const original = { warn: logger.warn, info: logger.info };
+        const lineas = [];
+        logger.warn = (msg, fields) => lineas.push({ nivel: 'warn', msg, fields: fields ?? {} });
+        logger.info = (msg, fields) => lineas.push({ nivel: 'info', msg, fields: fields ?? {} });
+        return {
+            lineas,
+            buscar: msg => lineas.find(l => l.msg === msg),
+            todas: msg => lineas.filter(l => l.msg === msg),
+            restaurar: () => { logger.warn = original.warn; logger.info = original.info; },
+        };
+    }
+
+    // Catalogo que responde 429 con las tres cabeceras de cuota, pasando por el
+    // limitador REAL para que el diagnostico se construya como en produccion.
+    function catalogoQueDevuelve429(cabeceras) {
+        const base = roblox.getCatalogItemDetails;
+        roblox.getCatalogItemDetails = async () => robloxRateLimiter.run('catalogDetails', async () => {
+            const err = new Error('Request failed with status code 429');
+            err.response = { status: 429, headers: cabeceras, data: {} };
+            err.config = { url: 'https://catalog.roblox.com/v1/catalog/items/details?limit=100' };
+            throw err;
+        }, { endpoint: 'catalog.roblox.com/v1/catalog/items/details' });
+        return () => { roblox.getCatalogItemDetails = base; };
+    }
+
+    const CABECERAS_429 = {
+        'retry-after': '17',
+        'x-ratelimit-limit': '100',
+        'x-ratelimit-remaining': '0',
+        'x-ratelimit-reset': '17',
+    };
+
+    test('un 429 deja en el log el endpoint, el status y las tres cabeceras de cuota', async () => {
+        poblar({ miembros: 40, precioDe: () => 500 });
+        const restaurar = catalogoQueDevuelve429(CABECERAS_429);
+        const espia = espiarLogger();
+
+        try {
+            await buscar(port, cuerpo({ amount: 10 }));
+
+            const linea = espia.buscar('Roblox respondio 429');
+            assert.ok(linea, 'no se registro ninguna linea de 429');
+
+            const f = linea.fields;
+            assert.strictEqual(f.routeKey, 'catalogDetails');
+            assert.strictEqual(f.endpoint, 'catalog.roblox.com/v1/catalog/items/details');
+            assert.strictEqual(f.status, 429);
+            assert.strictEqual(f.retryAfter, '17');
+            assert.strictEqual(f.rateLimitLimit, '100');
+            assert.strictEqual(f.rateLimitRemaining, '0');
+            assert.strictEqual(f.rateLimitReset, '17');
+            assert.ok(f.cooldownRemainingMs > 0, 'no se reporto el cooldown restante');
+            assert.strictEqual(f.circuitState, 'closed');
+            assert.strictEqual(typeof f.consecutiveFailures, 'number');
+        } finally {
+            espia.restaurar();
+            restaurar();
+            robloxRateLimiter.reset();
+        }
+    });
+
+    test('el 429 se puede cruzar con la busqueda por requestId', async () => {
+        poblar({ miembros: 40, precioDe: () => 500 });
+        const restaurar = catalogoQueDevuelve429(CABECERAS_429);
+        const espia = espiarLogger();
+
+        try {
+            const res = await buscar(port, cuerpo({ amount: 10 }));
+            const requestId = res.headers['x-request-id'];
+            assert.ok(requestId, 'la respuesta no trajo X-Request-Id');
+
+            // El limitador es generico y no recibe el requestId por parametro:
+            // lo lee del contexto de correlacion que abre la busqueda. Sin esta
+            // pieza, un 429 en Railway no se puede atribuir a ninguna busqueda.
+            const linea = espia.buscar('Roblox respondio 429');
+            assert.strictEqual(linea.fields.requestId, requestId,
+                'el 429 no lleva el requestId de la busqueda que lo provoco');
+
+            // Y las lineas de parada de la busqueda llevan el mismo id, para
+            // poder seguir la historia entera con un solo filtro.
+            const parada = espia.lineas.find(l => l.msg.startsWith('Busqueda del plugin detenida'));
+            assert.ok(parada, 'no se registro la parada de la busqueda');
+            assert.strictEqual(parada.fields.requestId, requestId);
+        } finally {
+            espia.restaurar();
+            restaurar();
+            robloxRateLimiter.reset();
+        }
+    });
+
+    test('el diagnostico del 429 no filtra credenciales ni cabeceras completas', async () => {
+        poblar({ miembros: 40, precioDe: () => 500 });
+        // Cabeceras con basura sensible dentro, para comprobar que solo se leen
+        // los campos elegidos uno a uno y no se vuelca el objeto entero.
+        const restaurar = catalogoQueDevuelve429({
+            ...CABECERAS_429,
+            'set-cookie': 'ROBLOSECURITY=secreto-que-no-debe-salir',
+            authorization: 'Bearer token-que-no-debe-salir',
+        });
+        const espia = espiarLogger();
+
+        try {
+            await buscar(port, cuerpo({ amount: 10 }));
+
+            const serializado = JSON.stringify(espia.lineas);
+            assert.ok(!serializado.includes('ROBLOSECURITY'), 'se filtro una cookie de Roblox al log');
+            assert.ok(!serializado.includes('token-que-no-debe-salir'), 'se filtro un Authorization al log');
+            assert.ok(!serializado.includes(CLAVE_PLUGIN), 'se filtro la clave del plugin al log');
+            assert.ok(!serializado.includes(config.apiKey), 'se filtro la key del juego al log');
+            assert.ok(!serializado.includes(config.adminApiKey), 'se filtro la key de admin al log');
+        } finally {
+            espia.restaurar();
+            restaurar();
+            robloxRateLimiter.reset();
+        }
+    });
+
+    test('la URL del endpoint se normaliza: sin query y sin ids de usuario', async () => {
+        const plantilla = robloxRateLimiter.__plantillaDeUrl;
+
+        // Sin esto, cien lineas de /users/123/avatar no se pueden agregar por
+        // endpoint — y ademas el userId acabaria en el log sin motivo.
+        assert.strictEqual(
+            plantilla('https://avatar.roblox.com/v1/users/3156911153/avatar'),
+            'https://avatar.roblox.com/v1/users/{id}/avatar');
+        assert.strictEqual(
+            plantilla('https://groups.roblox.com/v1/groups/59218460/users?limit=100&cursor=abc'),
+            'https://groups.roblox.com/v1/groups/{id}/users');
+        assert.strictEqual(plantilla(null), null);
+        assert.strictEqual(plantilla(''), null);
+    });
+
+    test('el diagnostico se construye igual sin contexto de correlacion', async () => {
+        // Las rutas del juego no abren contexto: el requestId sale null y no
+        // pasa nada. Perder un campo de log jamas puede romper una peticion.
+        const bucket = robloxRateLimiter.__buckets.catalogDetails;
+        const d = robloxRateLimiter.__diagnostico(bucket, {
+            endpoint: 'catalog.roblox.com/v1/catalog/items/details',
+            status: 429,
+            headers: { 'retry-after': '5' },
+        });
+
+        assert.strictEqual(d.requestId, null);
+        assert.strictEqual(d.rateLimitLimit, null);
+        assert.strictEqual(d.rateLimitRemaining, null);
+        assert.strictEqual(d.rateLimitReset, null);
+        assert.strictEqual(d.retryAfter, '5');
+        assert.strictEqual(d.routeKey, 'catalogDetails');
+    });
+
+    test('una ruta frenada registra UNA linea por ventana de cooldown, no una por peticion', async () => {
+        // Bajo carga, una ruta en cooldown rechaza cientos de peticiones. Si
+        // cada una dejara una linea, el log quedaria inservible justo cuando
+        // mas falta hace leerlo.
+        const espia = espiarLogger();
+        const bucket = robloxRateLimiter.__buckets.catalogDetails;
+        bucket.cooldownUntil = Date.now() + 30_000;
+
+        try {
+            for (let i = 0; i < 5; i++) {
+                await robloxRateLimiter.run('catalogDetails', async () => ({ data: {} }), {
+                    endpoint: 'catalog.roblox.com/v1/catalog/items/details',
+                }).catch(() => { /* se espera el rechazo por cooldown */ });
+            }
+
+            const lineas = espia.todas('Peticion rechazada: la ruta esta en cooldown impuesto por Roblox');
+            assert.strictEqual(lineas.length, 1,
+                `se registraron ${lineas.length} lineas para 5 peticiones rechazadas en la misma ventana`);
+            assert.strictEqual(lineas[0].fields.routeKey, 'catalogDetails');
+            assert.strictEqual(lineas[0].fields.endpoint, 'catalog.roblox.com/v1/catalog/items/details');
+            assert.ok(lineas[0].fields.cooldownRemainingMs > 0);
+        } finally {
+            espia.restaurar();
+            robloxRateLimiter.reset();
+        }
+    });
+
+    test('el cooldown preventivo por cabeceras tambien dice que endpoint fue', async () => {
+        // Roblox avisa con x-ratelimit-remaining: 0 ANTES de devolver un 429.
+        // Esa linea es la que aparecia en Railway sin decir de que endpoint era.
+        const espia = espiarLogger();
+        const base = roblox.getCatalogItemDetails;
+        poblar({ miembros: 40, precioDe: () => 500 });
+
+        roblox.getCatalogItemDetails = async items => robloxRateLimiter.run('catalogDetails', async () => ({
+            status: 200,
+            headers: { 'x-ratelimit-remaining': '0', 'retry-after': '12', 'x-ratelimit-limit': '100' },
+            config: { url: 'https://catalog.roblox.com/v1/catalog/items/details' },
+            data: { data: items.map(i => ({ itemType: 'Asset', id: Number(i.id), price: 500, isOffSale: false, itemRestrictions: [] })) },
+        }), { endpoint: 'catalog.roblox.com/v1/catalog/items/details' });
+
+        try {
+            await buscar(port, cuerpo({ amount: 10, minPrice: 500, maxPrice: 500 }));
+
+            const linea = espia.buscar('Cuota de Roblox agotada segun cabeceras, ruta en cooldown preventivo');
+            assert.ok(linea, 'no se registro el cooldown preventivo');
+            assert.strictEqual(linea.fields.routeKey, 'catalogDetails');
+            assert.strictEqual(linea.fields.endpoint, 'catalog.roblox.com/v1/catalog/items/details');
+            assert.strictEqual(linea.fields.rateLimitRemaining, '0');
+            assert.strictEqual(linea.fields.retryAfter, '12');
+            assert.ok(linea.fields.cooldownRemainingMs > 0);
+        } finally {
+            espia.restaurar();
+            roblox.getCatalogItemDetails = base;
+            robloxRateLimiter.reset();
+        }
+    });
+
+    test('el resumen final de la busqueda lleva todos los campos de diagnostico', async () => {
+        const espia = espiarLogger();
+        poblar({ miembros: 30, precioDe: () => 100 });
+
+        try {
+            await buscar(port, cuerpo({ amount: 5 }));
+
+            const linea = espia.buscar('Busqueda de outfits del plugin');
+            assert.ok(linea, 'no se registro el resumen de la busqueda');
+
+            // Exactamente lo que hay que poder leer de un vistazo en Railway
+            // para saber por que una busqueda dio lo que dio.
+            const OBLIGATORIOS = [
+                'candidatesExamined', 'accepted',
+                'rejectedAvatarError', 'rejectedEmptyAvatar', 'rejectedCatalogError',
+                'rejectedUnknownPrice', 'rejectedMinPrice', 'rejectedMaxPrice',
+                'stoppedBy', 'stoppedByCatalogRateLimit',
+                'avatarRequests', 'catalogBatches', 'memberPagesFetched',
+                'requestId', 'groupId',
+            ];
+            for (const campo of OBLIGATORIOS) {
+                assert.ok(campo in linea.fields, `al resumen le falta el campo ${campo}`);
+            }
+            assert.strictEqual(linea.fields.avatarRequests, 5 * config.pluginSearch.candidatesPerResult);
+            assert.strictEqual(linea.fields.memberPagesFetched, 1);
+            assert.ok(linea.fields.catalogBatches >= 1);
+        } finally {
+            espia.restaurar();
+        }
+    });
+
+    test('avatarRequests cuenta los intentos y avatarsFetched solo los que sirvieron', async () => {
+        // La diferencia entre los dos son las cuentas baneadas o borradas, que
+        // es justo lo que hay que saber para interpretar un rejectedAvatarError.
+        poblar({ miembros: 20, precioDe: () => 100, avatarRoto: userId => userId % 2 === 0 });
+        const res = await buscar(port, cuerpo({ amount: 20 }));
+
+        assert.strictEqual(res.body.stats.avatarRequests, 20);
+        assert.strictEqual(res.body.stats.avatarsFetched, 10);
+        assert.strictEqual(res.body.stats.rejectedAvatarError, 10);
     });
 
     // ── Credencial exclusiva del plugin ──────────────────────────────────────

@@ -3,6 +3,7 @@
 const config = require('../config');
 const logger = require('../observability/logger');
 const { NotFoundError, UpstreamRateLimitedError, CircuitOpenError, UpstreamError } = require('./errors');
+const requestContext = require('../observability/requestContext');
 
 // Capa de resiliencia de TODA llamada saliente a Roblox. Tres mecanismos
 // independientes que se complementan:
@@ -71,6 +72,7 @@ function makeBucket(name) {
     return {
         name,
         cooldownUntil: 0,          // impuesto por Roblox (Retry-After / x-ratelimit-reset)
+        cooldownAvisado: 0,        // ultima ventana de cooldown ya registrada en el log
         consecutiveFailures: 0,
         circuitOpenUntil: 0,       // 0 = breaker cerrado
         circuitCooldownMs: circuitBaseCooldownMs,
@@ -117,6 +119,72 @@ const buckets = {
     userAvatar: makeBucket('userAvatar'),
 };
 
+// ── Diagnostico de limitacion ────────────────────────────────────────────────
+//
+// Cuando Roblox nos frena hay que poder responder a UNA pregunta con el log
+// delante: QUE endpoint concreto esta limitando y con que margen. Sin eso, un
+// "429" suelto obliga a adivinar entre las diez rutas que usa el servicio.
+//
+// Se registra siempre el mismo juego de campos, para que las lineas de las tres
+// situaciones (429 recibido, cooldown preventivo por cabeceras, peticion
+// rechazada por cooldown) sean comparables entre si y agregables por endpoint.
+//
+// NADA SENSIBLE. Ni cabeceras completas, ni credenciales, ni cuerpos: se
+// eligen los campos uno a uno. La URL se normaliza (ver plantillaDeUrl) para
+// que tampoco se cuelen ids de usuario.
+
+// De una URL concreta a su plantilla: los segmentos numericos se sustituyen por
+// {id} y la query se descarta entera.
+//
+// Dos motivos, y los dos importan. Uno, agregacion: cien lineas de
+// '/users/123/avatar', '/users/456/avatar'... no se pueden contar juntas, y
+// '/users/{id}/avatar' si — que es justo lo que hace falta para saber que
+// endpoint limita. Dos, higiene: el userId deja de aparecer en el log sin que
+// haya que acordarse de quitarlo.
+function plantillaDeUrl(url) {
+    if (typeof url !== 'string' || url === '') return null;
+    const sinQuery = url.split('?')[0];
+    return sinQuery.replace(/\/\d+/g, '/{id}');
+}
+
+// Las tres cabeceras de cuota que publica Roblox. Se leen de una en una y solo
+// estas: volcar el objeto de cabeceras entero arrastraria cookies y cualquier
+// cosa que Roblox añada en el futuro.
+function cuotaDeCabeceras(headers) {
+    if (!headers) return { rateLimitLimit: null, rateLimitRemaining: null, rateLimitReset: null };
+    const leer = nombre => (headers[nombre] === undefined ? null : String(headers[nombre]));
+    return {
+        rateLimitLimit: leer('x-ratelimit-limit'),
+        rateLimitRemaining: leer('x-ratelimit-remaining'),
+        rateLimitReset: leer('x-ratelimit-reset'),
+    };
+}
+
+function estadoDelCircuito(bucket, now) {
+    if (bucket.circuitOpenUntil > now) return 'open';
+    return bucket.circuitOpenUntil !== 0 ? 'half-open' : 'closed';
+}
+
+// El juego completo de campos. 'endpoint' sale de lo que declaro el llamador
+// (ver el parametro "endpoint" de run) y, si no lo declaro, de la propia
+// respuesta de axios.
+function diagnostico(bucket, { endpoint = null, status = null, headers = null, urlDeError = null } = {}) {
+    const now = Date.now();
+    return {
+        routeKey: bucket.name,
+        endpoint: endpoint ?? plantillaDeUrl(urlDeError),
+        status,
+        retryAfter: headers?.['retry-after'] === undefined ? null : String(headers['retry-after']),
+        ...cuotaDeCabeceras(headers),
+        cooldownRemainingMs: Math.max(0, bucket.cooldownUntil - now),
+        circuitState: estadoDelCircuito(bucket, now),
+        consecutiveFailures: bucket.consecutiveFailures,
+        // Correlacion con la busqueda que provoco la llamada. null cuando quien
+        // llama no abrio contexto (las rutas del juego), que no es un problema.
+        requestId: requestContext.requestId(),
+    };
+}
+
 function retryAfterSecondsFrom(until) {
     return Math.max(1, Math.ceil((until - Date.now()) / 1000));
 }
@@ -150,7 +218,11 @@ function parseWaitMs(headers) {
 // Frenado PROACTIVO: si Roblox nos dice que nos queda 0 de cuota, paramos esa
 // ruta antes de gastar el 429, en vez de descubrirlo chocando. Solo actua si
 // las cabeceras existen — nunca inventa una cuota.
-function observeRateLimitHeaders(bucket, headers) {
+// Recibe la RESPUESTA completa y no solo sus cabeceras, para poder sacar de
+// ella la URL que se acaba de llamar y decir en el log que endpoint es el que
+// se ha quedado sin cuota.
+function observeRateLimitHeaders(bucket, response, endpoint) {
+    const headers = response?.headers;
     if (!headers) return;
     const remaining = Number(headers['x-ratelimit-remaining']);
     if (!Number.isFinite(remaining) || remaining > 0) return;
@@ -160,7 +232,13 @@ function observeRateLimitHeaders(bucket, headers) {
 
     bucket.cooldownUntil = Math.max(bucket.cooldownUntil, Date.now() + waitMs);
     logger.warn('Cuota de Roblox agotada segun cabeceras, ruta en cooldown preventivo', {
-        route: bucket.name, waitMs,
+        ...diagnostico(bucket, {
+            endpoint,
+            status: response?.status ?? null,
+            headers,
+            urlDeError: response?.config?.url,
+        }),
+        waitMs,
     });
 }
 
@@ -178,16 +256,15 @@ function onSuccess(bucket) {
 // Solo los fallos DUROS cuentan (429 agotado, 5xx, red). Un 404 no: es una
 // respuesta valida y definitiva de un Roblox que funciona perfectamente, y
 // contarla abriria el breaker por consultar usuarios inexistentes.
-function onHardFailure(bucket, reason) {
+function onHardFailure(bucket, reason, endpoint = null) {
     bucket.consecutiveFailures++;
     if (bucket.consecutiveFailures < circuitFailureThreshold) return;
 
     bucket.circuitOpenUntil = Date.now() + bucket.circuitCooldownMs;
     bucket.metrics.circuitOpens++;
     logger.warn('Circuito de Roblox ABIERTO', {
-        route: bucket.name,
+        ...diagnostico(bucket, { endpoint }),
         reason,
-        consecutiveFailures: bucket.consecutiveFailures,
         cooldownMs: bucket.circuitCooldownMs,
     });
     // El siguiente ciclo espera el doble, hasta el techo: si Roblox sigue
@@ -224,7 +301,7 @@ function checkCircuit(bucket) {
 
 // ── Cooldown impuesto por Roblox ─────────────────────────────────────────────
 
-async function waitForCooldown(bucket) {
+async function waitForCooldown(bucket, endpoint) {
     const waitMs = bucket.cooldownUntil - Date.now();
     if (waitMs <= 0) return;
 
@@ -234,6 +311,20 @@ async function waitForCooldown(bucket) {
     // las conexiones abiertas justo cuando menos conviene.
     if (waitMs > inlineWaitCeilingMs) {
         bucket.metrics.shed++;
+
+        // UNA linea por ventana de cooldown, no una por peticion rechazada.
+        // Bajo carga, una ruta frenada rechaza cientos de peticiones y loguear
+        // cada una ahogaria el log justo cuando mas falta hace leerlo. El
+        // evento que interesa es "esta ruta ha entrado en cooldown", y ese
+        // ocurre una vez por ventana.
+        if (bucket.cooldownAvisado !== bucket.cooldownUntil) {
+            bucket.cooldownAvisado = bucket.cooldownUntil;
+            logger.warn('Peticion rechazada: la ruta esta en cooldown impuesto por Roblox', {
+                ...diagnostico(bucket, { endpoint }),
+                waitMs,
+            });
+        }
+
         throw new UpstreamRateLimitedError(
             'Roblox esta limitando las consultas ahora mismo, reintenta en unos segundos',
             retryAfterSecondsFrom(bucket.cooldownUntil)
@@ -277,7 +368,7 @@ async function callOnce(fn) {
 // Pasarse (tratar un 4xx cualquiera como "no existe") convierte un problema de
 // Roblox en una DENEGACION definitiva contra un cliente legitimo. Ante la duda,
 // el predicado tiene que decir que no.
-async function run(routeKey, fn, { notFoundCode = 'not_found', notFoundWhen = null } = {}) {
+async function run(routeKey, fn, { notFoundCode = 'not_found', notFoundWhen = null, endpoint = null } = {}) {
     const bucket = buckets[routeKey];
     if (!bucket) throw new Error(`routeKey desconocido: ${routeKey}`);
 
@@ -285,12 +376,12 @@ async function run(routeKey, fn, { notFoundCode = 'not_found', notFoundWhen = nu
 
     try {
         for (let attempt = 0; ; attempt++) {
-            await waitForCooldown(bucket);
+            await waitForCooldown(bucket, endpoint);
 
             bucket.metrics.calls++;
             try {
                 const response = await callOnce(fn);
-                observeRateLimitHeaders(bucket, response?.headers);
+                observeRateLimitHeaders(bucket, response, endpoint);
                 bucket.metrics.ok++;
                 onSuccess(bucket);
                 return response;
@@ -321,14 +412,26 @@ async function run(routeKey, fn, { notFoundCode = 'not_found', notFoundWhen = nu
                     bucket.cooldownUntil = Math.max(bucket.cooldownUntil, Date.now() + waitMs);
 
                     logger.warn('Roblox respondio 429', {
-                        route: bucket.name, attempt, waitMs, fromHeader: headerWait != null,
+                        ...diagnostico(bucket, {
+                            endpoint,
+                            status,
+                            headers: err.response?.headers,
+                            urlDeError: err.config?.url,
+                        }),
+                        attempt,
+                        waitMs,
+                        fromHeader: headerWait != null,
+                        // Si va a reintentarse en linea o si se devuelve el
+                        // control al llamador: sin esto, dos lineas de 429
+                        // seguidas no se distinguen de dos peticiones distintas.
+                        willRetry: attempt < maxRetries && waitMs <= inlineWaitCeilingMs,
                     });
 
                     if (attempt < maxRetries && waitMs <= inlineWaitCeilingMs) {
                         bucket.metrics.retries++;
                         continue; // waitForCooldown de la siguiente vuelta absorbe la espera
                     }
-                    onHardFailure(bucket, 'rate_limited');
+                    onHardFailure(bucket, 'rate_limited', endpoint);
                     const rateErr = new UpstreamRateLimitedError(
                         'Roblox esta limitando las consultas ahora mismo, reintenta en unos segundos',
                         retryAfterSecondsFrom(bucket.cooldownUntil)
@@ -345,7 +448,7 @@ async function run(routeKey, fn, { notFoundCode = 'not_found', notFoundWhen = nu
                         await sleep(backoffMs(attempt));
                         continue;
                     }
-                    onHardFailure(bucket, `http_${status}`);
+                    onHardFailure(bucket, `http_${status}`, endpoint);
                     throw new UpstreamError(`Roblox respondio ${status}`, err);
                 }
 
@@ -357,7 +460,7 @@ async function run(routeKey, fn, { notFoundCode = 'not_found', notFoundWhen = nu
                         await sleep(backoffMs(attempt));
                         continue;
                     }
-                    onHardFailure(bucket, err?.code || 'network_error');
+                    onHardFailure(bucket, err?.code || 'network_error', endpoint);
                     throw new UpstreamError('No se pudo contactar con Roblox', err);
                 }
 
@@ -424,4 +527,12 @@ function reset() {
     for (const routeKey of Object.keys(buckets)) buckets[routeKey] = makeBucket(routeKey);
 }
 
-module.exports = { run, getMetrics, getThrottleState, reset, __buckets: buckets };
+module.exports = {
+    run, getMetrics, getThrottleState, reset,
+    __buckets: buckets,
+    // Puros; exportados SOLO para los tests. Deciden que sale en el log cuando
+    // Roblox nos frena, asi que merecen pruebas propias en vez de ejercitarse
+    // de refilon.
+    __diagnostico: diagnostico,
+    __plantillaDeUrl: plantillaDeUrl,
+};

@@ -4,6 +4,7 @@ const cacheStore = require('../../cache/cacheStore');
 const config = require('../../config');
 const logger = require('../../observability/logger');
 const rateLimiter = require('../../roblox/rateLimiter');
+const requestContext = require('../../observability/requestContext');
 const { resolverFichasDeAsset, catalogCacheKey } = require('../catalogService');
 const { trocear } = require('./concurrency');
 
@@ -107,6 +108,8 @@ function crearIndiceDeCatalogo(stats) {
                     frenadoPorLimite = true;
                     for (const assetId of lote) irresolubles.add(assetId);
                     logger.warn('Busqueda del plugin detenida: el catalogo de Roblox esta limitado', {
+                        requestId: requestContext.requestId(),
+                        routeKey: RUTA_CATALOGO,
                         reason: freno.reason,
                         cooldownRemainingMs: freno.cooldownRemainingMs,
                         assetsSinResolver: lote.length,
@@ -149,6 +152,8 @@ function crearIndiceDeCatalogo(stats) {
                     if (despues.throttled) {
                         frenadoPorLimite = true;
                         logger.warn('Busqueda del plugin detenida: Roblox limito el catalogo a mitad', {
+                            requestId: requestContext.requestId(),
+                            routeKey: RUTA_CATALOGO,
                             reason: despues.reason,
                             cooldownRemainingMs: despues.cooldownRemainingMs,
                             assetsSinResolver: fallos.assetIds.length,

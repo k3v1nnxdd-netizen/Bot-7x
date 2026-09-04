@@ -48,7 +48,8 @@ function crearStats() {
         memberPagesFetched: 0,
 
         // Trabajo hecho
-        avatarsFetched: 0,
+        avatarRequests: 0,        // llamadas al avatar, incluidas las que fallaron
+        avatarsFetched: 0,        // de esas, las que devolvieron un avatar usable
         assetIdsSeen: 0,          // con repeticiones, tal como venian en los avatares
         assetIdsUnique: 0,        // distintos en TODA la busqueda
         assetIdsRequested: 0,     // los que de verdad se mandaron a Roblox
@@ -120,6 +121,8 @@ function crearStats() {
             return {
                 candidatesDiscovered: contadores.candidatesDiscovered,
                 candidatesExamined: contadores.accepted + rechazados,
+                memberPagesFetched: contadores.memberPagesFetched,
+                avatarRequests: contadores.avatarRequests,
                 avatarsFetched: contadores.avatarsFetched,
 
                 assetIdsSeen: contadores.assetIdsSeen,

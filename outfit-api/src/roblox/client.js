@@ -74,7 +74,7 @@ async function lookupUserByUsername(username) {
         'https://users.roblox.com/v1/usernames/users',
         { usernames: [username], excludeBannedUsers: false },
         { headers: { 'Content-Type': 'application/json' } }
-    ), { notFoundCode: 'user_not_found' });
+    ), { endpoint: 'users.roblox.com/v1/usernames/users', notFoundCode: 'user_not_found' });
 
     const user = response.data?.data?.[0];
     if (!user?.id) {
@@ -146,7 +146,7 @@ async function listOutfits(userId, { limit, pageToken, outfitType }) {
     const response = await rateLimiter.run('outfitList', () => http_.get(
         `https://avatar.roblox.com/v2/avatar/users/${userId}/outfits`,
         { params }
-    ), { notFoundCode: 'user_not_found' });
+    ), { endpoint: 'avatar.roblox.com/v2/avatar/users/{id}/outfits', notFoundCode: 'user_not_found' });
 
     return normalizeOutfitList(response.data);
 }
@@ -170,7 +170,7 @@ async function listOutfits(userId, { limit, pageToken, outfitType }) {
 async function getOutfitDetailsRaw(outfitId) {
     const response = await rateLimiter.run('outfitDetails', () => http_.get(
         `https://avatar.roblox.com/v3/outfits/${outfitId}/details`
-    ), { notFoundCode: 'outfit_not_found' });
+    ), { endpoint: 'avatar.roblox.com/v3/outfits/{id}/details', notFoundCode: 'outfit_not_found' });
 
     return response.data ?? {};
 }
@@ -200,7 +200,7 @@ async function getOutfitDetailsRaw(outfitId) {
 async function getBundlesForAsset(assetId) {
     const response = await rateLimiter.run('assetBundles', () => http_.get(
         `https://catalog.roblox.com/v1/assets/${assetId}/bundles`
-    ), { notFoundCode: 'asset_not_found' });
+    ), { endpoint: 'catalog.roblox.com/v1/assets/{id}/bundles', notFoundCode: 'asset_not_found' });
 
     const data = Array.isArray(response.data?.data) ? response.data.data : [];
 
@@ -299,7 +299,9 @@ async function getCatalogItemDetails(items) {
     const details = new Map();
     if (items.length === 0) return details;
 
-    const response = await rateLimiter.run('catalogDetails', () => postCatalogDetails(items));
+    const response = await rateLimiter.run('catalogDetails', () => postCatalogDetails(items), {
+        endpoint: 'catalog.roblox.com/v1/catalog/items/details',
+    });
 
     for (const item of (response.data?.data ?? [])) {
         details.set(catalogKey(item.itemType ?? 'Asset', item.id), normalizeCatalogItem(item));
@@ -358,7 +360,7 @@ async function getBundleDetails(bundleIds) {
 
     const response = await rateLimiter.run('bundleDetails', () => http_.get(
         `https://catalog.roblox.com/v1/bundles/details?bundleIds=${bundleIds.join(',')}`
-    ), { notFoundCode: 'bundle_not_found' });
+    ), { endpoint: 'catalog.roblox.com/v1/bundles/details', notFoundCode: 'bundle_not_found' });
 
     // Aqui la respuesta es un ARRAY pelado, no un { data: [...] } como el
     // resto de endpoints de Roblox.
@@ -416,7 +418,7 @@ async function getBundleDetails(bundleIds) {
 async function getUniverseIdForPlace(placeId) {
     const response = await rateLimiter.run('placeUniverse', () => http_.get(
         `https://apis.roblox.com/universes/v1/places/${placeId}/universe`
-    ), { notFoundCode: 'place_not_found' });
+    ), { endpoint: 'apis.roblox.com/universes/v1/places/{id}/universe', notFoundCode: 'place_not_found' });
 
     const universeId = response.data?.universeId;
     if (universeId === null || universeId === undefined) {
@@ -486,7 +488,11 @@ const UNIVERSO_INEXISTENTE = (status, data) =>
 async function getUniverseOwner(universeId) {
     const response = await rateLimiter.run('universeInfo', () => http_.get(
         `https://develop.roblox.com/v1/universes/${universeId}`
-    ), { notFoundCode: 'universe_not_found', notFoundWhen: UNIVERSO_INEXISTENTE });
+    ), {
+        endpoint: 'develop.roblox.com/v1/universes/{id}',
+        notFoundCode: 'universe_not_found',
+        notFoundWhen: UNIVERSO_INEXISTENTE,
+    });
 
     const universo = response.data;
     const creatorId = universo?.creatorTargetId;
@@ -544,7 +550,7 @@ async function listGroupMembers(groupId, { limit = 100, cursor = null, sortOrder
     const response = await rateLimiter.run('groupMembers', () => http_.get(
         `https://groups.roblox.com/v1/groups/${groupId}/users`,
         { params }
-    ), { notFoundCode: 'group_not_found' });
+    ), { endpoint: 'groups.roblox.com/v1/groups/{id}/users', notFoundCode: 'group_not_found' });
 
     const data = Array.isArray(response.data?.data) ? response.data.data : [];
     const next = response.data?.nextPageCursor;
@@ -584,7 +590,7 @@ async function listGroupMembers(groupId, { limit = 100, cursor = null, sortOrder
 async function getCurrentAvatar(userId) {
     const response = await rateLimiter.run('userAvatar', () => http_.get(
         `https://avatar.roblox.com/v1/users/${userId}/avatar`
-    ), { notFoundCode: 'user_not_found' });
+    ), { endpoint: 'avatar.roblox.com/v1/users/{id}/avatar', notFoundCode: 'user_not_found' });
 
     const assets = Array.isArray(response.data?.assets) ? response.data.assets : [];
 

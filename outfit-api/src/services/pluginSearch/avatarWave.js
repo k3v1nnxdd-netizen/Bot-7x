@@ -27,6 +27,10 @@ function avatarCacheKey(userId) {
 // una. Descartar candidatos es la operacion NORMAL aqui, no un error.
 async function traerAvatar(miembro, stats) {
     let avatar;
+    // Se cuenta el INTENTO, no el exito: es el numero que mide lo que le
+    // costamos a Roblox. Los que devuelven avatar usable se cuentan aparte, mas
+    // abajo, y la diferencia entre los dos son las cuentas baneadas o borradas.
+    stats.sumar('avatarRequests');
     try {
         avatar = await cacheStore.withCache(
             avatarCacheKey(miembro.userId),

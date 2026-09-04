@@ -7,6 +7,7 @@ const ownRateLimit = require('../security/rateLimit');
 const roblox = require('../roblox/client');
 const cache = require('../cache/cacheStore');
 const config = require('../config');
+const robloxRateLimiter = require('../roblox/rateLimiter');
 
 // Tests de POST /plugin/outfits/search por HTTP real, SIN red: las tres
 // llamadas a Roblox que compone la busqueda (miembros del grupo, avatar de
@@ -87,12 +88,30 @@ module.exports = async function run() {
     let mundo = {};
     const llamadas = { members: 0, avatars: 0, catalog: 0 };
 
+    // Instrumentacion de la NUEVA arquitectura: hace falta poder afirmar sobre
+    // el pico de concurrencia real y sobre el contenido de cada lote de
+    // catalogo, no solo sobre cuantas llamadas hubo.
+    const vigilancia = {
+        avataresEnVuelo: 0,
+        picoDeAvatares: 0,
+        lotesDeCatalogo: [],        // un array de assetIds por lote enviado
+        assetsPedidos: [],          // todos los ids pedidos, con repeticiones
+    };
+
+    function reiniciarVigilancia() {
+        vigilancia.avataresEnVuelo = 0;
+        vigilancia.picoDeAvatares = 0;
+        vigilancia.lotesDeCatalogo = [];
+        vigilancia.assetsPedidos = [];
+    }
+
     function poblar({ miembros = 10, precioDe = userId => userId, avatarRoto = () => false,
-        catalogoRoto = false, paginas = null } = {}) {
-        mundo = { miembros, precioDe, avatarRoto, catalogoRoto, paginas };
+        catalogoRoto = false, paginas = null, assetsDe = null, fichaDe = null } = {}) {
+        mundo = { miembros, precioDe, avatarRoto, catalogoRoto, paginas, assetsDe, fichaDe };
         llamadas.members = 0;
         llamadas.avatars = 0;
         llamadas.catalog = 0;
+        reiniciarVigilancia();
         cache.reset(); // la cache es global: sin esto un caso veria los datos del anterior
     }
 
@@ -116,18 +135,39 @@ module.exports = async function run() {
 
     dobles.getCurrentAvatar = async userId => {
         llamadas.avatars++;
+
+        // Pico real de peticiones simultaneas. El await de abajo garantiza que
+        // varias se solapen si de verdad se lanzan en paralelo.
+        vigilancia.avataresEnVuelo++;
+        vigilancia.picoDeAvatares = Math.max(vigilancia.picoDeAvatares, vigilancia.avataresEnVuelo);
+        await new Promise(resolve => setImmediate(resolve));
+        vigilancia.avataresEnVuelo--;
+
         if (mundo.avatarRoto(userId)) throw axiosError(404);
-        // Un asset por usuario, con id derivado del suyo: assetId = userId * 10.
-        return { assets: [{ id: userId * 10, name: `Asset${userId}`, assetTypeId: 8, assetTypeName: 'Hat' }],
-            playerAvatarType: 'R15' };
+
+        // Por defecto, un asset por usuario derivado del suyo (assetId =
+        // userId * 10). `assetsDe` permite montar mundos con ropa compartida,
+        // que es lo que ejercita la deduplicacion.
+        const assets = mundo.assetsDe
+            ? mundo.assetsDe(userId).map(id => ({ id }))
+            : [{ id: userId * 10, name: `Asset${userId}`, assetTypeId: 8, assetTypeName: 'Hat' }];
+
+        return { assets, playerAvatarType: 'R15' };
     };
 
     dobles.getCatalogItemDetails = async items => {
         llamadas.catalog++;
+        vigilancia.lotesDeCatalogo.push(items.map(i => String(i.id)));
+        vigilancia.assetsPedidos.push(...items.map(i => String(i.id)));
         if (mundo.catalogoRoto) throw networkError();
         const mapa = new Map();
         for (const item of items) {
             const userId = Number(item.id) / 10;
+            if (mundo.fichaDe) {
+                const ficha = mundo.fichaDe(String(item.id));
+                if (ficha !== undefined) mapa.set(roblox.catalogKey('Asset', item.id), ficha);
+                continue;
+            }
             mapa.set(roblox.catalogKey('Asset', item.id), {
                 available: true, name: `Asset${item.id}`, itemType: 'Asset', assetTypeId: 8,
                 restrictions: [], isLimited: false, offSale: false,
@@ -601,6 +641,385 @@ module.exports = async function run() {
         assert.strictEqual(res.status, 200);
     });
 
+    // ── Eficiencia upstream: el motivo de todo el rediseño ───────────────────
+    //
+    // Estos son los casos que impiden volver al comportamiento que provocaba los
+    // 429 en produccion: una llamada de catalogo por candidato. Si alguien
+    // reintroduce esa forma, aqui se rompe.
+
+    test('20 candidatos con ropa compartida NO generan 20 consultas de catalogo', async () => {
+        // Toda la comunidad lleva las mismas 3 prendas. El catalogo tiene que
+        // preguntarse UNA vez por las tres, no una vez por persona.
+        poblar({
+            miembros: 20,
+            assetsDe: () => [111, 222, 333],
+            fichaDe: () => ({ available: true, restrictions: [], isLimited: false, price: 100 }),
+        });
+
+        const res = await buscar(port, cuerpo({ amount: 20 }));
+
+        assert.strictEqual(res.body.found, 20);
+        assert.strictEqual(res.body.outfits[0].totalPrice, 300);
+        assert.strictEqual(llamadas.avatars, 20, 'el avatar si cuesta una llamada por candidato');
+        assert.strictEqual(llamadas.catalog, 1,
+            `el catalogo se consulto ${llamadas.catalog} veces para 3 assets distintos`);
+        assert.deepStrictEqual([...new Set(vigilancia.assetsPedidos)].sort(), ['111', '222', '333']);
+    });
+
+    test('un mismo assetId no se pide dos veces en la misma busqueda', async () => {
+        // Ropa parcialmente compartida y en varias olas: 60 candidatos, 10
+        // prendas en total rotando. Ningun id puede repetirse entre lotes.
+        poblar({
+            miembros: 60,
+            assetsDe: userId => [100 + (userId % 10), 200 + (userId % 5)],
+            fichaDe: () => ({ available: true, restrictions: [], isLimited: false, price: 50 }),
+        });
+
+        await buscar(port, cuerpo({ amount: 60, minPrice: 100, maxPrice: 100 }));
+
+        const pedidos = vigilancia.assetsPedidos;
+        assert.strictEqual(new Set(pedidos).size, pedidos.length,
+            `hay assetIds repetidos entre lotes: ${pedidos.length} pedidos, ${new Set(pedidos).size} unicos`);
+        assert.ok(pedidos.length <= 15, `se pidieron ${pedidos.length} assets para 15 distintos`);
+    });
+
+    test('los assets repetidos DENTRO de un mismo avatar se deduplican', async () => {
+        // Ropa por capas: el mismo asset aparece dos veces en el avatar. Ni se
+        // pide dos veces ni se cobra dos veces.
+        poblar({
+            miembros: 1,
+            assetsDe: () => [777, 777, 888],
+            fichaDe: () => ({ available: true, restrictions: [], isLimited: false, price: 200 }),
+        });
+
+        const res = await buscar(port, cuerpo({ amount: 1 }));
+
+        assert.strictEqual(res.body.outfits[0].totalPrice, 400, 'el asset repetido se cobro dos veces');
+        assert.deepStrictEqual([...new Set(vigilancia.assetsPedidos)].sort(), ['777', '888']);
+        assert.strictEqual(vigilancia.assetsPedidos.length, 2);
+    });
+
+    test('la cache compartida evita pedir de nuevo lo ya resuelto', async () => {
+        // Working set diminuto a proposito: el runner baja CACHE_MAX_ENTRIES a 5
+        // para ejercitar la expulsion LRU, asi que un caso grande se expulsaria
+        // a si mismo y no probaria nada.
+        poblar({
+            miembros: 1,
+            assetsDe: () => [4242],
+            fichaDe: () => ({ available: true, restrictions: [], isLimited: false, price: 700 }),
+        });
+
+        const primera = await buscar(port, cuerpo({ amount: 1 }));
+        assert.strictEqual(primera.body.found, 1);
+        assert.strictEqual(llamadas.catalog, 1);
+
+        llamadas.catalog = 0;
+        llamadas.avatars = 0;
+        vigilancia.assetsPedidos = [];
+
+        const segunda = await buscar(port, cuerpo({ amount: 1 }));
+        assert.strictEqual(segunda.body.found, 1);
+        assert.strictEqual(segunda.body.outfits[0].totalPrice, 700);
+        assert.strictEqual(llamadas.catalog, 0, 'se volvio a pedir una ficha ya cacheada');
+        assert.strictEqual(llamadas.avatars, 0, 'se volvio a pedir un avatar ya cacheado');
+        assert.ok(segunda.body.stats.cacheHits > 0, 'la segunda busqueda no reporto aciertos de cache');
+    });
+
+    test('los lotes de catalogo respetan el tope de tamaño del endpoint', async () => {
+        // 300 assets distintos: tienen que salir en lotes acotados, nunca en
+        // una sola peticion gigante que Roblox rechazaria con 400.
+        poblar({
+            miembros: 300,
+            assetsDe: userId => [900000 + userId],
+            fichaDe: () => ({ available: true, restrictions: [], isLimited: false, price: 10 }),
+        });
+
+        await buscar(port, cuerpo({ amount: 500, minPrice: 10, maxPrice: 10 }));
+
+        assert.ok(vigilancia.lotesDeCatalogo.length > 0, 'no se envio ningun lote');
+        for (const lote of vigilancia.lotesDeCatalogo) {
+            assert.ok(lote.length <= config.maxCatalogBatchSize,
+                `un lote llevaba ${lote.length} assets, el tope es ${config.maxCatalogBatchSize}`);
+        }
+    });
+
+    // ── Backpressure y concurrencia ──────────────────────────────────────────
+
+    test('nunca hay mas avatares en vuelo que la concurrencia configurada', async () => {
+        poblar({ miembros: 120, precioDe: () => 100 });
+        await buscar(port, cuerpo({ amount: 100 }));
+
+        assert.ok(vigilancia.picoDeAvatares > 1, 'no hubo paralelismo real, el test no prueba nada');
+        assert.ok(vigilancia.picoDeAvatares <= config.pluginSearch.concurrency,
+            `pico de ${vigilancia.picoDeAvatares} avatares en vuelo, el limite es ${config.pluginSearch.concurrency}`);
+    });
+
+    test('los lotes de catalogo se despachan de uno en uno, sin rafaga', async () => {
+        let lotesEnVuelo = 0;
+        let picoDeLotes = 0;
+
+        poblar({
+            miembros: 300,
+            assetsDe: userId => [800000 + userId],
+            fichaDe: () => ({ available: true, restrictions: [], isLimited: false, price: 10 }),
+        });
+
+        const catalogoBase = roblox.getCatalogItemDetails;
+        roblox.getCatalogItemDetails = async items => {
+            lotesEnVuelo++;
+            picoDeLotes = Math.max(picoDeLotes, lotesEnVuelo);
+            await new Promise(resolve => setImmediate(resolve));
+            const salida = await catalogoBase(items);
+            lotesEnVuelo--;
+            return salida;
+        };
+
+        await buscar(port, cuerpo({ amount: 500, minPrice: 10, maxPrice: 10 }));
+
+        assert.strictEqual(picoDeLotes, 1,
+            `hubo ${picoDeLotes} lotes de catalogo simultaneos; deben ir de uno en uno`);
+
+        roblox.getCatalogItemDetails = catalogoBase;
+    });
+
+    // ── 429 del catalogo ─────────────────────────────────────────────────────
+    //
+    // El comportamiento que se exige aqui es el opuesto al instintivo: ante un
+    // 429 NO se reintenta ni se sigue con el resto. Se para, se conserva lo
+    // encontrado y se dice por que. Insistir alarga el cooldown de Roblox y
+    // convierte un bache en un incidente.
+
+    // Provoca un 429 real de Roblox en la ruta de catalogo a partir del lote
+    // N-esimo, para que el limitador ponga la ruta en cooldown de verdad.
+    function catalogoQueSeLimitaTrasNLotes(n) {
+        const catalogoBase = roblox.getCatalogItemDetails;
+        let intentos = 0;
+
+        roblox.getCatalogItemDetails = async items => {
+            intentos++;
+            if (intentos > n) {
+                // El 429 se hace pasar POR EL LIMITADOR REAL, igual que lo hace
+                // el cliente de verdad. Es lo que hace fiel al test: asi el
+                // limitador clasifica el error, impone el cooldown a la ruta y
+                // la busqueda lo ve por el mismo camino que en produccion. Un
+                // throw suelto se saltaria justo la pieza que se quiere probar.
+                //
+                // Retry-After alto a proposito: por encima del techo de espera
+                // en linea, asi que el limitador NO lo reintenta y deja la ruta
+                // frenada, que es el caso que se vio en Railway.
+                return robloxRateLimiter.run('catalogDetails', async () => {
+                    throw axiosError(429, { 'retry-after': '30' });
+                });
+            }
+            return catalogoBase(items);
+        };
+
+        return {
+            restaurar: () => { roblox.getCatalogItemDetails = catalogoBase; },
+            // Lotes que la busqueda llego a DESPACHAR (con exito o no). Es el
+            // numero que dice si hubo tormenta de reintentos.
+            intentos: () => intentos,
+        };
+    }
+
+    test('un 429 del catalogo detiene la busqueda y lo dice en stats', async () => {
+        poblar({
+            miembros: 300,
+            assetsDe: userId => [700000 + userId],
+            fichaDe: () => ({ available: true, restrictions: [], isLimited: false, price: 500 }),
+        });
+        const catalogo = catalogoQueSeLimitaTrasNLotes(1);
+
+        try {
+            const res = await buscar(port, cuerpo({ amount: 500, minPrice: 500, maxPrice: 500 }));
+
+            assert.strictEqual(res.status, 200, 'un 429 de Roblox no puede convertirse en error HTTP nuestro');
+            assert.strictEqual(res.body.success, true);
+            assert.strictEqual(res.body.stats.stoppedByCatalogRateLimit, true);
+            assert.strictEqual(res.body.stats.stoppedBy, 'catalogRateLimit');
+        } finally {
+            // En finally: si un assert falla, el 429 y el cooldown no pueden
+            // quedarse instalados para los casos siguientes.
+            catalogo.restaurar();
+            robloxRateLimiter.reset();
+        }
+    });
+
+    test('el 429 CONSERVA los outfits validos encontrados antes', async () => {
+        poblar({
+            miembros: 300,
+            assetsDe: userId => [600000 + userId],
+            fichaDe: () => ({ available: true, restrictions: [], isLimited: false, price: 500 }),
+        });
+        // El primer lote pasa: esa ola entera es valida y debe sobrevivir.
+        const catalogo = catalogoQueSeLimitaTrasNLotes(1);
+
+        try {
+            const res = await buscar(port, cuerpo({ amount: 500, minPrice: 500, maxPrice: 500 }));
+
+            assert.ok(res.body.found > 0, 'se perdieron los outfits ya encontrados al llegar el 429');
+            assert.strictEqual(res.body.found, res.body.outfits.length);
+            for (const outfit of res.body.outfits) {
+                assert.strictEqual(outfit.totalPrice, 500);
+                assert.ok(Number.isInteger(outfit.userId));
+            }
+            assert.strictEqual(res.body.stats.stoppedByCatalogRateLimit, true);
+            assert.strictEqual(res.body.stats.accepted, res.body.found);
+        } finally {
+            catalogo.restaurar();
+            robloxRateLimiter.reset();
+        }
+    });
+
+    test('tras el 429 no se manda ni un lote mas de catalogo', async () => {
+        poblar({
+            miembros: 300,
+            assetsDe: userId => [500000 + userId],
+            fichaDe: () => ({ available: true, restrictions: [], isLimited: false, price: 500 }),
+        });
+        const catalogo = catalogoQueSeLimitaTrasNLotes(1);
+
+        try {
+            await buscar(port, cuerpo({ amount: 500, minPrice: 500, maxPrice: 500 }));
+
+            // Lote 1 (ok) + lote 2 (el que recibe el 429). Ni uno mas: el resto
+            // de olas se cancela en cuanto el limitador dice que la ruta esta
+            // frenada, aunque queden 250 candidatos por mirar.
+            assert.strictEqual(catalogo.intentos(), 2,
+                `se despacharon ${catalogo.intentos()} lotes; tras el 429 no debe salir ninguno mas`);
+        } finally {
+            catalogo.restaurar();
+            robloxRateLimiter.reset();
+        }
+    });
+
+    test('con el catalogo ya en cooldown, la busqueda ni lo intenta', async () => {
+        // Se deja la ruta frenada ANTES de empezar: la busqueda no debe gastar
+        // una sola llamada de catalogo para descubrir lo que ya sabe.
+        poblar({ miembros: 50, precioDe: () => 100 });
+        robloxRateLimiter.__buckets.catalogDetails.cooldownUntil = Date.now() + 30_000;
+
+        const res = await buscar(port, cuerpo({ amount: 10 }));
+
+        assert.strictEqual(res.status, 200);
+        assert.strictEqual(llamadas.catalog, 0, 'se mando un lote con la ruta ya en cooldown');
+        assert.strictEqual(res.body.stats.stoppedByCatalogRateLimit, true);
+        comprobarInvariante(res.body.stats, 'cooldown previo');
+
+        robloxRateLimiter.reset();
+    });
+
+    test('el circuito abierto del catalogo tambien detiene la busqueda', async () => {
+        poblar({ miembros: 50, precioDe: () => 100 });
+        robloxRateLimiter.__buckets.catalogDetails.circuitOpenUntil = Date.now() + 30_000;
+
+        const res = await buscar(port, cuerpo({ amount: 10 }));
+
+        assert.strictEqual(res.status, 200);
+        assert.strictEqual(llamadas.catalog, 0, 'se mando un lote con el circuito abierto');
+        assert.strictEqual(res.body.stats.stoppedByCatalogRateLimit, true);
+
+        robloxRateLimiter.reset();
+    });
+
+    test('un 429 no dispara una tormenta de reintentos propios', async () => {
+        poblar({
+            miembros: 300,
+            assetsDe: userId => [400000 + userId],
+            fichaDe: () => ({ available: true, restrictions: [], isLimited: false, price: 500 }),
+        });
+        // TODOS los lotes reciben 429 desde el primero.
+        const catalogo = catalogoQueSeLimitaTrasNLotes(0);
+
+        try {
+            const res = await buscar(port, cuerpo({ amount: 500 }));
+
+            assert.strictEqual(res.status, 200);
+            assert.strictEqual(res.body.found, 0);
+            // UN solo intento contra los 300 candidatos del grupo. El limitador
+            // no reintenta en linea un Retry-After alto, y la busqueda no añade
+            // reintentos propios encima: eso es lo que convierte un bache de
+            // Roblox en un incidente.
+            assert.strictEqual(catalogo.intentos(), 1,
+                `se despacharon ${catalogo.intentos()} lotes contra un catalogo que devuelve 429 a todo`);
+            assert.strictEqual(res.body.stats.stoppedByCatalogRateLimit, true);
+        } finally {
+            catalogo.restaurar();
+            robloxRateLimiter.reset();
+        }
+    });
+
+    // ── Resultado parcial ────────────────────────────────────────────────────
+
+    test('found menor que requested es un resultado valido, no un error', async () => {
+        poblar({ miembros: 37, precioDe: () => 100 });
+        const res = await buscar(port, cuerpo({ amount: 100 }));
+
+        assert.strictEqual(res.status, 200);
+        assert.strictEqual(res.body.success, true);
+        assert.strictEqual(res.body.requested, 100);
+        assert.strictEqual(res.body.found, 37);
+        assert.strictEqual(res.body.outfits.length, 37);
+        assert.strictEqual(res.body.stats.stoppedBy, 'candidatesExhausted');
+        assert.strictEqual(res.body.stats.stoppedByCatalogRateLimit, false);
+    });
+
+    test('el presupuesto de tiempo corta limpiamente y devuelve lo encontrado', async () => {
+        // Presupuesto a cero: la primera comprobacion ya lo encuentra agotado.
+        const presupuestoOriginal = config.pluginSearch.timeBudgetMs;
+        config.pluginSearch.timeBudgetMs = 0;
+        poblar({ miembros: 200, precioDe: () => 100 });
+
+        const res = await buscar(port, cuerpo({ amount: 100 }));
+
+        assert.strictEqual(res.status, 200);
+        assert.strictEqual(res.body.success, true);
+        assert.strictEqual(res.body.stats.stoppedBy, 'timeBudget');
+        assert.strictEqual(llamadas.avatars, 0, 'se gastaron avatares con el tiempo ya agotado');
+        comprobarInvariante(res.body.stats, 'tiempo agotado');
+
+        config.pluginSearch.timeBudgetMs = presupuestoOriginal;
+    });
+
+    test('el tope de candidatos se refleja en stoppedBy', async () => {
+        poblar({ miembros: 5000, precioDe: () => 10 });
+        const res = await buscar(port, cuerpo({ amount: 500, minPrice: 100000, maxPrice: 200000 }));
+
+        assert.strictEqual(res.body.found, 0);
+        assert.strictEqual(res.body.stats.stoppedBy, 'candidateCap');
+        assert.ok(res.body.stats.candidatesExamined <= config.pluginSearch.maxCandidates);
+        comprobarInvariante(res.body.stats, 'tope de candidatos');
+    });
+
+    // ── Observabilidad de la pipeline ────────────────────────────────────────
+
+    test('los contadores de assets reflejan el ahorro por deduplicacion', async () => {
+        // 20 personas, 3 prendas compartidas: 60 assets vistos, 3 distintos.
+        poblar({
+            miembros: 20,
+            assetsDe: () => [111, 222, 333],
+            fichaDe: () => ({ available: true, restrictions: [], isLimited: false, price: 100 }),
+        });
+
+        const res = await buscar(port, cuerpo({ amount: 20 }));
+        const stats = res.body.stats;
+
+        assert.strictEqual(stats.assetIdsSeen, 60, 'assetIdsSeen deberia contar las repeticiones');
+        assert.strictEqual(stats.assetIdsUnique, 3, 'assetIdsUnique deberia contar los distintos');
+        assert.strictEqual(stats.assetIdsRequested, 3, 'se pidieron mas assets de los necesarios');
+        assert.strictEqual(stats.catalogBatches, 1);
+        assert.strictEqual(stats.avatarsFetched, 20);
+        assert.strictEqual(stats.candidatesDiscovered, 20);
+    });
+
+    test('stoppedBy es completed cuando se llena el pedido', async () => {
+        poblar({ miembros: 100, precioDe: () => 100 });
+        const res = await buscar(port, cuerpo({ amount: 5 }));
+        assert.strictEqual(res.body.found, 5);
+        assert.strictEqual(res.body.stats.stoppedBy, 'completed');
+        assert.strictEqual(res.body.stats.stoppedByCatalogRateLimit, false);
+    });
+
     // ── stats de diagnostico ─────────────────────────────────────────────────
     //
     // El valor de stats esta en que los numeros CUADREN: si un candidato se
@@ -608,10 +1027,21 @@ module.exports = async function run() {
     // esta roto. Por eso casi todos estos casos comprueban dos cosas a la vez:
     // que la casilla correcta subio, y que la invariante sigue en pie.
 
-    const CLAVES_STATS = [
-        'candidatesExamined', 'accepted', 'rejectedAvatarError', 'rejectedEmptyAvatar',
+    // Contadores enteros de stats. Los dos campos de parada (stoppedBy,
+    // stoppedByCatalogRateLimit) van aparte porque no son numeros.
+    const CONTADORES_STATS = [
+        'candidatesDiscovered', 'candidatesExamined', 'avatarsFetched',
+        'assetIdsSeen', 'assetIdsUnique', 'assetIdsRequested', 'catalogBatches',
+        'cacheHits', 'cacheMisses',
+        'accepted', 'rejectedAvatarError', 'rejectedEmptyAvatar',
         'rejectedCatalogError', 'rejectedUnknownPrice', 'rejectedMinPrice', 'rejectedMaxPrice',
+        'durationMs',
     ];
+    const CLAVES_STATS = [...CONTADORES_STATS, 'stoppedBy', 'stoppedByCatalogRateLimit'];
+
+    // Conjunto CERRADO de motivos de parada: un valor fuera de esta lista seria
+    // una fuga de detalle interno hacia el cliente.
+    const PARADAS_VALIDAS = ['completed', 'candidatesExhausted', 'candidateCap', 'timeBudget', 'catalogRateLimit'];
 
     // candidatesExamined tiene que ser exactamente la suma del resto.
     function comprobarInvariante(stats, contexto) {
@@ -623,17 +1053,20 @@ module.exports = async function run() {
             `(${JSON.stringify(stats)})`);
     }
 
-    test('stats viene en la respuesta con las ocho claves y nada mas', async () => {
+    test('stats trae exactamente las claves del contrato, con los tipos correctos', async () => {
         poblar({ miembros: 10, precioDe: () => 100 });
         const res = await buscar(port, cuerpo({ amount: 5 }));
 
         assert.ok(res.body.stats, 'no vino el objeto stats');
         assert.deepStrictEqual(Object.keys(res.body.stats).sort(), [...CLAVES_STATS].sort());
-        for (const clave of CLAVES_STATS) {
-            assert.strictEqual(typeof res.body.stats[clave], 'number', `${clave} no es un numero`);
-            assert.ok(Number.isInteger(res.body.stats[clave]), `${clave} no es entero`);
+
+        for (const clave of CONTADORES_STATS) {
+            assert.ok(Number.isInteger(res.body.stats[clave]), `${clave} no es un entero`);
             assert.ok(res.body.stats[clave] >= 0, `${clave} es negativo`);
         }
+        assert.ok(PARADAS_VALIDAS.includes(res.body.stats.stoppedBy),
+            `stoppedBy fuera del conjunto cerrado: ${res.body.stats.stoppedBy}`);
+        assert.strictEqual(typeof res.body.stats.stoppedByCatalogRateLimit, 'boolean');
     });
 
     test('stats es ADITIVO: el contrato anterior no se movio', async () => {
@@ -769,17 +1202,18 @@ module.exports = async function run() {
     });
 
     test('la invariante aguanta cuando la busqueda se llena antes de tiempo', async () => {
-        // Se para en cuanto tiene 3, a mitad de una tanda de 4.
         poblar({ miembros: 200, precioDe: () => 100 });
         const res = await buscar(port, cuerpo({ amount: 3 }));
 
         assert.strictEqual(res.body.found, 3);
         comprobarInvariante(res.body.stats, 'parada temprana');
-        // accepted puede pasarse de amount por lo que quede de la ultima tanda,
-        // pero nunca por mas que el tamaño de una tanda.
+        assert.strictEqual(res.body.stats.stoppedBy, 'completed');
+        // accepted puede pasarse de amount por lo que quede de la ultima OLA
+        // (la ola se procesa entera; cortarla a mitad tiraria avatares ya
+        // pagados), pero nunca por mas que el tamaño de una ola.
         assert.ok(res.body.stats.accepted >= res.body.found, 'accepted por debajo de found');
-        assert.ok(res.body.stats.accepted <= res.body.found + config.pluginSearch.concurrency,
-            `accepted (${res.body.stats.accepted}) se paso de la ultima tanda`);
+        assert.ok(res.body.stats.accepted <= res.body.found + config.pluginSearch.waveSize,
+            `accepted (${res.body.stats.accepted}) se paso de la ultima ola`);
     });
 
     test('un grupo vacio da stats a cero, no un error', async () => {
@@ -800,9 +1234,18 @@ module.exports = async function run() {
         assert.ok(!serializado.includes(CLAVE_PLUGIN), 'la credencial se filtro en stats');
         assert.ok(!serializado.includes(config.apiKey), 'la key del juego se filtro en stats');
         assert.ok(!serializado.includes(config.adminApiKey), 'la key de admin se filtro en stats');
-        // Solo enteros: ni ids, ni nombres, ni nada que venga de Roblox.
-        for (const valor of Object.values(res.body.stats)) {
-            assert.strictEqual(typeof valor, 'number');
+
+        // Nada de texto libre: solo enteros, un booleano y una etiqueta de
+        // parada de un conjunto cerrado. Ni ids de usuario, ni nombres, ni
+        // mensajes de error de Roblox, ni rutas internas.
+        for (const [clave, valor] of Object.entries(res.body.stats)) {
+            if (clave === 'stoppedBy') {
+                assert.ok(PARADAS_VALIDAS.includes(valor), `stoppedBy con valor libre: ${valor}`);
+            } else if (clave === 'stoppedByCatalogRateLimit') {
+                assert.strictEqual(typeof valor, 'boolean');
+            } else {
+                assert.strictEqual(typeof valor, 'number', `${clave} no es numero`);
+            }
         }
     });
 
@@ -986,6 +1429,9 @@ module.exports = async function run() {
     roblox.getCatalogItemDetails = original.getCatalogItemDetails;
     cache.reset();
     ownRateLimit.reset();
+    // Varios casos dejan la ruta de catalogo en cooldown a proposito; sin esto
+    // el siguiente archivo de tests heredaria el freno.
+    robloxRateLimiter.reset();
     await new Promise(resolve => server.close(resolve));
     return ok;
 };

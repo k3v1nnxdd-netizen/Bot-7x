@@ -447,4 +447,11 @@ module.exports = {
     // objeto { assetIds: [] } donde deja los ids que NO pudo resolver. No
     // lanza: un fallo de Roblox se reporta ahi, no rompiendo al llamador.
     resolverFichasDeAsset,
+
+    // La MISMA clave que usa este modulo, exportada para que la busqueda del
+    // plugin pueda mirar la cache compartida antes de pedir un lote y quedarse
+    // solo con los assets que de verdad faltan. Sin ella tendria que
+    // reconstruir el formato por su cuenta, y una tercera copia del mismo
+    // string es exactamente como se desalinean las caches.
+    catalogCacheKey: catalogKey,
 };

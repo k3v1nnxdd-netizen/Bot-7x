@@ -248,11 +248,23 @@ const pluginSearch = {
     // cuando Roblox va lento y los otros dos topes irian sobrados.
     timeBudgetMs: intFromEnv('PLUGIN_SEARCH_TIME_BUDGET_MS', 25_000),
 
-    // Candidatos que se examinan en paralelo. Por encima del gate global de
-    // salida (UPSTREAM_MAX_CONCURRENT) no se gana nada — el limitador ya
-    // serializa —, pero mantener varios en vuelo evita que el gate se quede
+    // Candidatos cuyos avatares se piden en paralelo. Por encima del gate
+    // global de salida (UPSTREAM_MAX_CONCURRENT) no se gana nada — el limitador
+    // ya serializa —, pero mantener varios en vuelo evita que el gate se quede
     // ocioso entre llamada y llamada.
     concurrency: intFromEnv('PLUGIN_SEARCH_CONCURRENCY', 4),
+
+    // Candidatos por OLA. Es la pieza que hace que el catalogo no se dispare:
+    // se traen los avatares de una ola entera, se juntan TODOS sus assets y se
+    // resuelve el catalogo de una sola vez para los N candidatos, en lugar de
+    // una llamada por candidato (que es lo que provocaba los 429).
+    //
+    // 25 no es arbitrario: un avatar ronda los 10-20 assets, asi que una ola
+    // produce del orden de 250-500 assets con muchisima repeticion entre ellos,
+    // y lo que queda tras deduplicar cabe holgadamente en uno o dos lotes de
+    // MAX_CATALOG_BATCH_SIZE. Subirlo agranda el lote y la latencia de la ola
+    // sin reducir ya las llamadas; bajarlo devuelve llamadas al catalogo.
+    waveSize: intFromEnv('PLUGIN_SEARCH_WAVE_SIZE', 25),
 };
 
 const catalogBatch = {

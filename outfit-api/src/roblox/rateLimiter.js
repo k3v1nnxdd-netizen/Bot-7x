@@ -372,6 +372,33 @@ async function run(routeKey, fn, { notFoundCode = 'not_found', notFoundWhen = nu
     }
 }
 
+// ¿Esta ruta esta frenada AHORA MISMO? Consulta de solo lectura: no reserva
+// slot, no toca contadores y no espera.
+//
+// Existe porque quien va a lanzar una rafaga cara necesita poder preguntar
+// antes de empezar, en vez de enterarse a base de 429. El limitador es el
+// unico que conoce este estado (cooldown impuesto por Roblox y breaker), asi
+// que preguntarselo es mas barato y mas honesto que deducirlo de los errores.
+// Lo usa la busqueda del plugin para dejar de pedir lotes de catalogo en
+// cuanto Roblox aprieta, en lugar de seguir chocando contra la pared.
+function getThrottleState(routeKey) {
+    const bucket = buckets[routeKey];
+    if (!bucket) throw new Error(`routeKey desconocido: ${routeKey}`);
+
+    const now = Date.now();
+    const cooldownRemainingMs = Math.max(0, bucket.cooldownUntil - now);
+    const circuitOpen = bucket.circuitOpenUntil > now;
+
+    return {
+        // `true` = una llamada nueva o se hace esperar o se rechaza de plano.
+        throttled: cooldownRemainingMs > 0 || circuitOpen,
+        cooldownRemainingMs,
+        circuitOpen,
+        // Motivo, para poder decir en el log POR QUE se corto.
+        reason: circuitOpen ? 'circuit_open' : cooldownRemainingMs > 0 ? 'cooldown' : null,
+    };
+}
+
 function getMetrics() {
     const now = Date.now();
     const byRoute = {};
@@ -397,4 +424,4 @@ function reset() {
     for (const routeKey of Object.keys(buckets)) buckets[routeKey] = makeBucket(routeKey);
 }
 
-module.exports = { run, getMetrics, reset, __buckets: buckets };
+module.exports = { run, getMetrics, getThrottleState, reset, __buckets: buckets };

@@ -5,15 +5,18 @@ const logger = require('../observability/logger');
 const { NotFoundError, UpstreamRateLimitedError, CircuitOpenError, UpstreamError } = require('./errors');
 const requestContext = require('../observability/requestContext');
 
-// Capa de resiliencia de TODA llamada saliente a Roblox. Tres mecanismos
+// Capa de resiliencia de TODA llamada saliente a Roblox. Cuatro mecanismos
 // independientes que se complementan:
 //
 //   1. Gate de concurrencia GLOBAL — cuantas peticiones a Roblox pueden estar
 //      vivas a la vez, sumando las tres rutas. Con miles de jugadores lo que
 //      importa no es cuantas peticiones recibimos sino cuantas dejamos salir.
-//   2. Cooldown REACTIVO por ruta — cuando Roblox dice "espera", esperamos lo
+//   2. Marcapasos PREVENTIVO por ruta — separacion minima entre llamadas, que
+//      arranca en cero y solo aparece cuando Roblox señala presion. Es el unico
+//      de los cuatro que evita el 429 en vez de sobrevivirlo.
+//   3. Cooldown REACTIVO por ruta — cuando Roblox dice "espera", esperamos lo
 //      que pida y frenamos esa ruta para todos.
-//   3. Circuit breaker por ruta — si una ruta falla de forma sostenida,
+//   4. Circuit breaker por ruta — si una ruta falla de forma sostenida,
 //      dejamos de insistir un rato y fallamos rapido.
 //
 // DECISION CENTRAL: aqui no hay NINGUNA cuota asumida. No se codifica "N
@@ -29,6 +32,7 @@ const {
     maxConcurrent, maxQueue, maxRetries,
     retryBaseDelayMs, retryMaxDelayMs, inlineWaitCeilingMs,
     circuitFailureThreshold, circuitBaseCooldownMs, circuitMaxCooldownMs,
+    pacerBaseMs, pacerMaxMs, pacerMinMs, pacerDecay,
 } = config.upstream;
 
 function sleep(ms) {
@@ -77,10 +81,17 @@ function makeBucket(name) {
         circuitOpenUntil: 0,       // 0 = breaker cerrado
         circuitCooldownMs: circuitBaseCooldownMs,
         probeInFlight: false,      // half-open: una sola peticion de tanteo
+
+        // ── Marcapasos adaptativo ────────────────────────────────────────────
+        // Separacion MINIMA entre dos llamadas de esta ruta, y el instante mas
+        // temprano en el que puede salir la siguiente. Ver esperarMarcapasos.
+        spacingMs: 0,              // 0 = sin marcapasos (estado sano)
+        nextAllowedAt: 0,
+
         metrics: {
             calls: 0, ok: 0, notFound: 0,
             rateLimited: 0, serverErrors: 0, networkErrors: 0, otherErrors: 0,
-            retries: 0, shed: 0, circuitOpens: 0,
+            retries: 0, shed: 0, circuitOpens: 0, paced: 0,
         },
     };
 }
@@ -234,6 +245,11 @@ function observeRateLimitHeaders(bucket, response, endpoint) {
     const remaining = Number(headers['x-ratelimit-remaining']);
     if (!Number.isFinite(remaining) || remaining > 0) return;
 
+    // Roblox acaba de decir que la ventana esta agotada. Aunque la respuesta
+    // fuera correcta, esto es la señal MAS TEMPRANA de presion que existe: es
+    // el momento de separar las llamadas, no cuando ya nos hayan devuelto 429.
+    apretarMarcapasos(bucket);
+
     const waitMs = parseWaitMs(headers);
     if (waitMs == null || waitMs <= 0) return;
 
@@ -249,9 +265,69 @@ function observeRateLimitHeaders(bucket, response, endpoint) {
     });
 }
 
+// ── Marcapasos adaptativo (AIMD) ─────────────────────────────────────────────
+//
+// EL CUARTO MECANISMO, y el unico PREVENTIVO. Los otros tres reaccionan a un
+// limite que ya nos comieron: el cooldown espera lo que Roblox pida, el breaker
+// deja de insistir y el gate acota cuantas van a la vez. Ninguno evita el 429;
+// solo hacen que duela menos.
+//
+// El marcapasos si lo evita, y hacia falta por una razon concreta: la busqueda
+// del plugin es la unica cosa de este servicio que hace RAFAGAS sostenidas
+// contra una misma ruta. Doce olas seguidas de catalogo agotan la ventana de
+// cuota, Roblox contesta 'remaining: 0' con su reset, y la busqueda se quedaba
+// a medias — no porque no hubiera outfits, sino porque habiamos gastado la
+// cuota tan deprisa como se podia.
+//
+// AIMD (aumento agresivo, reduccion suave), y arranca EN CERO a proposito:
+// mientras Roblox no se queje no hay separacion ninguna y el comportamiento es
+// exactamente el de siempre — lo que importa porque estos buckets los comparte
+// el trafico del juego, que no puede pagar por las rafagas del plugin. En
+// cuanto Roblox señala presion (un 429, o 'remaining: 0' en una respuesta
+// buena) la separacion salta y se va relajando sola conforme las llamadas
+// vuelven a salir bien.
+function apretarMarcapasos(bucket) {
+    const previo = bucket.spacingMs;
+    bucket.spacingMs = Math.min(Math.max(previo * 2, pacerBaseMs), pacerMaxMs);
+    if (previo === 0) {
+        logger.info('Marcapasos de Roblox activado para una ruta', {
+            route: bucket.name, spacingMs: bucket.spacingMs,
+        });
+    }
+}
+
+function aflojarMarcapasos(bucket) {
+    if (bucket.spacingMs <= 0) return;
+    const relajado = bucket.spacingMs * pacerDecay;
+    // Por debajo del suelo no merece la pena mantener temporizadores vivos: se
+    // apaga del todo y la ruta vuelve a ir a pelo.
+    bucket.spacingMs = relajado < pacerMinMs ? 0 : relajado;
+    if (bucket.spacingMs === 0) {
+        logger.info('Marcapasos de Roblox apagado: la ruta va suelta otra vez', { route: bucket.name });
+    }
+}
+
+// Reserva el turno ANTES de dormir, no despues. Es lo que hace que N llamadas
+// simultaneas de la misma ruta salgan separadas y en orden en vez de dormir
+// todas lo mismo y despertar juntas — que es exactamente la rafaga que el
+// marcapasos existe para deshacer.
+async function esperarMarcapasos(bucket) {
+    if (bucket.spacingMs <= 0) return;
+
+    const ahora = Date.now();
+    const turno = Math.max(ahora, bucket.nextAllowedAt);
+    bucket.nextAllowedAt = turno + bucket.spacingMs;
+
+    const espera = turno - ahora;
+    if (espera <= 0) return;
+    bucket.metrics.paced++;
+    await sleep(espera);
+}
+
 // ── Circuit breaker ──────────────────────────────────────────────────────────
 
 function onSuccess(bucket) {
+    aflojarMarcapasos(bucket);
     if (bucket.circuitOpenUntil !== 0 || bucket.circuitCooldownMs !== circuitBaseCooldownMs) {
         logger.info('Circuito de Roblox cerrado tras respuesta correcta', { route: bucket.name });
     }
@@ -385,6 +461,8 @@ async function run(routeKey, fn, { notFoundCode = 'not_found', notFoundWhen = nu
         for (let attempt = 0; ; attempt++) {
             await waitForCooldown(bucket, endpoint);
 
+            await esperarMarcapasos(bucket);
+
             bucket.metrics.calls++;
             try {
                 const response = await callOnce(fn);
@@ -414,6 +492,9 @@ async function run(routeKey, fn, { notFoundCode = 'not_found', notFoundWhen = nu
                 // ── 429: condicion normal, la pauta la marca Roblox ──
                 if (status === 429) {
                     bucket.metrics.rateLimited++;
+                    // Llegamos tarde a la señal preventiva: a partir de ahora,
+                    // separacion obligatoria en esta ruta.
+                    apretarMarcapasos(bucket);
                     const headerWait = parseWaitMs(err.response?.headers);
                     const waitMs = headerWait ?? backoffMs(attempt);
                     bucket.cooldownUntil = Math.max(bucket.cooldownUntil, Date.now() + waitMs);
@@ -504,6 +585,9 @@ function getThrottleState(routeKey) {
         throttled: cooldownRemainingMs > 0 || circuitOpen,
         cooldownRemainingMs,
         circuitOpen,
+        // Separacion vigente del marcapasos. No implica `throttled`: la ruta
+        // sigue atendiendo, solo que a un ritmo mas espaciado.
+        spacingMs: Math.round(bucket.spacingMs),
         // Motivo, para poder decir en el log POR QUE se corto.
         reason: circuitOpen ? 'circuit_open' : cooldownRemainingMs > 0 ? 'cooldown' : null,
     };

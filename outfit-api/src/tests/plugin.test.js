@@ -1626,6 +1626,7 @@ module.exports = async function run() {
         'assetIdsSeen', 'assetIdsUnique', 'assetIdsRequested', 'catalogBatches',
         'bundleLookups', 'bundleLookupsSkipped', 'bundleSpecialHits', 'bundleBatches',
         'cacheHits', 'cacheMisses',
+        'rateLimitWaits', 'rateLimitWaitedMs', 'workingMs', 'wallClockBudgetMs',
         'accepted', 'rejectedAvatarError', 'rejectedEmptyAvatar',
         'rejectedCatalogError', 'rejectedUnknownPrice', 'rejectedIncompletePrice',
         'rejectedMinPrice', 'rejectedMaxPrice',
@@ -2191,6 +2192,196 @@ module.exports = async function run() {
             assert.strictEqual(s.avatarRateLimited, 0);
             assert.ok(res.body.found > 0, 'se perdieron los outfits encontrados antes del 429');
             comprobarInvariante(s, '429 del catalogo');
+        } finally {
+            roblox.getCatalogItemDetails = dobles.getCatalogItemDetails;
+            robloxRateLimiter.reset();
+        }
+    });
+
+    // ── PAUSA Y CONTINUA, que es el arreglo de fondo ─────────────────────────
+    //
+    // Un cooldown de Roblox se estaba tratando como el final de la busqueda: en
+    // cuanto una ruta decia "espera unos segundos", se devolvia lo que hubiera
+    // — 3 de 10 — y se acababa. Pero "espera 8 segundos" no es "no hay
+    // outfits": es literalmente una instruccion de esperar ocho segundos.
+    //
+    // Los casos de aqui usan cooldowns de MILISEGUNDOS (empujados directamente
+    // al bucket del limitador) para poder probar el comportamiento sin dormir
+    // de verdad. El runner deja el presupuesto de espera en 0 por defecto; cada
+    // caso lo sube lo justo.
+
+    function conPresupuestoDeEspera(ms, fn) {
+        const original = config.pluginSearch.rateLimitWaitBudgetMs;
+        config.pluginSearch.rateLimitWaitBudgetMs = ms;
+        return Promise.resolve()
+            .then(fn)
+            .finally(() => { config.pluginSearch.rateLimitWaitBudgetMs = original; });
+    }
+
+    // Mundo donde uno de cada cinco candidatos encaja: obliga a varias olas, que
+    // es lo que hace falta para que una pausa a mitad tenga sentido.
+    const mundoDeVariasOlas = () => poblar({
+        miembros: 400,
+        precioDe: userId => (userId % 5 === 0 ? 500 : 10),
+    });
+
+    test('un cooldown del CATALOGO se espera y la busqueda llega a los 10 pedidos', async () => {
+        mundoDeVariasOlas();
+        const base = roblox.getCatalogItemDetails;
+        let lotes = 0;
+
+        roblox.getCatalogItemDetails = async items => {
+            lotes++;
+            // Tras el primer lote, Roblox cierra la ventana un instante. Antes,
+            // esto terminaba la busqueda con lo poco que llevara.
+            if (lotes === 1) {
+                robloxRateLimiter.__buckets.catalogDetails.cooldownUntil = Date.now() + 80;
+            }
+            return base(items);
+        };
+
+        try {
+            await conPresupuestoDeEspera(5_000, async () => {
+                const res = await buscar(port, cuerpo({ amount: 10, minPrice: 400 }));
+                const s = res.body.stats;
+
+                assert.strictEqual(res.body.found, 10, 'la pausa se comio la busqueda');
+                assert.strictEqual(s.stoppedBy, 'completed');
+                assert.strictEqual(s.stoppedByRobloxRateLimit, false);
+                assert.ok(s.rateLimitWaits >= 1, 'no consta ninguna pausa por limite');
+                assert.ok(s.rateLimitWaitedMs > 0);
+                comprobarInvariante(s, 'pausa del catalogo');
+            });
+        } finally {
+            roblox.getCatalogItemDetails = dobles.getCatalogItemDetails;
+            robloxRateLimiter.reset();
+        }
+    });
+
+    test('un cooldown del AVATAR se espera y la busqueda llega a los 10 pedidos', async () => {
+        mundoDeVariasOlas();
+        const base = roblox.getCurrentAvatar;
+        let avatares = 0;
+
+        roblox.getCurrentAvatar = async userId => {
+            avatares++;
+            if (avatares === 5) {
+                robloxRateLimiter.__buckets.userAvatar.cooldownUntil = Date.now() + 80;
+            }
+            return base(userId);
+        };
+
+        try {
+            await conPresupuestoDeEspera(5_000, async () => {
+                const res = await buscar(port, cuerpo({ amount: 10, minPrice: 400 }));
+                const s = res.body.stats;
+
+                assert.strictEqual(res.body.found, 10);
+                assert.strictEqual(s.stoppedBy, 'completed');
+                assert.ok(s.rateLimitWaits >= 1);
+                comprobarInvariante(s, 'pausa del avatar');
+            });
+        } finally {
+            roblox.getCurrentAvatar = dobles.getCurrentAvatar;
+            robloxRateLimiter.reset();
+        }
+    });
+
+    test('NI UNA peticion sale mientras la ruta esta frenada', async () => {
+        // La otra mitad del contrato, y la que protege la cuota: esperar no
+        // sirve de nada si por el camino se sigue tanteando. Insistir sobre un
+        // 429 es como un limite corto se convierte en uno largo.
+        mundoDeVariasOlas();
+        const base = roblox.getCatalogItemDetails;
+        const ventana = { desde: 0, hasta: 0 };
+        const instantes = [];
+        let lotes = 0;
+
+        roblox.getCatalogItemDetails = async items => {
+            instantes.push(Date.now());
+            lotes++;
+            if (lotes === 1) {
+                ventana.desde = Date.now();
+                ventana.hasta = ventana.desde + 120;
+                robloxRateLimiter.__buckets.catalogDetails.cooldownUntil = ventana.hasta;
+            }
+            return base(items);
+        };
+
+        try {
+            await conPresupuestoDeEspera(5_000, async () => {
+                const res = await buscar(port, cuerpo({ amount: 10, minPrice: 400 }));
+                assert.strictEqual(res.body.found, 10);
+
+                const dentro = instantes.filter(t => t > ventana.desde && t < ventana.hasta);
+                assert.strictEqual(dentro.length, 0,
+                    `salieron ${dentro.length} peticiones al catalogo con la ruta frenada`);
+                assert.ok(instantes.length > 1, 'la busqueda no llego a reanudar el catalogo');
+            });
+        } finally {
+            roblox.getCatalogItemDetails = dobles.getCatalogItemDetails;
+            robloxRateLimiter.reset();
+        }
+    });
+
+    test('el reloj de TRABAJO no corre mientras la busqueda esta parada', async () => {
+        // Es lo que impide que una pausa se coma el presupuesto: si esperar
+        // gastara tiempo de buscar, una sola pausa de ocho segundos dejaria sin
+        // presupuesto a una busqueda de 10 — que es exactamente lo que pasaba.
+        mundoDeVariasOlas();
+        const base = roblox.getCatalogItemDetails;
+        let lotes = 0;
+
+        roblox.getCatalogItemDetails = async items => {
+            if (++lotes === 1) {
+                robloxRateLimiter.__buckets.catalogDetails.cooldownUntil = Date.now() + 250;
+            }
+            return base(items);
+        };
+
+        try {
+            await conPresupuestoDeEspera(5_000, async () => {
+                const res = await buscar(port, cuerpo({ amount: 10, minPrice: 400 }));
+                const s = res.body.stats;
+
+                assert.ok(s.rateLimitWaitedMs >= 200, `solo consta ${s.rateLimitWaitedMs} ms de pausa`);
+                assert.ok(s.workingMs < s.durationMs,
+                    'el tiempo de trabajo no descuenta la pausa');
+                // Lo parado tiene que estar descontado casi entero; el margen
+                // cubre que los dos relojes no se leen en el mismo instante.
+                assert.ok(s.durationMs - s.workingMs >= s.rateLimitWaitedMs * 0.8,
+                    `duracion ${s.durationMs}, trabajo ${s.workingMs}, pausa ${s.rateLimitWaitedMs}`);
+            });
+        } finally {
+            roblox.getCatalogItemDetails = dobles.getCatalogItemDetails;
+            robloxRateLimiter.reset();
+        }
+    });
+
+    test('sin presupuesto de espera, un cooldown si termina la busqueda, con su motivo', async () => {
+        // La otra cara: esperar tiene limite. Cuando la pausa no cabe, se corta
+        // con el motivo preciso y se devuelve lo encontrado — nunca un error.
+        mundoDeVariasOlas();
+        const base = roblox.getCatalogItemDetails;
+        let lotes = 0;
+
+        roblox.getCatalogItemDetails = async items => {
+            if (++lotes === 1) {
+                robloxRateLimiter.__buckets.catalogDetails.cooldownUntil = Date.now() + 30_000;
+            }
+            return base(items);
+        };
+
+        try {
+            // Presupuesto de espera 0 (el del runner): no cabe ninguna pausa.
+            const res = await buscar(port, cuerpo({ amount: 10, minPrice: 400 }));
+            const s = res.body.stats;
+
+            assert.strictEqual(res.status, 200);
+            assert.strictEqual(s.stoppedBy, 'catalogRateLimit');
+            assert.strictEqual(s.rateLimitedRoute, 'catalogDetails');
+            assert.strictEqual(s.rateLimitWaits, 0);
+            assert.ok(res.body.found > 0, 'se perdio lo encontrado antes del corte');
         } finally {
             roblox.getCatalogItemDetails = dobles.getCatalogItemDetails;
             robloxRateLimiter.reset();

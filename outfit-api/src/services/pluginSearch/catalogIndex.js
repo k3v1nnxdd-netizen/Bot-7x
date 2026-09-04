@@ -7,6 +7,7 @@ const rateLimiter = require('../../roblox/rateLimiter');
 const requestContext = require('../../observability/requestContext');
 const { resolverFichasDeAsset, catalogCacheKey } = require('../catalogService');
 const { trocear } = require('./concurrency');
+const { VEREDICTO, PUERTA_ABIERTA } = require('./throttleGate');
 
 // ETAPA 3 — CATALOGO. Es LA etapa que decide si esta busqueda tumba la cuota
 // de Roblox o no, y por eso vive en su propio modulo.
@@ -39,10 +40,14 @@ const { trocear } = require('./concurrency');
 // estado antes de despachar cada lote.
 const RUTA_CATALOGO = 'catalogDetails';
 
-function crearIndiceDeCatalogo(stats) {
+function crearIndiceDeCatalogo(stats, { puerta = PUERTA_ABIERTA } = {}) {
     // assetId (texto) -> ficha de catalogo. Es la memoria de la busqueda: una
     // vez dentro, ese asset no vuelve a costar nada.
     const fichas = new Map();
+
+    // Lotes a los que ya se les dio su segunda oportunidad tras una pausa. Sin
+    // esto, un lote que falla siempre repetiria pausa-reintento en bucle.
+    const reintentados = new Set();
 
     // Assets que Roblox no pudo responder en esta busqueda. Se recuerdan para
     // no volver a pedirlos en la siguiente ola (si fallo por 429, insistir es
@@ -95,26 +100,30 @@ function crearIndiceDeCatalogo(stats) {
             if (faltantes.length === 0) return;
 
             // 3. Lotes de tamaño acotado. El tope no es una preferencia: el
-            //    endpoint de Roblox rechaza por encima de 120 items, y
-            //    MAX_CATALOG_BATCH_SIZE (100) deja margen.
-            for (const lote of trocear(faltantes, config.maxCatalogBatchSize)) {
-                // ── BACKPRESSURE ────────────────────────────────────────────
-                // Se pregunta ANTES de cada lote, no despues del error. Si la
-                // ruta esta en cooldown o el breaker abierto, seguir mandando
-                // lotes solo alarga el cooldown y retrasa la recuperacion.
-                // Se para en seco y se devuelve lo que ya haya.
-                const freno = rateLimiter.getThrottleState(RUTA_CATALOGO);
-                if (freno.throttled) {
+            //    endpoint de Roblox rechaza por encima de 120 items.
+            const lotes = trocear(faltantes, config.maxCatalogBatchSize);
+
+            for (let i = 0; i < lotes.length; i++) {
+                const lote = lotes[i];
+
+                // ── BACKPRESSURE: SE ESPERA, NO SE ABANDONA ─────────────────
+                //
+                // Se pregunta ANTES de cada lote, no despues del error: mandar
+                // lotes contra una ruta frenada solo alarga el cooldown y
+                // retrasa la recuperacion de todo el servicio.
+                //
+                // Pero un cooldown no es el final de la busqueda. "Espera 8
+                // segundos" es una instruccion de esperar ocho segundos, y
+                // rendirse ahi devolvia 3 de 10 sobre una comunidad que tenia
+                // los 10. La puerta duerme exactamente lo que Roblox pidio y
+                // deja seguir; solo corta cuando esa espera ya no cabe en el
+                // presupuesto.
+                const veredicto = await puerta.abrir(RUTA_CATALOGO);
+                if (veredicto === VEREDICTO.AGOTADO) {
                     frenadoPorLimite = true;
-                    for (const assetId of lote) irresolubles.add(assetId);
-                    logger.warn('Busqueda del plugin detenida: el catalogo de Roblox esta limitado', {
-                        requestId: requestContext.requestId(),
-                        searchId: requestContext.searchId(),
-                        routeKey: RUTA_CATALOGO,
-                        reason: freno.reason,
-                        cooldownRemainingMs: freno.cooldownRemainingMs,
-                        assetsSinResolver: lote.length,
-                    });
+                    for (const restante of lotes.slice(i)) {
+                        for (const assetId of restante) irresolubles.add(assetId);
+                    }
                     return;
                 }
 
@@ -139,29 +148,33 @@ function crearIndiceDeCatalogo(stats) {
                     fallos.assetIds.push(...lote);
                 }
 
+                // Un lote fallido con la ruta ya frenada es la firma de un 429:
+                // el limitador acaba de imponer el cooldown al agotarse los
+                // reintentos. Ese lote NO se da por perdido — se espera la
+                // ventana y se repite UNA vez. Un reintento tras dormir lo que
+                // Roblox pidio no es insistir: es reanudar. Repetirlo mas de
+                // una vez si lo seria, y por eso se controla con `reintentado`.
+                if (fallos.assetIds.length > 0 && !reintentados.has(i)) {
+                    const despues = rateLimiter.getThrottleState(RUTA_CATALOGO);
+                    if (despues.throttled) {
+                        reintentados.add(i);
+                        const segundoIntento = await puerta.abrir(RUTA_CATALOGO);
+                        if (segundoIntento === VEREDICTO.AGOTADO) {
+                            frenadoPorLimite = true;
+                            for (const restante of lotes.slice(i)) {
+                                for (const assetId of restante) irresolubles.add(assetId);
+                            }
+                            return;
+                        }
+                        i--; // se repite ESTE lote, ya con la ventana reabierta
+                        continue;
+                    }
+                }
+
                 for (const assetId of lote) {
                     const ficha = resueltas.get(assetId);
                     if (ficha === undefined) irresolubles.add(assetId);
                     else fichas.set(assetId, ficha);
-                }
-
-                // Un lote fallido con la ruta ya frenada es la firma de un 429:
-                // el limitador acaba de imponer el cooldown al agotarse los
-                // reintentos. Se corta aqui en vez de esperar al siguiente lote.
-                if (fallos.assetIds.length > 0) {
-                    const despues = rateLimiter.getThrottleState(RUTA_CATALOGO);
-                    if (despues.throttled) {
-                        frenadoPorLimite = true;
-                        logger.warn('Busqueda del plugin detenida: Roblox limito el catalogo a mitad', {
-                            requestId: requestContext.requestId(),
-                            searchId: requestContext.searchId(),
-                            routeKey: RUTA_CATALOGO,
-                            reason: despues.reason,
-                            cooldownRemainingMs: despues.cooldownRemainingMs,
-                            assetsSinResolver: fallos.assetIds.length,
-                        });
-                        return;
-                    }
                 }
             }
         },

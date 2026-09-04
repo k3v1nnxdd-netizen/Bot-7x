@@ -102,6 +102,13 @@ function crearStats() {
         cacheHits: 0,
         cacheMisses: 0,
 
+        // Pausas por limite de Roblox. Son la diferencia entre "la busqueda se
+        // rindio" y "la busqueda espero lo que le pidieron y siguio": sin
+        // ellas, dos busquedas de 40 s — una trabajando y otra parada — se leen
+        // exactamente igual.
+        rateLimitWaits: 0,
+        rateLimitWaitedMs: 0,
+
         // Veredictos
         accepted: 0,
         rejectedAvatarError: 0,
@@ -238,6 +245,7 @@ function crearStats() {
 
                 memberPageLimit: presupuestos?.techoPaginas ?? null,
                 timeBudgetMs: presupuestos?.tiempoMs ?? null,
+                wallClockBudgetMs: presupuestos?.relojDeParedMs ?? null,
                 candidatesPerResultEstimate: presupuestos?.costePorResultado ?? null,
 
                 assetIdsSeen: contadores.assetIdsSeen,
@@ -250,6 +258,12 @@ function crearStats() {
                 bundleBatches: contadores.bundleBatches,
                 cacheHits: contadores.cacheHits,
                 cacheMisses: contadores.cacheMisses,
+                rateLimitWaits: contadores.rateLimitWaits,
+                rateLimitWaitedMs: Math.round(contadores.rateLimitWaitedMs),
+
+                // Tiempo de TRABAJO, ya descontadas las pausas. Es contra este
+                // y no contra durationMs contra el que se compara timeBudgetMs.
+                workingMs: Math.max(0, Date.now() - empezado - contadores.rateLimitWaitedMs),
 
                 accepted: contadores.accepted,
                 rejectedAvatarError: contadores.rejectedAvatarError,

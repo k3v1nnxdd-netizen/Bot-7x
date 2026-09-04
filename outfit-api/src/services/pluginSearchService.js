@@ -3,7 +3,6 @@
 const config = require('../config');
 const logger = require('../observability/logger');
 const requestContext = require('../observability/requestContext');
-const rateLimiter = require('../roblox/rateLimiter');
 const repo = require('../db/pluginRotationRepo');
 const { abrirRotacion } = require('./pluginSearch/rotation');
 const { traerOla, RUTA_AVATAR } = require('./pluginSearch/avatarWave');
@@ -13,6 +12,7 @@ const { valorar, aplicarPolitica, necesitaBundle } = require('./pluginSearch/pri
 const { crearStats, PARADA } = require('./pluginSearch/stats');
 const { crearEstimador } = require('./pluginSearch/eta');
 const presupuestos = require('./pluginSearch/budget');
+const { crearPuerta, VEREDICTO } = require('./pluginSearch/throttleGate');
 
 // Busqueda de outfits reales para el plugin de Studio. Este archivo es SOLO la
 // orquestacion; cada etapa vive en su propio modulo bajo ./pluginSearch/.
@@ -79,7 +79,10 @@ function presupuestoDeCandidatos(amount, previas) {
 // NOTESE QUE EL PRESUPUESTO DESEADO NO ESTA AQUI. Ese era el bug: un numero
 // calculado antes de empezar, suponiendo cuatro candidatos por resultado,
 // terminaba busquedas que solo eran caras.
-function motivoParaParar({ encontrados, amount, examinados, techoCandidatos, empezado, tiempoMs, indice, rotacion }) {
+function motivoParaParar({
+    encontrados, amount, examinados, techoCandidatos,
+    trabajadoMs, relojRestante, tiempoMs, indice, rotacion, frenadoElAvatar,
+}) {
     // 1. Ya esta lo pedido. Va PRIMERO: una busqueda que junto sus `amount`
     //    outfits termino bien, aunque por el camino Roblox nos frenara un rato.
     //    Decir que paro por un limite con la lista completa en la mano mandaria
@@ -87,19 +90,18 @@ function motivoParaParar({ encontrados, amount, examinados, techoCandidatos, emp
     //    perfecto.
     if (encontrados >= amount) return PARADA.COMPLETO;
 
-    // 2. Roblox nos esta frenando DE VERDAD. Se mira antes que los presupuestos
-    //    porque seguir solo alarga el cooldown y retrasa la recuperacion de
-    //    todo el servicio.
+    // 2. Roblox nos esta frenando Y LA ESPERA YA NO CABE. Ojo al matiz, que es
+    //    todo el arreglo: un cooldown por si solo NO llega aqui. Un cooldown se
+    //    espera (ver throttleGate.js) y la busqueda continua. Estas dos
+    //    banderas se encienden unicamente cuando la pausa que Roblox pide no
+    //    entra en lo que queda de presupuesto — entonces si, se para y se
+    //    devuelve lo encontrado.
     //
     //    UN MOTIVO POR RUTA. El catalogo y el avatar son dos incidentes
     //    distintos: endpoints distintos, cuotas independientes (bucket propio
-    //    cada uno) y arreglos distintos. El avatar es ademas el que mas se
-    //    castiga — una llamada por candidato, sin lote posible — y hasta ahora
-    //    su 429 no paraba nada: cada candidato caia como 'avatarError',
-    //    indistinguible de una cuenta baneada, y la busqueda seguia quemando
-    //    cuota sobre un Roblox que ya decia que no.
+    //    cada uno) y arreglos distintos.
     if (indice.frenadoPorLimite) return PARADA.LIMITE_CATALOGO;
-    if (rateLimiter.getThrottleState(RUTA_AVATAR).throttled) return PARADA.LIMITE_AVATAR;
+    if (frenadoElAvatar) return PARADA.LIMITE_AVATAR;
 
     // 3. No queda nadie nuevo en la comunidad: se le dio la vuelta entera.
     if (rotacion.topePaginas) return PARADA.TOPE_CANDIDATOS;
@@ -113,9 +115,12 @@ function motivoParaParar({ encontrados, amount, examinados, techoCandidatos, emp
     //    donde quedo, asi que la siguiente busqueda mira gente nueva).
     if (examinados >= techoCandidatos) return PARADA.TOPE_CANDIDATOS;
 
-    // 5. Tiempo. El reloj arranca cuando arranca la BUSQUEDA, no cuando se
-    //    acepto la peticion: esperar turno del grupo no consume presupuesto.
-    if (Date.now() - empezado >= tiempoMs) return PARADA.TIEMPO;
+    // 5. Tiempo, con sus DOS relojes. El de TRABAJO no corre mientras la
+    //    busqueda esta parada esperando a Roblox; el de PARED corre siempre y
+    //    es lo que impide que la suma de pausas no acabe nunca. El reloj
+    //    arranca al empezar a BUSCAR: esperar turno del grupo tampoco cuenta.
+    if (trabajadoMs >= tiempoMs) return PARADA.TIEMPO;
+    if (relojRestante <= 0) return PARADA.TIEMPO;
 
     return null;
 }
@@ -164,14 +169,15 @@ async function ejecutarBusqueda(
     const techoCandidatos = presupuestos.techoDeCandidatos(amount);
     const techoPaginas = presupuestos.techoDePaginas(techoCandidatos);
     const tiempoMs = presupuestos.presupuestoDeTiempo(amount, { modoAsincrono });
+    const relojDeParedMs = presupuestos.techoDeRelojDePared(tiempoMs);
 
     // La rotacion toma turno del grupo: si otra busqueda lo esta recorriendo,
     // esta espera aqui (sin sondear) y `onEncolado` deja constancia de que esta
-    // en cola, no buscando. El lease se pide dimensionado a lo que ESTA
-    // busqueda puede llegar a durar.
+    // en cola, no buscando. El lease se pide dimensionado a TODO lo que esta
+    // busqueda puede llegar a durar, pausas por limite de Roblox incluidas.
     const rotacion = await abrirRotacion(groupId, stats, {
         onEncolado,
-        leaseMs: presupuestos.duracionDelLease(tiempoMs),
+        leaseMs: presupuestos.duracionDelLease(relojDeParedMs),
         maxPaginas: techoPaginas,
     });
 
@@ -181,23 +187,51 @@ async function ejecutarBusqueda(
     const empezado = Date.now();
     const estimador = crearEstimador({ target: amount, previas });
 
-    const indice = crearIndiceDeCatalogo(stats);
+    // ── DOS RELOJES, Y LA DIFERENCIA ES LA CORRECCION ────────────────────────
+    //
+    // `tiempoMs` mide TRABAJO. Estar parado porque Roblox pidio esperar no es
+    // trabajar, asi que no lo consume: si lo consumiera, una sola pausa de ocho
+    // segundos se comeria un tercio del presupuesto de una busqueda de 10 y la
+    // dejaria sin tiempo para lo que de verdad quedaba por hacer.
+    //
+    // `relojDeParedMs` mide TODO, pausas incluidas, porque quien mira el plugin
+    // mide en reloj de pared. Es el que impide que "esperar en vez de rendirse"
+    // se convierta en "no terminar nunca".
+    const trabajadoMs = () => Date.now() - empezado - puerta.esperadoMs;
+    const relojRestante = () => relojDeParedMs - (Date.now() - empezado);
+
+    // La puerta que convierte un cooldown de Roblox en una PAUSA en vez de en
+    // el final de la busqueda. Su presupuesto es lo que quede de espera y lo que
+    // quede de reloj de pared, lo que sea menor: nunca se empieza una pausa que
+    // no se pueda terminar.
+    const puerta = crearPuerta(stats, {
+        presupuestoDeEspera: () => Math.min(
+            config.pluginSearch.rateLimitWaitBudgetMs - puerta.esperadoMs,
+            relojRestante()
+        ),
+    });
+
+    const indice = crearIndiceDeCatalogo(stats, { puerta });
     const bundles = crearIndiceDeBundles(stats);
 
     const encontrados = [];
     const yaIncluidos = new Set(); // ningun userId repetido en la respuesta
     let examinados = 0;
     let segmentosVacios = 0;
+    let frenadoElAvatar = false; // la puerta del avatar se quedo sin presupuesto
     let deseado = presupuestos.presupuestoDeseado({ amount, encontrados: 0, examinados: 0, previas });
     let coste = presupuestos.costePorResultado({ examinados: 0, encontrados: 0, previas });
     let progreso = estimador.progreso({ examinados: 0, encontrados: 0 });
 
+    const estadoDeParada = () => ({
+        encontrados: encontrados.length, amount, examinados, techoCandidatos,
+        trabajadoMs: trabajadoMs(), relojRestante: relojRestante(),
+        tiempoMs, indice, rotacion, frenadoElAvatar,
+    });
+
     try {
         for (;;) {
-            const parada = motivoParaParar({
-                encontrados: encontrados.length, amount, examinados,
-                techoCandidatos, empezado, tiempoMs, indice, rotacion,
-            });
+            const parada = motivoParaParar(estadoDeParada());
             if (parada) { stats.pararPor(parada); break; }
 
             // ── Presupuesto DESEADO, recalculado con la evidencia de ahora ───
@@ -212,6 +246,20 @@ async function ejecutarBusqueda(
             deseado = presupuestos.presupuestoDeseado({
                 amount, encontrados: encontrados.length, examinados, previas,
             });
+
+            // ── Puerta del AVATAR, antes de tocar la rotacion ────────────────
+            //
+            // Se pregunta ANTES de pedir el tramo, no despues, y el orden
+            // importa: un tramo pedido es comunidad consumida — la rotacion da
+            // por vistos a esos miembros — asi que sacarlos para descubrir
+            // acto seguido que no podemos mirar sus avatares los perderia hasta
+            // la siguiente vuelta entera al grupo.
+            //
+            // Si el avatar esta frenado se ESPERA lo que Roblox pida y se
+            // sigue. Solo si esa espera no cabe se enciende la bandera y la
+            // parada de arriba la recoge en la siguiente vuelta.
+            const puertaAvatar = await puerta.abrir(RUTA_AVATAR);
+            if (puertaAvatar === VEREDICTO.AGOTADO) { frenadoElAvatar = true; continue; }
 
             // ── Etapa 0: siguiente tramo de la comunidad ─────────────────────
             //
@@ -318,10 +366,7 @@ async function ejecutarBusqueda(
         await rotacion.cerrar();
     }
 
-    const paradaFinal = motivoParaParar({
-        encontrados: encontrados.length, amount, examinados,
-        techoCandidatos, empezado, tiempoMs, indice, rotacion,
-    });
+    const paradaFinal = motivoParaParar(estadoDeParada());
     if (paradaFinal) stats.pararPor(paradaFinal);
 
     stats.anotarRotacion({
@@ -349,6 +394,7 @@ async function ejecutarBusqueda(
         porResultadoEfectivo: presupuestos.candidatosPorResultadoEfectivos(amount),
         techoPaginas,
         tiempoMs,
+        relojDeParedMs,
         costePorResultado: Math.round(coste * 100) / 100,
     });
 

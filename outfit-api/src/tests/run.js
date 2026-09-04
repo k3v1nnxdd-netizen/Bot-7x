@@ -25,6 +25,13 @@ process.env.RATE_LIMIT_MAX = '25';        // tope bajo para poder verificar el 4
 process.env.UPSTREAM_RETRY_BASE_MS = '5'; // backoff casi instantaneo: los tests miden
 process.env.UPSTREAM_RETRY_MAX_MS = '10'; // el COMPORTAMIENTO, no la duracion real
 
+// Las PAUSAS por limite de Roblox se apagan por defecto en la suite: en
+// produccion la busqueda duerme lo que Roblox pida (ver throttleGate.js), y con
+// varios casos que provocan un 'retry-after' de 12-30 s a proposito, respetarlo
+// aqui convertiria la suite en varios minutos de sleep. Los casos que prueban
+// la pausa suben este presupuesto ELLOS, con cooldowns de milisegundos.
+process.env.PLUGIN_SEARCH_RATE_LIMIT_WAIT_BUDGET_MS = '0';
+
 const fs = require('fs');
 const path = require('path');
 

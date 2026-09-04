@@ -193,11 +193,26 @@ function presupuestoDeTiempo(amount, { modoAsincrono = false } = {}) {
     return modoAsincrono ? base : Math.min(base, timeBudgetSyncCeilingMs);
 }
 
-// Cuanto tiene que durar el lease de rotacion de ESTA busqueda: lo que puede
-// llegar a durar, mas margen. Ver el comentario de pluginRotation.leaseMs.
-function duracionDelLease(presupuestoTiempoMs) {
+// TECHO DE RELOJ DE PARED. El presupuesto de tiempo mide TRABAJO; esperar a que
+// Roblox reabra una ruta no es trabajar, y por eso no lo consume — si lo
+// consumiera, una sola pausa de ocho segundos se llevaria por delante la
+// busqueda entera, que es exactamente lo que pasaba.
+//
+// Pero algo tiene que acotar el total, porque quien mira el plugin mide en
+// reloj de pared y no en presupuestos. Esto es ese algo: trabajo + espera, y ni
+// un ms mas, se agote lo que se agote primero.
+function techoDeRelojDePared(presupuestoTiempoMs) {
+    return presupuestoTiempoMs + config.pluginSearch.rateLimitWaitBudgetMs;
+}
+
+// Cuanto tiene que durar el lease de rotacion de ESTA busqueda: TODO lo que
+// puede llegar a durar de reloj de pared, mas margen. Se calcula sobre el reloj
+// de pared y no sobre el presupuesto de trabajo a proposito: una busqueda
+// parada esperando a Roblox sigue teniendo el grupo cogido, y un lease que
+// venciera durante la pausa dejaria a otra busqueda avanzar el mismo cursor.
+function duracionDelLease(techoRelojDeParedMs) {
     const { leaseMs, leaseMarginMs } = config.pluginRotation;
-    return Math.max(leaseMs, presupuestoTiempoMs + leaseMarginMs);
+    return Math.max(leaseMs, techoRelojDeParedMs + leaseMarginMs);
 }
 
 module.exports = {
@@ -207,5 +222,6 @@ module.exports = {
     candidatosPorResultadoEfectivos,
     techoDePaginas,
     presupuestoDeTiempo,
+    techoDeRelojDePared,
     duracionDelLease,
 };

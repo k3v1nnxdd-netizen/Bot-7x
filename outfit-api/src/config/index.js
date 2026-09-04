@@ -165,6 +165,36 @@ const upstream = {
     circuitFailureThreshold: intFromEnv('UPSTREAM_CIRCUIT_THRESHOLD', 5),
     circuitBaseCooldownMs: intFromEnv('UPSTREAM_CIRCUIT_BASE_COOLDOWN_MS', 5_000),
     circuitMaxCooldownMs: intFromEnv('UPSTREAM_CIRCUIT_MAX_COOLDOWN_MS', 60_000),
+
+    // ── Marcapasos adaptativo (AIMD) por ruta ───────────────────────────────
+    //
+    // Separacion minima entre dos llamadas de la MISMA ruta. ARRANCA EN CERO:
+    // mientras Roblox no se queje no hay separacion ninguna y el trafico del
+    // juego se comporta exactamente igual que siempre. Solo aparece cuando
+    // Roblox señala presion — un 429, o un 'x-ratelimit-remaining: 0' en una
+    // respuesta perfectamente correcta — y se relaja sola conforme las llamadas
+    // vuelven a salir bien.
+    //
+    // Existe por la busqueda del plugin, que es lo unico de este servicio que
+    // hace rafagas sostenidas: doce olas seguidas agotan la ventana de cuota del
+    // catalogo tan deprisa como la red lo permita. Es la diferencia entre
+    // gastarse la cuota en cinco segundos y repartirla a lo largo de la
+    // busqueda.
+    pacerBaseMs: intFromEnv('UPSTREAM_PACER_BASE_MS', 120),
+
+    // Techo de la separacion. Por encima, esperar mas no compra nada: el
+    // cooldown reactivo ya cubre las pausas largas.
+    pacerMaxMs: intFromEnv('UPSTREAM_PACER_MAX_MS', 2_000),
+
+    // Por debajo de este suelo el marcapasos se apaga del todo, en vez de
+    // dejar temporizadores de 3 ms vivos sin ganar nada.
+    pacerMinMs: intFromEnv('UPSTREAM_PACER_MIN_MS', 25),
+
+    // Cuanto se relaja la separacion por cada llamada correcta. 0,9 tarda unas
+    // 30 llamadas buenas en apagar el marcapasos desde su base: lo bastante
+    // rapido para no penalizar una ruta ya recuperada, y lo bastante lento para
+    // no volver a la rafaga al primer acierto.
+    pacerDecay: Number(process.env.UPSTREAM_PACER_DECAY ?? 0.9),
 };
 
 // Tope duro de entradas en memoria. Sin Volume ni disco: si se llena, se
@@ -200,10 +230,15 @@ const outfitTypes = ['Avatar', 'DynamicHead', 'Shoes'];
 // desmedida contra catalog.roblox.com.
 const maxBundleLookupsPerRequest = intFromEnv('MAX_BUNDLE_LOOKUPS_PER_REQUEST', 24);
 
-// Tamaño maximo del lote a catalog/v1/catalog/items/details. Roblox admite
-// bastantes mas por peticion, pero un outfit real ronda los 20 assets, asi que
-// 100 garantiza que un outfit entero siempre entre en UN solo lote.
-const maxCatalogBatchSize = intFromEnv('MAX_CATALOG_BATCH_SIZE', 100);
+// Tamaño maximo del lote a catalog/v1/catalog/items/details.
+//
+// 120 es el TOPE REAL del endpoint, comprobado en vivo: con 121 responde 400
+// "Invalid count". Se usa entero y no un numero redondo por debajo porque en
+// esta ruta el coste de cuota es POR LLAMADA, no por item: un lote de 120 y uno
+// de 100 gastan exactamente lo mismo de la ventana de Roblox, asi que dejar
+// veinte huecos libres en cada lote es tirar un 17% de la cuota — justo la que
+// hacia falta para que la busqueda no se quedara a medias.
+const maxCatalogBatchSize = intFromEnv('MAX_CATALOG_BATCH_SIZE', 120);
 
 // ── Limites de POST /v1/catalog/batch ───────────────────────────────────────
 // Un outfit real ronda los 20 assets; estos topes dejan 3x de margen y a la
@@ -346,6 +381,33 @@ const pluginSearch = {
     // otro lado, y HttpService de Roblox tiene su propio plazo: prometer tres
     // minutos seria prometer un timeout. El modo asincrono no tiene este techo.
     timeBudgetSyncCeilingMs: intFromEnv('PLUGIN_SEARCH_TIME_BUDGET_SYNC_CEILING_MS', 25_000),
+
+    // ── Esperas por limite de Roblox ─────────────────────────────────────────
+    //
+    // Un cooldown de Roblox es una INSTRUCCION DE ESPERAR, no un "no hay
+    // outfits". Antes se trataba como el final de la busqueda y devolvia 3 de
+    // 10 a los 18 segundos; ahora se espera exactamente lo que Roblox pide y se
+    // continua. Estas tres perillas son lo que impide que esa espera se
+    // convierta en un plugin colgado.
+    //
+    // El presupuesto de espera es INDEPENDIENTE del de trabajo: estar parado no
+    // consume tiempo de buscar, porque si lo consumiera una sola pausa se
+    // llevaria la busqueda por delante — que es justo lo que pasaba.
+    rateLimitWaitBudgetMs: intFromEnv('PLUGIN_SEARCH_RATE_LIMIT_WAIT_BUDGET_MS', 45_000),
+
+    // Techo de UNA espera. Si Roblox pide mas que esto de una sentada, no se
+    // espera: se devuelve lo encontrado con el motivo preciso y que el usuario
+    // decida. Nadie mira un plugin parado medio minuto sin moverse.
+    rateLimitSingleWaitMs: intFromEnv('PLUGIN_SEARCH_RATE_LIMIT_SINGLE_WAIT_MS', 20_000),
+
+    // Numero de pausas por busqueda. Una busqueda que necesita seis pausas no
+    // esta "yendo lenta": esta peleandose con una cuota que hoy no da, y
+    // reintentar dentro de un rato es mejor que insistir ahora.
+    rateLimitMaxWaits: intFromEnv('PLUGIN_SEARCH_RATE_LIMIT_MAX_WAITS', 5),
+
+    // Margen que se añade a lo que pide Roblox. Volver un milisegundo antes de
+    // que la ventana se reabra gasta el reintento y renueva el cooldown.
+    rateLimitWaitMarginMs: intFromEnv('PLUGIN_SEARCH_RATE_LIMIT_WAIT_MARGIN_MS', 250),
 
     // Candidatos cuyos avatares se piden en paralelo. Por encima del gate
     // global de salida (UPSTREAM_MAX_CONCURRENT) no se gana nada — el limitador

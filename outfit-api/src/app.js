@@ -8,6 +8,7 @@ const metricsRoute = require('./api/routes/metrics');
 const adminGroupsRoute = require('./api/routes/adminGroups');
 const licenseRoute = require('./api/routes/license');
 const catalogRoute = require('./api/routes/catalog');
+const pluginRoute = require('./api/routes/plugin');
 const { requireApiKey } = require('./security/apiKey');
 const { requireAdminKey } = require('./security/adminKey');
 const { requireLicenseTokenHeader, requireLicensedGame } = require('./security/licenseGuard');
@@ -120,6 +121,23 @@ function createApp() {
     // atiende al juego, y mezclarles unas pocas llamadas administrativas
     // ensuciaria los percentiles que sirven para vigilar la carga real.
     app.use('/admin/groups', rateLimit, requireAdminKey, adminGroupsRoute);
+
+    // Plugin privado de Roblox Studio (7x Outfit Importer). Fuera de /v1 por lo
+    // mismo que /admin: /v1 es el contrato que consume el juego vendido y se
+    // versiona para no romperlo, y esto es otra herramienta, con otro publico y
+    // otro ritmo de cambio.
+    //
+    // Comparte el limitador por IP con todo lo demas — el mismo guardia
+    // anti-abuso, sin tocarlo — y NO pasa por latencyMiddleware, por la misma
+    // razon que /admin/groups: los percentiles de /v1/metrics describen el
+    // trafico que atiende al juego, y mezclarles las llamadas de una
+    // herramienta interna ensuciaria justo la señal que sirve para vigilar la
+    // carga real.
+    //
+    // TODAVIA SIN CREDENCIAL: esta primera version solo confirma que el plugin
+    // conecta y devuelve una respuesta fija (ver api/routes/plugin.js). Hay que
+    // ponerle una antes de que sirva datos de verdad.
+    app.use('/plugin', rateLimit, pluginRoute);
 
     app.use(notFoundHandler);
     app.use(errorHandler);

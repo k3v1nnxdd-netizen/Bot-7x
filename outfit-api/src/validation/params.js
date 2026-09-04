@@ -565,9 +565,52 @@ function parseCatalogBatchBody(body) {
     return { assetIds, bundleIds, resolveBundles };
 }
 
+// ── Plugin privado de Roblox Studio (POST /plugin/outfits/search) ───────────
+//
+// Cliente: el plugin "7x Outfit Importer", que corre DENTRO de Roblox Studio
+// y no dentro de un juego. Por eso no valida token de licencia ni ids de
+// experiencia: no hay `game.GameId` real que comprobar en Studio, y esta
+// primera version existe solo para verificar la conexion plugin -> API.
+//
+// `amount` es lo UNICO que se acepta hoy. Se valida aqui, en la frontera, y
+// no en el handler, por lo mismo que el resto: el dia que esta ruta empiece a
+// buscar miembros de verdad, cada unidad de `amount` sera una llamada a
+// Roblox, y un numero absurdo tiene que costar microsegundos en vez de trafico
+// saliente.
+const PLUGIN_SEARCH_MIN_AMOUNT = 1;
+const PLUGIN_SEARCH_MAX_AMOUNT = 500;
+
+// NUMERO JSON, no cadena. `JSONEncode({amount = 100})` en Lua produce un
+// numero, asi que aceptar tambien "100" solo serviria para que un plugin que
+// manda el texto de una caja sin convertirlo pareciera funcionar — y fallara
+// mas tarde, cuando el valor se use para contar. Se rechaza aqui, con un
+// mensaje que dice exactamente que se esperaba.
+//
+// `typeof NaN` e `Infinity` son 'number', asi que la comprobacion de entero es
+// la que de verdad los para; el orden importa.
+function parsePluginAmount(raw) {
+    const invalido = () => new ValidationError(
+        `amount debe ser un numero entero entre ${PLUGIN_SEARCH_MIN_AMOUNT} y ${PLUGIN_SEARCH_MAX_AMOUNT}`
+    );
+
+    if (typeof raw !== 'number' || !Number.isInteger(raw)) throw invalido();
+    if (raw < PLUGIN_SEARCH_MIN_AMOUNT || raw > PLUGIN_SEARCH_MAX_AMOUNT) throw invalido();
+    return raw;
+}
+
+function parsePluginSearchBody(body) {
+    if (body === undefined || body === null || typeof body !== 'object' || Array.isArray(body)) {
+        throw new ValidationError(
+            'Manda un cuerpo JSON con {"amount": 100} y la cabecera Content-Type: application/json'
+        );
+    }
+    return { amount: parsePluginAmount(body.amount) };
+}
+
 module.exports = {
     ValidationError,
     parseCatalogBatchBody,
+    parsePluginSearchBody,
     parseLicenseVerifyBody,
     parseLicenseTokenHeader,
     parseLicenseContextHeaders,

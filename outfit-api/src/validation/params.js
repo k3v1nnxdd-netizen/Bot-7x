@@ -652,7 +652,28 @@ function parsePluginSearchBody(body) {
         throw new ValidationError(`maxPrice (${maxPrice}) no puede ser menor que minPrice (${minPrice})`);
     }
 
-    return { amount, groupId, minPrice, maxPrice };
+    // POLITICA DE VALORACION. Opcional, y por defecto ESTRICTA para no cambiarle
+    // el significado a ningun cliente que ya llame sin mandarla.
+    //
+    //   true  (default) -> solo entran outfits que se pudieron valorar ENTEROS.
+    //                      El totalPrice es exacto: no falta nada por contar.
+    //   false           -> entran tambien los que llevan alguna pieza no
+    //                      comprable (fuera de venta, limitada sin reventa,
+    //                      retirada), siempre que algo se haya podido valorar.
+    //                      El totalPrice es entonces el coste de lo comprable, y
+    //                      cada outfit dice con priceComplete si esta entero.
+    //
+    // Booleano de verdad, no "1"/"true": esto viene en un cuerpo JSON, donde el
+    // tipo existe. La forma laxa es para las query strings, que no lo tienen.
+    let requireCompletePrice = true;
+    if (body.requireCompletePrice !== undefined && body.requireCompletePrice !== null) {
+        if (typeof body.requireCompletePrice !== 'boolean') {
+            throw new ValidationError('requireCompletePrice debe ser true o false');
+        }
+        requireCompletePrice = body.requireCompletePrice;
+    }
+
+    return { amount, groupId, minPrice, maxPrice, requireCompletePrice };
 }
 
 module.exports = {

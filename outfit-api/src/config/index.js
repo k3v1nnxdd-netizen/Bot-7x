@@ -265,6 +265,18 @@ const pluginSearch = {
     // MAX_CATALOG_BATCH_SIZE. Subirlo agranda el lote y la latencia de la ola
     // sin reducir ya las llamadas; bajarlo devuelve llamadas al catalogo.
     waveSize: intFromEnv('PLUGIN_SEARCH_WAVE_SIZE', 25),
+
+    // Busquedas inversas asset -> bundle por BUSQUEDA (no por ola). Es el
+    // unico endpoint de Roblox sin lote que toca esta ruta, asi que es el que
+    // hay que racionar: sirve para poner precio a las partes de bundle (unas
+    // piernas de Korblox valen 17.000 y sin esto se quedaban sin valorar).
+    //
+    // 12 cubre de sobra un caso normal: Korblox y Headless salen del registro
+    // curado sin gastar ninguna, la pertenencia asset -> bundle se cachea 24 h
+    // globalmente, y un avatar tipico no lleva mas de una o dos piezas de
+    // bundle. Agotado el presupuesto, las piezas restantes se quedan sin
+    // valorar en vez de seguir gastando cuota.
+    maxBundleLookups: intFromEnv('PLUGIN_SEARCH_MAX_BUNDLE_LOOKUPS', 12),
 };
 
 const catalogBatch = {

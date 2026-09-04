@@ -38,8 +38,20 @@ router.use(express.json({ limit: '1kb' }));
 //     groupId   entero positivo      OBLIGATORIO (numero JSON, no cadena)
 //     minPrice  entero >= 0          opcional (default 0, "sin suelo")
 //     maxPrice  entero >= minPrice   opcional (default sin techo)
+//     requireCompletePrice  booleano opcional (default true, estricto)
 //
-//   200 { success:true, requested, found, outfits:[{userId,username,totalPrice}],
+// requireCompletePrice decide QUE se hace con un avatar que lleva alguna pieza
+// no comprable (fuera de venta, limitada sin nadie revendiendola, retirada del
+// catalogo). Con true solo entran los que se pudieron valorar enteros; con
+// false entran tambien esos, siempre que algo se haya podido valorar, y cada
+// outfit dice en priceComplete si su totalPrice esta completo. En una comunidad
+// real la mayoria de avatares llevan alguna pieza asi, de modo que false es lo
+// que hace utilizable la busqueda; true es lo que hay que usar cuando el numero
+// tiene que ser exacto.
+//
+//   200 { success:true, requested, found,
+//         outfits:[{userId,username,totalPrice,priceComplete,pricedItems,
+//                   unpricedItems,limitedItems,offSaleItems,bundledItems}],
 //         stats:{candidatesExamined,accepted,rejectedAvatarError,rejectedEmptyAvatar,
 //                rejectedCatalogError,rejectedUnknownPrice,rejectedMinPrice,rejectedMaxPrice} }
 //   400 { error: { code:'invalid_request', message } }   cuerpo mal formado

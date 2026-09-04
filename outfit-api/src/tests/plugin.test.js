@@ -83,11 +83,13 @@ module.exports = async function run() {
         listGroupMembers: roblox.listGroupMembers,
         getCurrentAvatar: roblox.getCurrentAvatar,
         getCatalogItemDetails: roblox.getCatalogItemDetails,
+        getBundlesForAsset: roblox.getBundlesForAsset,
+        getBundleDetails: roblox.getBundleDetails,
     };
 
     // Estado del mundo, reescrito por cada caso.
     let mundo = {};
-    const llamadas = { members: 0, avatars: 0, catalog: 0 };
+    const llamadas = { members: 0, avatars: 0, catalog: 0, bundleLookups: 0, bundleBatches: 0 };
 
     // Instrumentacion de la NUEVA arquitectura: hace falta poder afirmar sobre
     // el pico de concurrencia real y sobre el contenido de cada lote de
@@ -97,6 +99,7 @@ module.exports = async function run() {
         picoDeAvatares: 0,
         lotesDeCatalogo: [],        // un array de assetIds por lote enviado
         assetsPedidos: [],          // todos los ids pedidos, con repeticiones
+        lotesDeBundles: [],         // un array de bundleIds por lote de precio
     };
 
     function reiniciarVigilancia() {
@@ -104,14 +107,19 @@ module.exports = async function run() {
         vigilancia.picoDeAvatares = 0;
         vigilancia.lotesDeCatalogo = [];
         vigilancia.assetsPedidos = [];
+        vigilancia.lotesDeBundles = [];
     }
 
     function poblar({ miembros = 10, precioDe = userId => userId, avatarRoto = () => false,
-        catalogoRoto = false, paginas = null, assetsDe = null, fichaDe = null } = {}) {
-        mundo = { miembros, precioDe, avatarRoto, catalogoRoto, paginas, assetsDe, fichaDe };
+        catalogoRoto = false, paginas = null, assetsDe = null, fichaDe = null,
+        bundleDe = null, precioBundle = null } = {}) {
+        mundo = { miembros, precioDe, avatarRoto, catalogoRoto, paginas, assetsDe, fichaDe,
+            bundleDe, precioBundle };
         llamadas.members = 0;
         llamadas.avatars = 0;
         llamadas.catalog = 0;
+        llamadas.bundleLookups = 0;
+        llamadas.bundleBatches = 0;
         reiniciarVigilancia();
         cache.reset(); // la cache es global: sin esto un caso veria los datos del anterior
     }
@@ -180,17 +188,42 @@ module.exports = async function run() {
         return mapa;
     };
 
+    // Busqueda inversa asset -> bundle y precio del bundle. Por defecto nadie
+    // pertenece a ningun bundle; `bundleDe` y `precioBundle` lo cambian por caso.
+    dobles.getBundlesForAsset = async assetId => {
+        llamadas.bundleLookups++;
+        const bundleId = mundo.bundleDe ? mundo.bundleDe(String(assetId)) : null;
+        return bundleId ? [{ id: Number(bundleId), name: `Bundle${bundleId}`, bundleType: 'BodyParts' }] : [];
+    };
+
+    dobles.getBundleDetails = async bundleIds => {
+        llamadas.bundleBatches++;
+        vigilancia.lotesDeBundles.push(bundleIds.map(String));
+        const mapa = new Map();
+        for (const bundleId of bundleIds) {
+            const registro = mundo.precioBundle ? mundo.precioBundle(String(bundleId)) : undefined;
+            mapa.set(String(bundleId), registro ?? {
+                available: true, name: `Bundle${bundleId}`, bundleType: 'BodyParts',
+                assetIds: [], price: 1000, forSale: true,
+                lowestPrice: null, lowestResalePrice: null, hasResellers: null,
+            });
+        }
+        return mapa;
+    };
+
     // Se instalan una vez; los casos que necesiten otro comportamiento
     // reasignan y vuelven al doble base al terminar, NUNCA a original.*.
     roblox.listGroupMembers = dobles.listGroupMembers;
     roblox.getCurrentAvatar = dobles.getCurrentAvatar;
     roblox.getCatalogItemDetails = dobles.getCatalogItemDetails;
+    roblox.getBundlesForAsset = dobles.getBundlesForAsset;
+    roblox.getBundleDetails = dobles.getBundleDetails;
 
     const cuerpo = (extra = {}) => ({ amount: 10, groupId: GROUP_ID, ...extra });
 
     // ── Busqueda real ────────────────────────────────────────────────────────
 
-    test('devuelve miembros reales del grupo con su precio calculado', async () => {
+    test('devuelve miembros reales del grupo con su precio y su desglose', async () => {
         poblar({ miembros: 10, precioDe: () => 250 });
         const res = await buscar(port, cuerpo({ amount: 5 }));
 
@@ -201,8 +234,12 @@ module.exports = async function run() {
         assert.strictEqual(res.body.outfits.length, 5);
 
         for (const outfit of res.body.outfits) {
-            assert.deepStrictEqual(Object.keys(outfit).sort(), ['totalPrice', 'userId', 'username']);
+            assert.deepStrictEqual(Object.keys(outfit).sort(), ['bundledItems', 'limitedItems', 'offSaleItems', 'priceComplete',
+                'pricedItems', 'totalPrice', 'unpricedItems', 'userId', 'username']);
             assert.strictEqual(outfit.totalPrice, 250);
+            assert.strictEqual(outfit.priceComplete, true);
+            assert.strictEqual(outfit.pricedItems, 1);
+            assert.strictEqual(outfit.unpricedItems, 0);
             assert.ok(outfit.userId >= 1000 && outfit.userId < 1010, `userId inesperado: ${outfit.userId}`);
             assert.strictEqual(outfit.username, `User${outfit.userId}`);
         }
@@ -226,11 +263,13 @@ module.exports = async function run() {
             return mapa;
         };
 
-        const res = await buscar(port, cuerpo({ amount: 1 }));
-        assert.strictEqual(res.body.outfits[0].totalPrice, 1350);
-
-        roblox.getCurrentAvatar = dobles.getCurrentAvatar;
-        roblox.getCatalogItemDetails = dobles.getCatalogItemDetails;
+        try {
+            const res = await buscar(port, cuerpo({ amount: 1 }));
+            assert.strictEqual(res.body.outfits[0].totalPrice, 1350);
+        } finally {
+            roblox.getCurrentAvatar = dobles.getCurrentAvatar;
+            roblox.getCatalogItemDetails = dobles.getCatalogItemDetails;
+        }
     });
 
     test('un asset sin ficha de catalogo DESCARTA al candidato, no suma 0', async () => {
@@ -246,37 +285,51 @@ module.exports = async function run() {
         };
 
         // Contar el ausente como 0 daria totalPrice 500 y colaria este avatar
-        // en un rango donde no encaja. Preferimos no devolverlo.
-        const res = await buscar(port, cuerpo({ amount: 1 }));
-        assert.strictEqual(res.status, 200);
-        assert.strictEqual(res.body.found, 0);
-
-        roblox.getCurrentAvatar = dobles.getCurrentAvatar;
-        roblox.getCatalogItemDetails = dobles.getCatalogItemDetails;
+        // en un rango donde no encaja. En modo estricto (default) no se devuelve.
+        try {
+            const res = await buscar(port, cuerpo({ amount: 1 }));
+            assert.strictEqual(res.status, 200);
+            assert.strictEqual(res.body.found, 0);
+            assert.strictEqual(res.body.stats.rejectedIncompletePrice, 1);
+            assert.strictEqual(res.body.stats.assetsDeleted, 1);
+        } finally {
+            roblox.getCurrentAvatar = dobles.getCurrentAvatar;
+            roblox.getCatalogItemDetails = dobles.getCatalogItemDetails;
+        }
     });
 
-    test('un asset con precio null (limited / fuera de venta) DESCARTA al candidato', async () => {
+    test('un limited CON reventa se valora con la reventa, no con su precio historico', async () => {
         poblar({ miembros: 1 });
         roblox.getCurrentAvatar = async () => ({ assets: [{ id: 11 }, { id: 22 }], playerAvatarType: 'R15' });
         roblox.getCatalogItemDetails = async items => {
             const mapa = new Map();
             for (const item of items) {
+                const esLimited = Number(item.id) === 22;
                 mapa.set(roblox.catalogKey('Asset', item.id), {
-                    available: true, restrictions: [], isLimited: Number(item.id) === 22,
-                    // El limited llega con price null: su valor vive en la
-                    // reventa, y leerlo es la fase siguiente.
-                    price: Number(item.id) === 22 ? null : 300,
-                    lowestPrice: Number(item.id) === 22 ? 15000 : null,
+                    available: true, assetTypeId: 8,
+                    restrictions: esLimited ? ['Limited'] : [],
+                    isLimited: esLimited,
+                    // El limited arrastra un precio historico de 100 que NO debe
+                    // usarse: lo que se paga hoy son los 15000 de la reventa.
+                    price: esLimited ? 100 : 300,
+                    offSale: esLimited,
+                    lowestResalePrice: esLimited ? 15000 : null,
+                    lowestPrice: null,
                 });
             }
             return mapa;
         };
 
-        const res = await buscar(port, cuerpo({ amount: 1 }));
-        assert.strictEqual(res.body.found, 0);
-
-        roblox.getCurrentAvatar = dobles.getCurrentAvatar;
-        roblox.getCatalogItemDetails = dobles.getCatalogItemDetails;
+        try {
+            const res = await buscar(port, cuerpo({ amount: 1 }));
+            assert.strictEqual(res.body.found, 1);
+            assert.strictEqual(res.body.outfits[0].totalPrice, 15300, 'no se uso el precio de reventa');
+            assert.strictEqual(res.body.outfits[0].limitedItems, 1);
+            assert.strictEqual(res.body.outfits[0].priceComplete, true);
+        } finally {
+            roblox.getCurrentAvatar = dobles.getCurrentAvatar;
+            roblox.getCatalogItemDetails = dobles.getCatalogItemDetails;
+        }
     });
 
     test('un precio REAL de 0 sigue siendo valido: gratis no es lo mismo que desconocido', async () => {
@@ -303,12 +356,14 @@ module.exports = async function run() {
             return mapa;
         };
 
-        const res = await buscar(port, cuerpo({ amount: 1 }));
-        assert.strictEqual(res.body.found, 1);
-        assert.strictEqual(res.body.outfits[0].totalPrice, 450);
-
-        roblox.getCurrentAvatar = dobles.getCurrentAvatar;
-        roblox.getCatalogItemDetails = dobles.getCatalogItemDetails;
+        try {
+            const res = await buscar(port, cuerpo({ amount: 1 }));
+            assert.strictEqual(res.body.found, 1);
+            assert.strictEqual(res.body.outfits[0].totalPrice, 450);
+        } finally {
+            roblox.getCurrentAvatar = dobles.getCurrentAvatar;
+            roblox.getCatalogItemDetails = dobles.getCatalogItemDetails;
+        }
     });
 
     // ── Filtro de precio ─────────────────────────────────────────────────────
@@ -640,6 +695,364 @@ module.exports = async function run() {
         poblar({ miembros: 5, precioDe: () => 100 });
         const res = await buscar(port, cuerpo({ amount: 1 }));
         assert.strictEqual(res.status, 200);
+    });
+
+    // ── Valoracion: clasificacion de cada articulo ───────────────────────────
+    //
+    // El principio que sostiene todos estos casos: NO SE INVENTA NI UN ROBUX.
+    // Un articulo suma si y solo si Roblox afirma hoy un precio para el. Lo que
+    // decide si un avatar con articulos no valorables entra o no es la POLITICA
+    // (requireCompletePrice), no el valorador.
+
+    // Monta un avatar de piezas a medida: cada entrada es la ficha de catalogo
+    // tal como la devuelve Roblox, con el id que se le quiera dar.
+    function avatarDePiezas(piezas) {
+        const ids = Object.keys(piezas);
+        poblar({
+            miembros: 1,
+            assetsDe: () => ids.map(Number),
+            fichaDe: assetId => piezas[assetId],
+        });
+    }
+
+    const PIEZA = {
+        normal: precio => ({ available: true, assetTypeId: 8, isLimited: false, offSale: false, price: precio }),
+        gratis: () => ({ available: true, assetTypeId: 8, isLimited: false, offSale: false, price: 0 }),
+        limitedConReventa: reventa => ({
+            available: true, assetTypeId: 8, isLimited: true, restrictions: ['Limited'],
+            offSale: true, price: 55, lowestResalePrice: reventa, lowestPrice: null,
+        }),
+        limitedSoloLowestPrice: precio => ({
+            available: true, assetTypeId: 8, isLimited: true, restrictions: ['LimitedUnique'],
+            offSale: true, price: 55, lowestResalePrice: null, lowestPrice: precio,
+        }),
+        limitedSinReventa: () => ({
+            available: true, assetTypeId: 8, isLimited: true, restrictions: ['Limited'],
+            offSale: true, price: 55, lowestResalePrice: null, lowestPrice: null,
+        }),
+        offSale: () => ({ available: true, assetTypeId: 8, isLimited: false, offSale: true, price: 700 }),
+        borrada: () => undefined,          // Roblox no la devuelve en el lote
+        parteDeBundle: () => ({ available: true, assetTypeId: 27, isLimited: false, offSale: false, price: null }),
+    };
+
+    test('venta normal: el precio de catalogo se suma tal cual', async () => {
+        avatarDePiezas({ 11: PIEZA.normal(250), 22: PIEZA.normal(1600) });
+        const res = await buscar(port, cuerpo({ amount: 1 }));
+
+        assert.strictEqual(res.body.found, 1);
+        assert.strictEqual(res.body.outfits[0].totalPrice, 1850);
+        assert.strictEqual(res.body.outfits[0].pricedItems, 2);
+        assert.strictEqual(res.body.outfits[0].priceComplete, true);
+    });
+
+    test('gratis de verdad: precio 0 es un dato, no una ausencia', async () => {
+        avatarDePiezas({ 11: PIEZA.gratis(), 22: PIEZA.gratis() });
+        const res = await buscar(port, cuerpo({ amount: 1, minPrice: 0, maxPrice: 0 }));
+
+        assert.strictEqual(res.body.found, 1);
+        assert.strictEqual(res.body.outfits[0].totalPrice, 0);
+        assert.strictEqual(res.body.outfits[0].pricedItems, 2);
+        assert.strictEqual(res.body.outfits[0].unpricedItems, 0);
+        assert.strictEqual(res.body.outfits[0].priceComplete, true);
+    });
+
+    test('limited con reventa: se usa lowestResalePrice, nunca el precio historico', async () => {
+        avatarDePiezas({ 11: PIEZA.normal(100), 22: PIEZA.limitedConReventa(9000) });
+        const res = await buscar(port, cuerpo({ amount: 1 }));
+
+        // 100 + 9000. Si se hubiera usado el price historico (55) saldria 155.
+        assert.strictEqual(res.body.outfits[0].totalPrice, 9100);
+        assert.strictEqual(res.body.outfits[0].limitedItems, 1);
+        assert.strictEqual(res.body.outfits[0].priceComplete, true);
+    });
+
+    test('limited del sistema clasico: se cae a lowestPrice cuando no hay lowestResalePrice', async () => {
+        avatarDePiezas({ 11: PIEZA.limitedSoloLowestPrice(4200) });
+        const res = await buscar(port, cuerpo({ amount: 1 }));
+
+        assert.strictEqual(res.body.outfits[0].totalPrice, 4200);
+        assert.strictEqual(res.body.outfits[0].limitedItems, 1);
+    });
+
+    test('limited sin reventa: no se puede comprar hoy, no suma y marca incompleto', async () => {
+        avatarDePiezas({ 11: PIEZA.normal(500), 22: PIEZA.limitedSinReventa() });
+        const res = await buscar(port, cuerpo({ amount: 1, requireCompletePrice: false }));
+
+        assert.strictEqual(res.body.found, 1);
+        assert.strictEqual(res.body.outfits[0].totalPrice, 500, 'se colo el precio historico del limited');
+        assert.strictEqual(res.body.outfits[0].limitedItems, 1);
+        assert.strictEqual(res.body.outfits[0].unpricedItems, 1);
+        assert.strictEqual(res.body.outfits[0].priceComplete, false);
+    });
+
+    test('offSale: no suma su precio historico y queda identificado', async () => {
+        avatarDePiezas({ 11: PIEZA.normal(300), 22: PIEZA.offSale() });
+        const res = await buscar(port, cuerpo({ amount: 1, requireCompletePrice: false }));
+
+        // El offSale trae price 700 en la ficha; sumarlo seria inventar que hoy
+        // se puede comprar por 700.
+        assert.strictEqual(res.body.outfits[0].totalPrice, 300);
+        assert.strictEqual(res.body.outfits[0].offSaleItems, 1);
+        assert.strictEqual(res.body.outfits[0].unpricedItems, 1);
+        assert.strictEqual(res.body.outfits[0].priceComplete, false);
+    });
+
+    test('un solo offSale NO tira un avatar util en modo permisivo', async () => {
+        avatarDePiezas({
+            11: PIEZA.normal(400), 22: PIEZA.normal(600), 33: PIEZA.normal(800), 44: PIEZA.offSale(),
+        });
+        const res = await buscar(port, cuerpo({ amount: 1, requireCompletePrice: false }));
+
+        assert.strictEqual(res.body.found, 1, 'un offSale descarto un avatar con 1800 de ropa comprable');
+        assert.strictEqual(res.body.outfits[0].totalPrice, 1800);
+        assert.strictEqual(res.body.outfits[0].pricedItems, 3);
+        assert.strictEqual(res.body.outfits[0].unpricedItems, 1);
+    });
+
+    test('asset borrado o moderado: no suma y cuenta como no valorable', async () => {
+        avatarDePiezas({ 11: PIEZA.normal(250), 22: PIEZA.borrada() });
+        const res = await buscar(port, cuerpo({ amount: 1, requireCompletePrice: false }));
+
+        assert.strictEqual(res.body.outfits[0].totalPrice, 250);
+        assert.strictEqual(res.body.outfits[0].unpricedItems, 1);
+        assert.strictEqual(res.body.stats.assetsDeleted, 1);
+    });
+
+    test('mezcla completa: cada categoria cae donde debe y el total solo suma lo comprable', async () => {
+        avatarDePiezas({
+            11: PIEZA.normal(250),            // +250
+            22: PIEZA.gratis(),               // +0
+            33: PIEZA.limitedConReventa(1500), // +1500
+            44: PIEZA.limitedSinReventa(),    // no valorable
+            55: PIEZA.offSale(),              // no valorable
+            66: PIEZA.borrada(),              // no valorable
+        });
+        const res = await buscar(port, cuerpo({ amount: 1, requireCompletePrice: false }));
+        const o = res.body.outfits[0];
+
+        assert.strictEqual(o.totalPrice, 1750);
+        assert.strictEqual(o.pricedItems, 3);
+        assert.strictEqual(o.unpricedItems, 3);
+        assert.strictEqual(o.limitedItems, 2, 'los dos limiteds deben contarse, tengan reventa o no');
+        assert.strictEqual(o.offSaleItems, 1);
+        assert.strictEqual(o.priceComplete, false);
+    });
+
+    // ── Bundles ──────────────────────────────────────────────────────────────
+
+    test('varias partes del mismo bundle: el precio del bundle se cobra UNA vez', async () => {
+        // Cinco piezas de cuerpo del mismo bundle, mas un sombrero normal.
+        avatarDePiezas({
+            101: PIEZA.parteDeBundle(), 102: PIEZA.parteDeBundle(), 103: PIEZA.parteDeBundle(),
+            104: PIEZA.parteDeBundle(), 105: PIEZA.parteDeBundle(), 200: PIEZA.normal(150),
+        });
+        mundo.bundleDe = assetId => (assetId.startsWith('10') ? '777' : null);
+        mundo.precioBundle = () => ({
+            available: true, name: 'Pack', bundleType: 'BodyParts', assetIds: [],
+            price: 17000, forSale: true, lowestPrice: null, lowestResalePrice: null,
+        });
+
+        const res = await buscar(port, cuerpo({ amount: 1 }));
+        const o = res.body.outfits[0];
+
+        // 17000 UNA vez + 150 del sombrero. Cobrarlo cinco veces daria 85150.
+        assert.strictEqual(o.totalPrice, 17150, 'el bundle se cobro mas de una vez');
+        assert.strictEqual(o.bundledItems, 5);
+        assert.strictEqual(o.pricedItems, 6, 'las cinco piezas cuentan como valoradas');
+        assert.strictEqual(o.priceComplete, true);
+        assert.strictEqual(llamadas.bundleBatches, 1, 'el precio del bundle deberia pedirse en un solo lote');
+    });
+
+    test('dos bundles distintos suman los dos, cada uno una vez', async () => {
+        avatarDePiezas({
+            101: PIEZA.parteDeBundle(), 102: PIEZA.parteDeBundle(),
+            201: PIEZA.parteDeBundle(), 202: PIEZA.parteDeBundle(),
+        });
+        mundo.bundleDe = assetId => (assetId.startsWith('10') ? '777' : '888');
+        mundo.precioBundle = bundleId => ({
+            available: true, assetIds: [], forSale: true,
+            price: bundleId === '777' ? 17000 : 31000,
+            lowestPrice: null, lowestResalePrice: null,
+        });
+
+        const res = await buscar(port, cuerpo({ amount: 1 }));
+        assert.strictEqual(res.body.outfits[0].totalPrice, 48000);
+        assert.strictEqual(res.body.outfits[0].bundledItems, 4);
+    });
+
+    test('Korblox y Headless salen del registro curado, sin busqueda inversa', async () => {
+        // Ids reales de Korblox. El registro curado existe justamente porque la
+        // busqueda inversa de Roblox falla con estos.
+        avatarDePiezas({
+            139607570: PIEZA.parteDeBundle(), 139607625: PIEZA.parteDeBundle(),
+            139607673: PIEZA.parteDeBundle(), 139607718: PIEZA.parteDeBundle(),
+        });
+        mundo.precioBundle = () => ({
+            available: true, assetIds: [], price: 17000, forSale: true,
+            lowestPrice: null, lowestResalePrice: null,
+        });
+
+        const res = await buscar(port, cuerpo({ amount: 1 }));
+
+        assert.strictEqual(res.body.outfits[0].totalPrice, 17000);
+        assert.strictEqual(llamadas.bundleLookups, 0,
+            `se gastaron ${llamadas.bundleLookups} busquedas inversas en assets del registro curado`);
+        assert.strictEqual(res.body.stats.bundleSpecialHits, 4);
+    });
+
+    test('una parte de bundle sin bundle resoluble no suma nada inventado', async () => {
+        avatarDePiezas({ 101: PIEZA.parteDeBundle(), 200: PIEZA.normal(150) });
+        mundo.bundleDe = () => null; // Roblox no sabe de que bundle es
+
+        const res = await buscar(port, cuerpo({ amount: 1, requireCompletePrice: false }));
+        assert.strictEqual(res.body.outfits[0].totalPrice, 150);
+        assert.strictEqual(res.body.outfits[0].unpricedItems, 1);
+        assert.strictEqual(res.body.outfits[0].priceComplete, false);
+    });
+
+    test('un bundle fuera de venta y sin reventa no aporta precio', async () => {
+        avatarDePiezas({ 101: PIEZA.parteDeBundle(), 200: PIEZA.normal(150) });
+        mundo.bundleDe = () => '777';
+        mundo.precioBundle = () => ({
+            available: true, assetIds: [], price: 12000, forSale: false,
+            lowestPrice: null, lowestResalePrice: null,
+        });
+
+        const res = await buscar(port, cuerpo({ amount: 1, requireCompletePrice: false }));
+        assert.strictEqual(res.body.outfits[0].totalPrice, 150, 'se sumo el precio de un bundle retirado');
+        assert.strictEqual(res.body.outfits[0].unpricedItems, 1);
+    });
+
+    test('las busquedas inversas no pasan del presupuesto configurado', async () => {
+        // Muchos candidatos, cada uno con una parte de bundle distinta.
+        poblar({
+            miembros: 60,
+            assetsDe: userId => [500000 + userId],
+            fichaDe: () => PIEZA.parteDeBundle(),
+            bundleDe: assetId => `b${assetId}`,
+        });
+        mundo.precioBundle = () => ({
+            available: true, assetIds: [], price: 500, forSale: true,
+            lowestPrice: null, lowestResalePrice: null,
+        });
+
+        const res = await buscar(port, cuerpo({ amount: 60, requireCompletePrice: false }));
+
+        assert.ok(llamadas.bundleLookups <= config.pluginSearch.maxBundleLookups,
+            `se hicieron ${llamadas.bundleLookups} busquedas inversas, el presupuesto es ${config.pluginSearch.maxBundleLookups}`);
+        assert.ok(res.body.stats.bundleLookupsSkipped > 0,
+            'no se registro ninguna busqueda inversa omitida pese a agotar el presupuesto');
+    });
+
+    test('un asset con precio propio NO gasta busqueda inversa', async () => {
+        avatarDePiezas({ 11: PIEZA.normal(300), 22: PIEZA.normal(400) });
+        mundo.bundleDe = () => '777';
+
+        await buscar(port, cuerpo({ amount: 1 }));
+        assert.strictEqual(llamadas.bundleLookups, 0,
+            'se gastaron busquedas inversas en assets que ya tenian precio');
+    });
+
+    // ── Politica requireCompletePrice ────────────────────────────────────────
+
+    test('requireCompletePrice=true descarta el avatar con piezas no valorables', async () => {
+        avatarDePiezas({ 11: PIEZA.normal(1000), 22: PIEZA.offSale() });
+        const res = await buscar(port, cuerpo({ amount: 1, requireCompletePrice: true }));
+
+        assert.strictEqual(res.body.found, 0);
+        assert.strictEqual(res.body.stats.rejectedIncompletePrice, 1);
+        assert.strictEqual(res.body.stats.rejectedUnknownPrice, 0,
+            'una decision de politica se conto como precio desconocido');
+        comprobarInvariante(res.body.stats, 'estricto');
+    });
+
+    test('requireCompletePrice=false acepta el mismo avatar y marca priceComplete:false', async () => {
+        avatarDePiezas({ 11: PIEZA.normal(1000), 22: PIEZA.offSale() });
+        const res = await buscar(port, cuerpo({ amount: 1, requireCompletePrice: false }));
+
+        assert.strictEqual(res.body.found, 1);
+        assert.strictEqual(res.body.outfits[0].totalPrice, 1000);
+        assert.strictEqual(res.body.outfits[0].priceComplete, false);
+        comprobarInvariante(res.body.stats, 'permisivo');
+    });
+
+    test('el default es estricto: sin mandar la politica se conserva el comportamiento anterior', async () => {
+        avatarDePiezas({ 11: PIEZA.normal(1000), 22: PIEZA.offSale() });
+        const res = await buscar(port, cuerpo({ amount: 1 }));
+        assert.strictEqual(res.body.found, 0, 'el default deberia ser requireCompletePrice=true');
+    });
+
+    test('en modo permisivo, un avatar sin NADA valorable sigue fuera', async () => {
+        // Si no se puede valorar ni una pieza, totalPrice seria 0 por ignorancia
+        // y colarlo en un rango que empiece en 0 seria mentir.
+        avatarDePiezas({ 11: PIEZA.offSale(), 22: PIEZA.limitedSinReventa() });
+        const res = await buscar(port, cuerpo({ amount: 1, requireCompletePrice: false, minPrice: 0 }));
+
+        assert.strictEqual(res.body.found, 0);
+        assert.strictEqual(res.body.stats.rejectedUnknownPrice, 1);
+        assert.strictEqual(res.body.stats.rejectedIncompletePrice, 0);
+        comprobarInvariante(res.body.stats, 'nada valorable');
+    });
+
+    test('un fallo de Roblox descarta el candidato incluso en modo permisivo', async () => {
+        // Un catalogo caido no es "esta pieza no se puede comprar": es "no lo
+        // sabemos". Tolerarlo haria que el mismo avatar valiese cosas distintas
+        // segun el momento.
+        poblar({ miembros: 5, catalogoRoto: true });
+        const res = await buscar(port, cuerpo({ amount: 5, requireCompletePrice: false }));
+
+        assert.strictEqual(res.body.found, 0);
+        assert.strictEqual(res.body.stats.rejectedCatalogError, 5);
+        assert.strictEqual(res.body.stats.rejectedUnknownPrice, 0);
+    });
+
+    test('requireCompletePrice con un valor que no es booleano -> 400', async () => {
+        await esperar400('requireCompletePrice="si"',
+            () => buscar(port, cuerpo({ requireCompletePrice: 'si' })));
+    });
+
+    // ── min/max sobre el total correcto ──────────────────────────────────────
+
+    test('minPrice y maxPrice se aplican sobre lo VALORABLE, no sobre el avatar entero', async () => {
+        // 1800 comprables + un offSale de 700 que no cuenta. Con el rango
+        // 1000-2000 tiene que entrar: el filtro habla de lo que se puede comprar.
+        avatarDePiezas({
+            11: PIEZA.normal(400), 22: PIEZA.normal(600), 33: PIEZA.normal(800), 44: PIEZA.offSale(),
+        });
+        const res = await buscar(port, cuerpo({
+            amount: 1, minPrice: 1000, maxPrice: 2000, requireCompletePrice: false,
+        }));
+
+        assert.strictEqual(res.body.found, 1);
+        assert.strictEqual(res.body.outfits[0].totalPrice, 1800);
+    });
+
+    test('el rango deja fuera por el total valorable, con su casilla propia', async () => {
+        avatarDePiezas({ 11: PIEZA.normal(400), 22: PIEZA.offSale() });
+        const res = await buscar(port, cuerpo({
+            amount: 1, minPrice: 1000, requireCompletePrice: false,
+        }));
+
+        assert.strictEqual(res.body.found, 0);
+        assert.strictEqual(res.body.stats.rejectedMinPrice, 1);
+        assert.strictEqual(res.body.stats.rejectedIncompletePrice, 0,
+            'un descarte por precio se conto como incompleto');
+    });
+
+    test('el precio de un bundle cuenta para el rango', async () => {
+        avatarDePiezas({ 101: PIEZA.parteDeBundle(), 102: PIEZA.parteDeBundle() });
+        mundo.bundleDe = () => '777';
+        mundo.precioBundle = () => ({
+            available: true, assetIds: [], price: 17000, forSale: true,
+            lowestPrice: null, lowestResalePrice: null,
+        });
+
+        const dentro = await buscar(port, cuerpo({ amount: 1, minPrice: 16000, maxPrice: 18000 }));
+        assert.strictEqual(dentro.body.found, 1);
+        assert.strictEqual(dentro.body.outfits[0].totalPrice, 17000);
+
+        const fuera = await buscar(port, cuerpo({ amount: 1, minPrice: 0, maxPrice: 16000 }));
+        assert.strictEqual(fuera.body.found, 0, 'el precio del bundle no se aplico al rango');
     });
 
     // ── Eficiencia upstream: el motivo de todo el rediseño ───────────────────
@@ -1034,9 +1447,13 @@ module.exports = async function run() {
         'candidatesDiscovered', 'candidatesExamined', 'memberPagesFetched',
         'avatarRequests', 'avatarsFetched',
         'assetIdsSeen', 'assetIdsUnique', 'assetIdsRequested', 'catalogBatches',
+        'bundleLookups', 'bundleLookupsSkipped', 'bundleSpecialHits', 'bundleBatches',
         'cacheHits', 'cacheMisses',
         'accepted', 'rejectedAvatarError', 'rejectedEmptyAvatar',
-        'rejectedCatalogError', 'rejectedUnknownPrice', 'rejectedMinPrice', 'rejectedMaxPrice',
+        'rejectedCatalogError', 'rejectedUnknownPrice', 'rejectedIncompletePrice',
+        'rejectedMinPrice', 'rejectedMaxPrice',
+        'assetsPriced', 'assetsUnpriced', 'assetsLimited', 'assetsOffSale',
+        'assetsBundled', 'assetsDeleted',
         'durationMs',
     ];
     const CLAVES_STATS = [...CONTADORES_STATS, 'stoppedBy', 'stoppedByCatalogRateLimit'];
@@ -1049,6 +1466,7 @@ module.exports = async function run() {
     function comprobarInvariante(stats, contexto) {
         const suma = stats.accepted + stats.rejectedAvatarError + stats.rejectedEmptyAvatar
             + stats.rejectedCatalogError + stats.rejectedUnknownPrice
+            + stats.rejectedIncompletePrice
             + stats.rejectedMinPrice + stats.rejectedMaxPrice;
         assert.strictEqual(stats.candidatesExamined, suma,
             `${contexto}: candidatesExamined=${stats.candidatesExamined} pero las casillas suman ${suma} ` +
@@ -1080,8 +1498,8 @@ module.exports = async function run() {
         assert.strictEqual(res.body.requested, 3);
         assert.strictEqual(res.body.found, 3);
         assert.ok(Array.isArray(res.body.outfits));
-        assert.deepStrictEqual(Object.keys(res.body.outfits[0]).sort(),
-            ['totalPrice', 'userId', 'username']);
+        assert.deepStrictEqual(Object.keys(res.body.outfits[0]).sort(), ['bundledItems', 'limitedItems', 'offSaleItems', 'priceComplete',
+                'pricedItems', 'totalPrice', 'unpricedItems', 'userId', 'username']);
         // Y stats como quinta clave, sin tocar las anteriores.
         assert.deepStrictEqual(Object.keys(res.body).sort(),
             ['found', 'outfits', 'requested', 'stats', 'success']);
@@ -1130,31 +1548,36 @@ module.exports = async function run() {
         comprobarInvariante(res.body.stats, 'catalogo caido');
     });
 
-    test('rejectedUnknownPrice cuenta a quien lleva algo sin precio fiable', async () => {
-        // Es el caso que de verdad se quiere diagnosticar: Roblox responde bien,
-        // pero el asset no tiene precio utilizable (limited / fuera de venta).
+    test('un limited SIN reventa no se puede valorar y cuenta como incompleto', async () => {
         poblar({ miembros: 5 });
         roblox.getCatalogItemDetails = async items => {
             const mapa = new Map();
             for (const item of items) {
                 mapa.set(roblox.catalogKey('Asset', item.id), {
-                    available: true, restrictions: ['Limited'], isLimited: true,
-                    price: null, lowestPrice: 15000,
+                    available: true, assetTypeId: 8,
+                    restrictions: ['Limited'], isLimited: true,
+                    price: 100,               // historico, inutilizable
+                    offSale: true,
+                    lowestResalePrice: null,  // nadie lo esta revendiendo
+                    lowestPrice: null,
                 });
             }
             return mapa;
         };
 
-        const res = await buscar(port, cuerpo({ amount: 5, minPrice: 0 }));
-        assert.strictEqual(res.body.found, 0);
-        assert.strictEqual(res.body.stats.rejectedUnknownPrice, 5);
-        assert.strictEqual(res.body.stats.rejectedCatalogError, 0,
-            'un precio nulo se conto como fallo de Roblox');
-        assert.strictEqual(res.body.stats.rejectedMinPrice, 0,
-            'un precio nulo se conto como fuera de rango');
-        comprobarInvariante(res.body.stats, 'todo limiteds');
-
-        roblox.getCatalogItemDetails = dobles.getCatalogItemDetails;
+        try {
+            // Estricto (default): sin poder valorarlo entero, fuera.
+            const res = await buscar(port, cuerpo({ amount: 5, minPrice: 0 }));
+            assert.strictEqual(res.body.found, 0);
+            assert.strictEqual(res.body.stats.rejectedIncompletePrice, 5);
+            assert.strictEqual(res.body.stats.rejectedCatalogError, 0,
+                'un limited sin reventa se conto como fallo de Roblox');
+            assert.strictEqual(res.body.stats.assetsLimited, 5);
+            assert.strictEqual(res.body.stats.assetsUnpriced, 5);
+            comprobarInvariante(res.body.stats, 'limiteds sin reventa');
+        } finally {
+            roblox.getCatalogItemDetails = dobles.getCatalogItemDetails;
+        }
     });
 
     test('rejectedMinPrice y rejectedMaxPrice cuentan cada lado por separado', async () => {
@@ -1690,6 +2113,8 @@ module.exports = async function run() {
     roblox.listGroupMembers = original.listGroupMembers;
     roblox.getCurrentAvatar = original.getCurrentAvatar;
     roblox.getCatalogItemDetails = original.getCatalogItemDetails;
+    roblox.getBundlesForAsset = original.getBundlesForAsset;
+    roblox.getBundleDetails = original.getBundleDetails;
     cache.reset();
     ownRateLimit.reset();
     // Varios casos dejan la ruta de catalogo en cooldown a proposito; sin esto

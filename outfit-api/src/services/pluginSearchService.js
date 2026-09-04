@@ -6,7 +6,8 @@ const requestContext = require('../observability/requestContext');
 const { descubrirCandidatos } = require('./pluginSearch/memberPool');
 const { traerOla } = require('./pluginSearch/avatarWave');
 const { crearIndiceDeCatalogo } = require('./pluginSearch/catalogIndex');
-const { calcularPrecio, dentroDelRango } = require('./pluginSearch/pricing');
+const { crearIndiceDeBundles } = require('./pluginSearch/bundleIndex');
+const { valorar, aplicarPolitica, necesitaBundle } = require('./pluginSearch/pricing');
 const { crearStats, PARADA } = require('./pluginSearch/stats');
 
 // Busqueda de outfits reales para el plugin de Studio. Este archivo es SOLO la
@@ -14,8 +15,9 @@ const { crearStats, PARADA } = require('./pluginSearch/stats');
 //
 //   memberPool    descubrimiento de candidatos     (1 llamada / 100 miembros)
 //   avatarWave    que lleva puesto cada uno        (1 llamada / candidato)
-//   catalogIndex  precio de los assets, POR LOTES  (1 llamada / ~100 assets nuevos)
-//   pricing       calculo de precio y filtros      (puro, sin red)
+//   catalogIndex  ficha de los assets, POR LOTES   (1 llamada / ~100 assets nuevos)
+//   bundleIndex   precio de las partes de bundle   (solo lo que no tiene precio propio)
+//   pricing       clasificacion, valoracion, filtros (puro, sin red)
 //   stats         contabilidad y motivo de parada
 //
 // POR QUE POR OLAS, que es la decision que sostiene todo lo demas:
@@ -75,6 +77,19 @@ function motivoParaParar({ encontrados, amount, examinados, cupo, empezado, indi
     return null;
 }
 
+// Composicion agregada de lo valorado. Se anota para TODO candidato que llegue
+// a valorarse, entre o no en el resultado: si entraran solo los aceptados, un
+// found:0 no diria nada sobre por que — que es justo el caso que hay que poder
+// diagnosticar.
+function anotarComposicion(stats, valoracion) {
+    stats.sumar('assetsPriced', valoracion.pricedItems);
+    stats.sumar('assetsUnpriced', valoracion.unpricedItems);
+    stats.sumar('assetsLimited', valoracion.limitedItems);
+    stats.sumar('assetsOffSale', valoracion.offSaleItems);
+    stats.sumar('assetsBundled', valoracion.bundledItems);
+    stats.sumar('assetsDeleted', valoracion.deletedItems);
+}
+
 // Devuelve { outfits, stats }. La forma de la respuesta HTTP la arma la ruta.
 //
 // Todo el cuerpo corre dentro de un contexto de correlacion (ver
@@ -89,7 +104,10 @@ function searchOutfits(peticion, opciones = {}) {
     );
 }
 
-async function ejecutarBusqueda({ amount, groupId, minPrice, maxPrice }, { requestId = null } = {}) {
+async function ejecutarBusqueda(
+    { amount, groupId, minPrice, maxPrice, requireCompletePrice },
+    { requestId = null } = {}
+) {
     const empezado = Date.now();
     const stats = crearStats();
     const cupo = cuposDeCandidatos(amount);
@@ -98,6 +116,7 @@ async function ejecutarBusqueda({ amount, groupId, minPrice, maxPrice }, { reque
     const { candidatos, sortOrder } = await descubrirCandidatos(groupId, cupo, stats);
 
     const indice = crearIndiceDeCatalogo(stats);
+    const bundles = crearIndiceDeBundles(stats);
     const encontrados = [];
     const yaIncluidos = new Set(); // ningun userId repetido en la respuesta
     let examinados = 0;
@@ -127,15 +146,26 @@ async function ejecutarBusqueda({ amount, groupId, minPrice, maxPrice }, { reque
         }
         await indice.asegurar(assetsDeLaOla);
 
-        // ── Etapas 4 y 5: precio y filtros, ya sin tocar la red ──────────────
+        // ── Etapa 3b: bundles, SOLO para lo que no tiene precio propio ───────
+        // Se pregunta despues del catalogo porque hace falta la ficha del asset
+        // para saber si lo necesita: un sombrero con precio propio no gasta una
+        // busqueda inversa. En un avatar tipico esto son 0 o 1 assets.
+        const sinPrecioPropio = [...new Set(assetsDeLaOla)]
+            .filter(assetId => necesitaBundle(indice.ficha(assetId)));
+        if (sinPrecioPropio.length > 0) await bundles.asegurar(sinPrecioPropio);
+
+        // ── Etapas 4 y 5: valoracion y politica, ya sin tocar la red ─────────
         for (const resultado of avatares) {
             if (!resultado.ok) { stats.rechazar(resultado.motivo); continue; }
 
-            const precio = calcularPrecio(resultado.assetIds, indice);
-            if (!precio.ok) { stats.rechazar(precio.motivo); continue; }
+            const valorado = valorar(resultado.assetIds, indice, bundles);
+            if (!valorado.ok) { stats.rechazar(valorado.motivo); continue; }
 
-            const rango = dentroDelRango(precio.totalPrice, minPrice, maxPrice);
-            if (!rango.ok) { stats.rechazar(rango.motivo); continue; }
+            const v = valorado.valoracion;
+            anotarComposicion(stats, v);
+
+            const politica = aplicarPolitica(v, { requireCompletePrice, minPrice, maxPrice });
+            if (!politica.ok) { stats.rechazar(politica.motivo); continue; }
 
             // Defensivo: el bombo ya viene sin duplicados de memberPool.
             if (yaIncluidos.has(resultado.miembro.userId)) continue;
@@ -145,7 +175,13 @@ async function ejecutarBusqueda({ amount, groupId, minPrice, maxPrice }, { reque
             encontrados.push({
                 userId: resultado.miembro.userId,
                 username: resultado.miembro.username,
-                totalPrice: precio.totalPrice,
+                totalPrice: v.totalPrice,
+                priceComplete: v.priceComplete,
+                pricedItems: v.pricedItems,
+                unpricedItems: v.unpricedItems,
+                limitedItems: v.limitedItems,
+                offSaleItems: v.offSaleItems,
+                bundledItems: v.bundledItems,
             });
         }
     }
@@ -170,6 +206,7 @@ async function ejecutarBusqueda({ amount, groupId, minPrice, maxPrice }, { reque
         amount,
         minPrice,
         maxPrice,
+        requireCompletePrice,
         found: encontrados.length,
         sortOrder,
         ...publicas,

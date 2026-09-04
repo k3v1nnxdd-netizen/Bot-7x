@@ -35,6 +35,7 @@ const CASILLA_POR_MOTIVO = Object.freeze({
     emptyAvatar: 'rejectedEmptyAvatar',
     catalogError: 'rejectedCatalogError',
     unknownPrice: 'rejectedUnknownPrice',
+    incompletePrice: 'rejectedIncompletePrice',
     minPrice: 'rejectedMinPrice',
     maxPrice: 'rejectedMaxPrice',
 });
@@ -54,6 +55,10 @@ function crearStats() {
         assetIdsUnique: 0,        // distintos en TODA la busqueda
         assetIdsRequested: 0,     // los que de verdad se mandaron a Roblox
         catalogBatches: 0,        // lotes despachados (<= 1 llamada upstream cada uno)
+        bundleLookups: 0,         // busquedas inversas asset -> bundle (1 llamada cada una)
+        bundleLookupsSkipped: 0,  // las que NO se hicieron: presupuesto agotado o ruta frenada
+        bundleSpecialHits: 0,     // resueltas de memoria por el registro curado
+        bundleBatches: 0,         // lotes de precio de bundle (bundles/details)
         cacheHits: 0,
         cacheMisses: 0,
 
@@ -63,8 +68,19 @@ function crearStats() {
         rejectedEmptyAvatar: 0,
         rejectedCatalogError: 0,
         rejectedUnknownPrice: 0,
+        rejectedIncompletePrice: 0,
         rejectedMinPrice: 0,
         rejectedMaxPrice: 0,
+
+        // Composicion de lo valorado, agregada sobre TODOS los candidatos
+        // examinados. Es lo que dice si un found bajo viene de Limiteds sin
+        // reventa, de articulos retirados o de partes de bundle sin resolver.
+        assetsPriced: 0,
+        assetsUnpriced: 0,
+        assetsLimited: 0,
+        assetsOffSale: 0,
+        assetsBundled: 0,
+        assetsDeleted: 0,
     };
 
     let parada = PARADA.SIN_CANDIDATOS;
@@ -116,6 +132,7 @@ function crearStats() {
         publicar() {
             const rechazados = contadores.rejectedAvatarError + contadores.rejectedEmptyAvatar
                 + contadores.rejectedCatalogError + contadores.rejectedUnknownPrice
+                + contadores.rejectedIncompletePrice
                 + contadores.rejectedMinPrice + contadores.rejectedMaxPrice;
 
             return {
@@ -129,6 +146,10 @@ function crearStats() {
                 assetIdsUnique: contadores.assetIdsUnique,
                 assetIdsRequested: contadores.assetIdsRequested,
                 catalogBatches: contadores.catalogBatches,
+                bundleLookups: contadores.bundleLookups,
+                bundleLookupsSkipped: contadores.bundleLookupsSkipped,
+                bundleSpecialHits: contadores.bundleSpecialHits,
+                bundleBatches: contadores.bundleBatches,
                 cacheHits: contadores.cacheHits,
                 cacheMisses: contadores.cacheMisses,
 
@@ -137,8 +158,20 @@ function crearStats() {
                 rejectedEmptyAvatar: contadores.rejectedEmptyAvatar,
                 rejectedCatalogError: contadores.rejectedCatalogError,
                 rejectedUnknownPrice: contadores.rejectedUnknownPrice,
+                rejectedIncompletePrice: contadores.rejectedIncompletePrice,
                 rejectedMinPrice: contadores.rejectedMinPrice,
                 rejectedMaxPrice: contadores.rejectedMaxPrice,
+
+                // Composicion de lo valorado, agregada sobre TODOS los
+                // candidatos examinados. Es lo que dice si un found bajo viene
+                // de Limiteds sin reventa, de articulos retirados o de partes
+                // de bundle que no se pudieron resolver.
+                assetsPriced: contadores.assetsPriced,
+                assetsUnpriced: contadores.assetsUnpriced,
+                assetsLimited: contadores.assetsLimited,
+                assetsOffSale: contadores.assetsOffSale,
+                assetsBundled: contadores.assetsBundled,
+                assetsDeleted: contadores.assetsDeleted,
 
                 stoppedBy: parada,
                 // Booleano explicito ademas de `stoppedBy`, y no es redundante:

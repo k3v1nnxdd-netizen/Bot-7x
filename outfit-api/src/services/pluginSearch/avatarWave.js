@@ -5,6 +5,12 @@ const cacheStore = require('../../cache/cacheStore');
 const config = require('../../config');
 const logger = require('../../observability/logger');
 const { mapConLimite } = require('./concurrency');
+const { UpstreamRateLimitedError, CircuitOpenError } = require('../../roblox/errors');
+
+// La ruta del limitador que protege avatar.roblox.com. Es el bucket que mas se
+// castiga en esta busqueda: el avatar NO admite lote, asi que un candidato es
+// una llamada, y una ola de 25 son 25 llamadas seguidas.
+const RUTA_AVATAR = 'userAvatar';
 
 // ETAPA 2 — AVATARES. De una ola de candidatos a "que lleva puesto cada uno".
 //
@@ -39,12 +45,26 @@ async function traerAvatar(miembro, stats) {
             { negativeTtlMs: config.ttl.negative, onStatus: estado => stats.marcarCache(estado) }
         );
     } catch (err) {
+        // UN CANDIDATO CAIDO NO ES SIEMPRE LO MISMO, y confundirlos costo caro.
+        //
+        // Una cuenta baneada o borrada es un descarte NORMAL: pasa a decenas
+        // por busqueda y no dice nada de la salud del sistema. Un 429 (o el
+        // cooldown que impone el limitador tras el 429, o el breaker abierto)
+        // es lo contrario: el candidato estaba bien y lo hemos perdido nosotros
+        // porque Roblox nos esta frenando. Los dos acaban en el mismo veredicto
+        // — 'avatarError', para no partir la invariante de stats — pero el
+        // segundo se cuenta APARTE, porque es la unica forma de que una
+        // busqueda con found bajo y el log lleno de 429 lo enseñe en sus
+        // numeros en vez de esconderlo detras de "no se encontro nada".
+        const frenado = err instanceof UpstreamRateLimitedError || err instanceof CircuitOpenError;
+        if (frenado) stats.sumar('avatarRateLimited');
+
         // Nivel debug y no warn: con cientos de candidatos, que unos cuantos no
         // se puedan consultar (cuentas baneadas, borradas) es lo ESPERADO, y a
         // nivel warn ahogaria el log util de todo el servicio. El recuento
         // agregado va en stats.
         logger.debug('Candidato descartado: no se pudo leer su avatar', {
-            userId: miembro.userId, detail: err?.message,
+            userId: miembro.userId, rateLimited: frenado, detail: err?.message,
         });
         return { miembro, ok: false, motivo: 'avatarError' };
     }
@@ -75,4 +95,4 @@ async function traerOla(miembros, stats, limite) {
     return mapConLimite(miembros, limite, miembro => traerAvatar(miembro, stats));
 }
 
-module.exports = { traerOla };
+module.exports = { traerOla, RUTA_AVATAR };

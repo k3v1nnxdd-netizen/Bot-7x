@@ -505,6 +505,150 @@ module.exports = async function run() {
         assert.ok(llamadas.avatars < 100, `examino ${llamadas.avatars} candidatos para encontrar 10`);
     });
 
+
+    // ── amount = outfits VALIDOS: la busqueda sigue hasta juntarlos ──────────
+    //
+    // Este bloque es la reproduccion, en pequeño, de la busqueda real que
+    // motivo el cambio: 10 pedidos sobre un grupo donde solo el 3% de los
+    // avatares entra en el rango de precio. Terminaba en 60 candidatos con 2
+    // resultados y `stoppedBy: candidateCap`, sin haber pasado de la primera
+    // pagina de miembros.
+
+    test('10 pedidos con 1 valido de cada 30: los 60 primeros dan 2 y la busqueda SIGUE hasta 10', async () => {
+        // El mundo esta calibrado para reproducir el caso exacto: entre los 60
+        // primeros miembros (1000-1059) hay EXACTAMENTE dos multiplos de 30
+        // (1020 y 1050), que son los dos unicos que superan el minPrice. Con el
+        // presupuesto antiguo — 60 candidatos, calculado antes de empezar — la
+        // busqueda paraba justo ahi.
+        poblar({ miembros: 1000, precioDe: userId => (userId % 30 === 0 ? 500 : 10) });
+
+        const res = await buscar(port, cuerpo({
+            amount: 10, minPrice: 340, requireCompletePrice: false,
+        }));
+
+        assert.strictEqual(res.status, 200);
+        assert.strictEqual(res.body.found, 10, 'no completo los 10 outfits pedidos');
+        assert.strictEqual(res.body.stats.stoppedBy, 'completed');
+
+        // Lo que antes era el techo ahora es solo el punto donde iban dos.
+        assert.ok(res.body.stats.candidatesExamined > 250,
+            `examino ${res.body.stats.candidatesExamined} candidatos: no llego a recorrer lo necesario`);
+
+        // Un candidato rechazado NO gasta plaza: los cientos de descartes por
+        // precio no restaron nada de los 10 pedidos.
+        assert.ok(res.body.stats.rejectedMinPrice > 200,
+            `solo ${res.body.stats.rejectedMinPrice} descartes por precio`);
+        assert.strictEqual(res.body.outfits.length, 10);
+        for (const outfit of res.body.outfits) {
+            assert.ok(outfit.totalPrice >= 340, `entro un outfit de ${outfit.totalPrice}`);
+        }
+
+        comprobarInvariante(res.body.stats, 'tasa de aceptacion baja');
+    });
+
+    test('la tasa de aceptacion baja AMPLIA el presupuesto previsto, sin tocar el techo duro', async () => {
+        poblar({ miembros: 1000, precioDe: userId => (userId % 30 === 0 ? 500 : 10) });
+        const res = await buscar(port, cuerpo({ amount: 10, minPrice: 340 }));
+        const s = res.body.stats;
+
+        // La prevision se disparo muy por encima del suelo de 60...
+        assert.ok(s.desiredCandidateBudget > config.pluginSearch.minCandidates * 2,
+            `el presupuesto previsto se quedo en ${s.desiredCandidateBudget}`);
+        // ...y aun asi la busqueda ni se acerco al techo duro. Esa es la
+        // separacion entre "esto sale caro" y "esto es un bucle".
+        assert.ok(s.candidatesExamined < s.hardCandidateLimit / 2,
+            `examino ${s.candidatesExamined} con el techo duro en ${s.hardCandidateLimit}`);
+        assert.strictEqual(s.stoppedBy, 'completed');
+
+        // Y el coste por resultado que midio se parece al real (30).
+        assert.ok(s.candidatesPerResultEstimate > 10 && s.candidatesPerResultEstimate < 60,
+            `estimo ${s.candidatesPerResultEstimate} candidatos por resultado`);
+    });
+
+    test('muchos descartes por minPrice no terminan la busqueda antes de tiempo', async () => {
+        // Version extrema: 1 de cada 100 encaja. Sigue teniendo que llegar a 5.
+        poblar({ miembros: 1000, precioDe: userId => (userId % 100 === 0 ? 900 : 10) });
+        const res = await buscar(port, cuerpo({ amount: 5, minPrice: 800 }));
+
+        assert.strictEqual(res.body.found, 5);
+        assert.strictEqual(res.body.stats.stoppedBy, 'completed');
+        assert.ok(res.body.stats.rejectedMinPrice >= 400);
+        comprobarInvariante(res.body.stats, 'descartes masivos por precio');
+    });
+
+    test('los avatares rotos se sustituyen, no gastan plaza', async () => {
+        // Dos de cada tres candidatos no tienen avatar consultable (cuentas
+        // baneadas o borradas), que es lo normal en una comunidad real.
+        poblar({
+            miembros: 500, precioDe: () => 100,
+            avatarRoto: userId => userId % 3 !== 0,
+        });
+        const res = await buscar(port, cuerpo({ amount: 10 }));
+
+        assert.strictEqual(res.body.found, 10);
+        assert.strictEqual(res.body.stats.stoppedBy, 'completed');
+        assert.ok(res.body.stats.rejectedAvatarError >= 20);
+        assert.strictEqual(res.body.stats.avatarRateLimited, 0,
+            'ningun descarte deberia atribuirse a un limite de Roblox aqui');
+        comprobarInvariante(res.body.stats, 'avatares rotos');
+    });
+
+    // ── Paginacion de miembros ───────────────────────────────────────────────
+
+    test('pasa de la pagina 1 a la 2 cuando la primera no basta', async () => {
+        // Solo la segunda pagina (1100-1199) tiene gente en rango.
+        poblar({ miembros: 200, precioDe: userId => (userId >= 1100 ? 500 : 10) });
+        const res = await buscar(port, cuerpo({ amount: 5, minPrice: 400 }));
+
+        assert.strictEqual(res.body.found, 5);
+        assert.strictEqual(res.body.stats.memberPagesFetched, 2,
+            'la busqueda no paso de la primera pagina de miembros');
+        for (const outfit of res.body.outfits) {
+            assert.ok(outfit.userId >= 1100, `salio ${outfit.userId}, que esta en la pagina 1`);
+        }
+    });
+
+    test('recorre tantas paginas como haga falta, no una', async () => {
+        // Los unicos candidatos validos estan en la ULTIMA pagina de diez.
+        poblar({ miembros: 1000, precioDe: userId => (userId >= 1950 ? 500 : 10) });
+        const res = await buscar(port, cuerpo({ amount: 10, minPrice: 400 }));
+
+        assert.strictEqual(res.body.found, 10);
+        assert.strictEqual(res.body.stats.memberPagesFetched, 10,
+            `solo pidio ${res.body.stats.memberPagesFetched} paginas de las 10 que hacian falta`);
+        assert.ok(res.body.stats.candidatesExamined >= 950);
+        comprobarInvariante(res.body.stats, 'recorrido de diez paginas');
+    });
+
+    test('el techo de paginas corta un grupo que sirve paginas infinitas sin gente nueva', async () => {
+        // Caso patologico y el unico motivo por el que existe ese techo: Roblox
+        // devuelve cursor indefinidamente y SIEMPRE los mismos cinco miembros.
+        // Los candidatos no crecen, asi que su techo no cortaria jamas.
+        const original = config.pluginSearch.maxMemberPages;
+        config.pluginSearch.maxMemberPages = 12;
+        poblar({
+            miembros: 0,
+            precioDe: () => 10,
+            paginas: cursor => {
+                const pagina = cursor ? Number(String(cursor).slice(1)) : 0;
+                const members = [1, 2, 3, 4, 5].map(i => ({ userId: i, username: `U${i}` }));
+                return { members, nextCursor: `p${pagina + 1}` }; // NUNCA null
+            },
+        });
+
+        try {
+            const res = await buscar(port, cuerpo({ amount: 10, minPrice: 900000 }));
+
+            assert.strictEqual(res.status, 200);
+            assert.ok(llamadas.members <= 12,
+                `pidio ${llamadas.members} paginas con el techo en 12`);
+            assert.strictEqual(res.body.stats.stoppedBy, 'candidateCap');
+            assert.strictEqual(res.body.stats.memberPageLimit, 12);
+        } finally {
+            config.pluginSearch.maxMemberPages = original;
+        }
+    });
+
     // ── Sin duplicados ───────────────────────────────────────────────────────
 
     test('nunca repite un userId, aunque Roblox devuelva miembros duplicados', async () => {
@@ -1395,14 +1539,43 @@ module.exports = async function run() {
         config.pluginSearch.timeBudgetMs = presupuestoOriginal;
     });
 
-    test('el tope de candidatos se refleja en stoppedBy', async () => {
+    test('el TECHO DURO se refleja en stoppedBy y termina la busqueda', async () => {
+        // El techo duro es la proteccion anti-bucle, no el final normal: para
+        // ejercitarlo hay que bajarlo a proposito, porque con sus valores
+        // reales una comunidad de 5000 se agota antes de alcanzarlo — que es
+        // exactamente la propiedad que se quiere.
+        const original = config.pluginSearch.hardCandidateLimit;
+        config.pluginSearch.hardCandidateLimit = 120;
+        poblar({ miembros: 5000, precioDe: () => 10 });
+
+        try {
+            const res = await buscar(port, cuerpo({ amount: 500, minPrice: 100000, maxPrice: 200000 }));
+
+            assert.strictEqual(res.body.found, 0);
+            assert.strictEqual(res.body.stats.stoppedBy, 'candidateCap');
+            assert.strictEqual(res.body.stats.hardCandidateLimit, 120);
+            assert.ok(res.body.stats.candidatesExamined <= 120 + config.pluginRotation.segmentSize,
+                `examino ${res.body.stats.candidatesExamined} con el techo en 120`);
+            comprobarInvariante(res.body.stats, 'techo duro');
+        } finally {
+            config.pluginSearch.hardCandidateLimit = original;
+        }
+    });
+
+    test('con el techo duro REAL, una comunidad imposible se agota antes de tocarlo', async () => {
+        // La contraparte del caso anterior, y la que documenta el cambio de
+        // semantica: `candidateCap` deja de ser el final habitual. Con 5000
+        // miembros y un rango que no existe, lo que ocurre es que se recorre la
+        // comunidad entera y se termina por agotamiento.
         poblar({ miembros: 5000, precioDe: () => 10 });
         const res = await buscar(port, cuerpo({ amount: 500, minPrice: 100000, maxPrice: 200000 }));
 
         assert.strictEqual(res.body.found, 0);
-        assert.strictEqual(res.body.stats.stoppedBy, 'candidateCap');
+        assert.strictEqual(res.body.stats.stoppedBy, 'candidatesExhausted');
+        assert.ok(res.body.stats.candidatesExamined >= 5000,
+            `solo examino ${res.body.stats.candidatesExamined} de los 5000 miembros`);
         assert.ok(res.body.stats.candidatesExamined <= config.pluginSearch.maxCandidates);
-        comprobarInvariante(res.body.stats, 'tope de candidatos');
+        comprobarInvariante(res.body.stats, 'comunidad agotada');
     });
 
     // ── Observabilidad de la pipeline ────────────────────────────────────────
@@ -1446,7 +1619,10 @@ module.exports = async function run() {
     const CONTADORES_STATS = [
         'candidatesExamined', 'memberPagesFetched', 'emptySegments',
         'rotationCycle', 'rotationWraps', 'rotationCursorResets',
-        'avatarRequests', 'avatarsFetched',
+        'avatarRequests', 'avatarsFetched', 'avatarRateLimited',
+        'desiredCandidateBudget', 'hardCandidateLimit',
+        'effectiveHardCandidatesPerResult', 'memberPageLimit',
+        'timeBudgetMs', 'candidatesPerResultEstimate',
         'assetIdsSeen', 'assetIdsUnique', 'assetIdsRequested', 'catalogBatches',
         'bundleLookups', 'bundleLookupsSkipped', 'bundleSpecialHits', 'bundleBatches',
         'cacheHits', 'cacheMisses',
@@ -1462,13 +1638,15 @@ module.exports = async function run() {
     // del recorrido y los dos campos de parada.
     const NO_CONTADORES = [
         'rotationMode', 'rotationStart', 'rotationEnd',
-        'stoppedBy', 'stoppedByCatalogRateLimit',
+        'stoppedBy', 'stoppedByRobloxRateLimit', 'stoppedByCatalogRateLimit',
+        'rateLimitedRoute',
     ];
     const CLAVES_STATS = [...CONTADORES_STATS, ...NO_CONTADORES];
 
     // Conjunto CERRADO de motivos de parada: un valor fuera de esta lista seria
     // una fuga de detalle interno hacia el cliente.
-    const PARADAS_VALIDAS = ['completed', 'candidatesExhausted', 'candidateCap', 'timeBudget', 'catalogRateLimit'];
+    const PARADAS_VALIDAS = ['completed', 'candidatesExhausted', 'candidateCap', 'timeBudget',
+        'catalogRateLimit', 'avatarRateLimit'];
 
     // candidatesExamined tiene que ser exactamente la suma del resto.
     function comprobarInvariante(stats, contexto) {
@@ -1498,6 +1676,8 @@ module.exports = async function run() {
         assert.ok(PARADAS_VALIDAS.includes(res.body.stats.stoppedBy),
             `stoppedBy fuera del conjunto cerrado: ${res.body.stats.stoppedBy}`);
         assert.strictEqual(typeof res.body.stats.stoppedByCatalogRateLimit, 'boolean');
+        assert.strictEqual(typeof res.body.stats.stoppedByRobloxRateLimit, 'boolean');
+        assert.strictEqual(res.body.stats.rateLimitedRoute, null);
     });
 
     test('stats es ADITIVO: el contrato anterior no se movio', async () => {
@@ -1678,8 +1858,13 @@ module.exports = async function run() {
         for (const [clave, valor] of Object.entries(res.body.stats)) {
             if (clave === 'stoppedBy') {
                 assert.ok(PARADAS_VALIDAS.includes(valor), `stoppedBy con valor libre: ${valor}`);
-            } else if (clave === 'stoppedByCatalogRateLimit') {
+            } else if (clave === 'stoppedByCatalogRateLimit' || clave === 'stoppedByRobloxRateLimit') {
                 assert.strictEqual(typeof valor, 'boolean');
+            } else if (clave === 'rateLimitedRoute') {
+                // Etiqueta de ruta del limitador, de conjunto cerrado: nunca una
+                // URL ni un mensaje de Roblox.
+                assert.ok(valor === null || ['catalogDetails', 'userAvatar'].includes(valor),
+                    `rateLimitedRoute con valor libre: ${valor}`);
             } else if (clave === 'rotationMode') {
                 assert.ok(['leased', 'concurrent', 'ephemeral'].includes(valor));
             } else if (clave === 'rotationStart' || clave === 'rotationEnd') {
@@ -1909,6 +2094,182 @@ module.exports = async function run() {
         } finally {
             espia.restaurar();
             roblox.getCatalogItemDetails = base;
+            robloxRateLimiter.reset();
+        }
+    });
+
+    // ── 429 del AVATAR ───────────────────────────────────────────────────────
+    //
+    // El avatar es la ruta que mas se castiga en toda la busqueda: NO admite
+    // lote, asi que un candidato es una llamada y una ola son veinticinco
+    // seguidas. Y era la unica cuyo 429 no paraba nada: cada candidato caia
+    // como 'avatarError' — indistinguible de una cuenta baneada —, la busqueda
+    // seguia quemando cuota sobre un Roblox que ya decia que no, y terminaba
+    // informando `stoppedByCatalogRateLimit: false` mientras el log se llenaba
+    // de "Roblox respondio 429". Estos dos casos cierran ese agujero.
+
+    function avatarQueDevuelve429(desdeLaLlamada) {
+        const base = roblox.getCurrentAvatar;
+        let n = 0;
+        roblox.getCurrentAvatar = async userId => {
+            n++;
+            if (n <= desdeLaLlamada) return base(userId);
+            return robloxRateLimiter.run('userAvatar', async () => {
+                const err = new Error('Request failed with status code 429');
+                err.response = { status: 429, headers: { 'retry-after': '30' }, data: {} };
+                err.config = { url: `https://avatar.roblox.com/v1/users/${userId}/avatar` };
+                throw err;
+            }, { endpoint: 'avatar.roblox.com/v1/users/{id}/avatar' });
+        };
+        return () => { roblox.getCurrentAvatar = dobles.getCurrentAvatar; };
+    }
+
+    test('un 429 del AVATAR para la busqueda con su motivo PROPIO', async () => {
+        poblar({ miembros: 500, precioDe: () => 100 });
+        const restaurar = avatarQueDevuelve429(5);
+
+        try {
+            const res = await buscar(port, cuerpo({ amount: 100, minPrice: 50 }));
+            const s = res.body.stats;
+
+            assert.strictEqual(res.status, 200);
+
+            // El motivo es SUYO, no el del catalogo. Es el endpoint que hay que
+            // ir a mirar y la cuota que hay que dejar respirar.
+            assert.strictEqual(s.stoppedBy, 'avatarRateLimit');
+            assert.strictEqual(s.rateLimitedRoute, 'userAvatar');
+
+            // "¿Nos freno Roblox?" -> si. Es lo que el plugin enseña.
+            assert.strictEqual(s.stoppedByRobloxRateLimit, true,
+                'un 429 del avatar seguia reportandose como "no se encontro nada"');
+
+            // "¿Fue el CATALOGO?" -> NO, y el campo lo dice literalmente. Un
+            // campo llamado 'catalog' no puede valer true por un 429 de avatar.
+            assert.strictEqual(s.stoppedByCatalogRateLimit, false,
+                'stoppedByCatalogRateLimit dejo de ser literal');
+
+            assert.ok(s.avatarRateLimited > 0,
+                'no se contabilizo ningun avatar perdido por limite de Roblox');
+            assert.ok(res.body.found > 0, 'se perdieron los outfits encontrados antes del 429');
+            comprobarInvariante(s, '429 del avatar');
+        } finally {
+            restaurar();
+            robloxRateLimiter.reset();
+        }
+    });
+
+    test('un 429 del CATALOGO para la busqueda con el motivo del catalogo, no el del avatar', async () => {
+        // La imagen especular del caso anterior, y la pareja que de verdad
+        // prueba la separacion: cada ruta tiene que producir SU motivo y dejar
+        // el de la otra a false.
+        poblar({ miembros: 500, precioDe: () => 100 });
+        const catalogoBase = roblox.getCatalogItemDetails;
+        let lotes = 0;
+
+        roblox.getCatalogItemDetails = async items => {
+            lotes++;
+            if (lotes === 1) return catalogoBase(items);
+            return robloxRateLimiter.run('catalogDetails', async () => {
+                const err = new Error('Request failed with status code 429');
+                err.response = { status: 429, headers: { 'retry-after': '30' }, data: {} };
+                err.config = { url: 'https://catalog.roblox.com/v1/catalog/items/details' };
+                throw err;
+            }, { endpoint: 'catalog.roblox.com/v1/catalog/items/details' });
+        };
+
+        try {
+            const res = await buscar(port, cuerpo({ amount: 200, minPrice: 50 }));
+            const s = res.body.stats;
+
+            assert.strictEqual(res.status, 200);
+            assert.strictEqual(s.stoppedBy, 'catalogRateLimit');
+            assert.strictEqual(s.rateLimitedRoute, 'catalogDetails');
+            assert.strictEqual(s.stoppedByRobloxRateLimit, true);
+            // Aqui SI, porque aqui el catalogo es literalmente lo que freno.
+            assert.strictEqual(s.stoppedByCatalogRateLimit, true);
+            // Y el avatar queda limpio: no se le atribuye un freno ajeno.
+            assert.strictEqual(s.avatarRateLimited, 0);
+            assert.ok(res.body.found > 0, 'se perdieron los outfits encontrados antes del 429');
+            comprobarInvariante(s, '429 del catalogo');
+        } finally {
+            roblox.getCatalogItemDetails = dobles.getCatalogItemDetails;
+            robloxRateLimiter.reset();
+        }
+    });
+
+    test('stats publica el limite por resultado EFECTIVO, no la constante', async () => {
+        // La constante (150) solo manda en el tramo proporcional. Un pedido de
+        // 10 cae en el suelo del techo y uno de 500 en el techo absoluto, asi
+        // que leer stats contra "150" daria una conclusion falsa en los dos.
+        poblar({ miembros: 50, precioDe: () => 100 });
+        const pequeña = await buscar(port, cuerpo({ amount: 10 }));
+
+        assert.strictEqual(pequeña.body.stats.hardCandidateLimit, 1500);
+        assert.strictEqual(pequeña.body.stats.effectiveHardCandidatesPerResult, 150);
+
+        poblar({ miembros: 50, precioDe: () => 100 });
+        const grande = await buscar(port, cuerpo({ amount: 500 }));
+
+        assert.strictEqual(grande.body.stats.hardCandidateLimit, 25000);
+        assert.strictEqual(grande.body.stats.effectiveHardCandidatesPerResult, 50,
+            'un pedido de 500 no tolera 150 candidatos por resultado, sino 50');
+    });
+
+    test('sin limite ninguno, los tres campos de limitacion estan en reposo', async () => {
+        poblar({ miembros: 50, precioDe: () => 100 });
+        const res = await buscar(port, cuerpo({ amount: 5 }));
+
+        assert.strictEqual(res.body.stats.stoppedBy, 'completed');
+        assert.strictEqual(res.body.stats.stoppedByRobloxRateLimit, false);
+        assert.strictEqual(res.body.stats.stoppedByCatalogRateLimit, false);
+        assert.strictEqual(res.body.stats.rateLimitedRoute, null);
+    });
+
+    test('un avatar caido por 429 se cuenta aparte de una cuenta baneada', async () => {
+        // Los dos acaban en el mismo veredicto ('avatarError', para no partir
+        // la invariante), pero son preguntas distintas: cuantos candidatos se
+        // cayeron, y cuantos se cayeron por culpa de un limite. Sin separarlos,
+        // una busqueda frenada y una comunidad llena de cuentas muertas se leen
+        // exactamente igual en stats.
+        poblar({ miembros: 200, precioDe: () => 100, avatarRoto: userId => userId % 2 === 0 });
+        const res = await buscar(port, cuerpo({ amount: 10 }));
+
+        assert.ok(res.body.stats.rejectedAvatarError > 0);
+        assert.strictEqual(res.body.stats.avatarRateLimited, 0,
+            'una cuenta baneada no puede contarse como limite de Roblox');
+        assert.strictEqual(res.body.stats.rateLimitedRoute, null);
+        assert.strictEqual(res.body.stats.stoppedByCatalogRateLimit, false);
+    });
+
+    test('el 429 del avatar se puede cruzar con la busqueda por searchId', async () => {
+        // En modo asincrono la peticion HTTP termina en milisegundos y la
+        // busqueda sigue durante minutos: a partir de ahi el requestId ya no
+        // basta para atar nada a lo que el usuario tiene delante, que es el
+        // searchId que devolvio el POST.
+        poblar({ miembros: 200, precioDe: () => 100 });
+        const restaurar = avatarQueDevuelve429(2);
+        const espia = espiarLogger();
+
+        try {
+            const res = await buscar(port, cuerpo({ amount: 50, minPrice: 50 }));
+            const searchId = res.body.searchId;
+            assert.ok(searchId, 'la respuesta no trajo searchId');
+
+            const linea = espia.buscar('Roblox respondio 429');
+            assert.ok(linea, 'no se registro ninguna linea de 429');
+            assert.strictEqual(linea.fields.routeKey, 'userAvatar');
+            assert.strictEqual(linea.fields.endpoint, 'avatar.roblox.com/v1/users/{id}/avatar');
+            assert.strictEqual(linea.fields.searchId, searchId,
+                'el 429 no lleva el searchId de la busqueda que lo provoco');
+
+            // Y el resumen final lleva el mismo id, para cerrar la historia con
+            // un solo filtro en Railway.
+            const resumen = espia.buscar('Busqueda de outfits del plugin');
+            assert.strictEqual(resumen.fields.searchId, searchId);
+            assert.strictEqual(resumen.fields.rateLimitedRoute, 'userAvatar');
+        } finally {
+            espia.restaurar();
+            restaurar();
             robloxRateLimiter.reset();
         }
     });

@@ -3,6 +3,7 @@
 const { Pool } = require('pg');
 const config = require('../config');
 const logger = require('../observability/logger');
+const requestContext = require('../observability/requestContext');
 
 // Unico modulo de todo el servicio que importa `pg`, igual que
 // src/roblox/client.js es el unico que importa `axios`. Cualquier consulta
@@ -31,6 +32,7 @@ const metrics = {
     queries: 0,
     errors: 0,
     lastErrorCode: null,   // SQLSTATE o codigo de red; nunca el detalle crudo
+    lastErrorOp: null,     // etiqueta de la operacion que fallo ('rotation.save'...)
     poolErrors: 0,         // fallos de clientes ociosos (los tira el proxy)
 };
 
@@ -158,7 +160,15 @@ function notConfigured() {
 // driver los manda por separado del texto de la consulta, asi que un
 // group_id con comillas o punto y coma es un dato y no puede convertirse en
 // sintaxis. Ningun call-site debe construir SQL con plantillas.
-async function query(text, params = []) {
+//
+// `op` es una ETIQUETA ESTABLE de la operacion ('rotation.save', 'jobs.finish',
+// 'schema.create'...). No es decorativa y no puede salir del call-site como
+// texto libre: sin ella, 'Consulta a Postgres fallida' en Railway solo decia el
+// SQLSTATE, y ese codigo no distingue si lo que se perdio fue el cursor de una
+// comunidad, el snapshot de un trabajo o una lectura de estadisticas — tres
+// consecuencias completamente distintas. El SQL NO se registra nunca, ni
+// siquiera recortado: la etiqueta dice lo mismo sin arrastrar la sentencia.
+async function query(text, params = [], op = null) {
     const activePool = getPool();
     if (!activePool) {
         throw notConfigured();
@@ -170,10 +180,18 @@ async function query(text, params = []) {
     } catch (err) {
         metrics.errors++;
         metrics.lastErrorCode = err?.code ?? null;
-        // Se registra el SQLSTATE y el mensaje, NUNCA los parametros: pueden
-        // llevar datos de usuario y, en otras consultas, secretos.
+        metrics.lastErrorOp = op ?? null;
+        // Se registra el SQLSTATE, la operacion y el mensaje; NUNCA los
+        // parametros ni el SQL: los primeros pueden llevar datos de usuario y,
+        // en otras consultas, secretos.
         logger.error('Consulta a Postgres fallida', {
+            op: op ?? 'sin-etiquetar',
             code: err?.code ?? null,
+            // Correlacion con la busqueda que la provoco, cuando la hay: sin
+            // esto, un fallo de base durante una busqueda no se puede cruzar
+            // con el `searchId` que el plugin tiene delante.
+            requestId: requestContext.requestId(),
+            searchId: requestContext.searchId(),
             detail: err?.message,
         });
         throw err;

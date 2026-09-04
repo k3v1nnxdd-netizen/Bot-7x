@@ -274,7 +274,7 @@ const state = { ready: false, lastError: null };
 // relacion o NULL si no existe, sin lanzar error — que es justo lo que se
 // quiere para preguntar "existe?" sin tener que capturar nada.
 async function tableExists(nombre) {
-    const { rows } = await db.query('SELECT to_regclass($1) AS oid', [nombre]);
+    const { rows } = await db.query('SELECT to_regclass($1) AS oid', [nombre], 'schema.inspect');
     return rows[0]?.oid !== null && rows[0]?.oid !== undefined;
 }
 
@@ -309,7 +309,7 @@ async function ensureSchema() {
                 const existiaAntes = await tableExists(nombre);
 
                 try {
-                    await db.query(sql);
+                    await db.query(sql, [], 'schema.create');
                 } catch (err) {
                     if (!YA_EXISTE.has(err?.code)) throw err;
                     logger.info('Otra instancia creo la tabla a la vez', { tabla: nombre, code: err.code });
@@ -329,7 +329,7 @@ async function ensureSchema() {
                 // primero es exactamente el resultado que se buscaba.
                 for (const alteracion of columnas) {
                     try {
-                        await db.query(alteracion);
+                        await db.query(alteracion, [], 'schema.alter');
                     } catch (err) {
                         if (!YA_EXISTE.has(err?.code)) throw err;
                         logger.info('Otra instancia aplico la misma ampliacion a la vez', {

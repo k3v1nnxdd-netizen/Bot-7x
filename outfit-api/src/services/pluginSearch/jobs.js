@@ -50,8 +50,6 @@ function nuevoId() {
 }
 
 function limpiar(ahora = Date.now()) {
-    const limiteVivo = config.pluginJobs.heartbeatTimeoutMs;
-
     for (const [id, trabajo] of trabajos) {
         const terminado = TERMINALES.has(trabajo.status);
         if (terminado && ahora - trabajo.finishedAt > config.pluginJobs.resultTtlMs) {
@@ -60,6 +58,18 @@ function limpiar(ahora = Date.now()) {
             trabajos.delete(id);
             continue;
         }
+
+        // DOS PLAZOS DISTINTOS, y no es un detalle. Un trabajo 'running' late en
+        // cada segmento: si deja de latir, esta muerto. Un trabajo 'queued' NO
+        // LATE, porque esperar turno es exactamente no hacer nada, y con
+        // presupuestos de hasta tres minutos una espera legitima detras de una
+        // busqueda grande dura mas que el plazo de latido. Compartir reloj
+        // convertia esa espera en un 'expired' mentiroso justo cuando el plugin
+        // estaba enseñando "esperando turno (2º)".
+        const limiteVivo = trabajo.status === ESTADO.QUEUED
+            ? config.pluginJobs.queuedTimeoutMs
+            : config.pluginJobs.heartbeatTimeoutMs;
+
         if (!terminado && ahora - trabajo.updatedAt > limiteVivo) {
             trabajo.status = ESTADO.EXPIRED;
             trabajo.finishedAt = ahora;

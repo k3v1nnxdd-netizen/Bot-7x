@@ -181,7 +181,14 @@ function diagnostico(bucket, { endpoint = null, status = null, headers = null, u
         consecutiveFailures: bucket.consecutiveFailures,
         // Correlacion con la busqueda que provoco la llamada. null cuando quien
         // llama no abrio contexto (las rutas del juego), que no es un problema.
+        //
+        // El searchId va ADEMAS del requestId y no en su lugar: el requestId
+        // ata la linea a la peticion HTTP y el searchId al trabajo que el
+        // plugin esta siguiendo, que en modo asincrono le sobrevive por
+        // minutos. Con solo el primero, un 429 emitido a mitad de una busqueda
+        // asincrona no se podia cruzar con el `searchId` que devolvio el POST.
         requestId: requestContext.requestId(),
+        searchId: requestContext.searchId(),
     };
 }
 

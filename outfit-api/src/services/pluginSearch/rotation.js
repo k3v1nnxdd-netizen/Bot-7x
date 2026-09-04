@@ -6,6 +6,7 @@ const repo = require('../../db/pluginRotationRepo');
 const { traerPaginaDeMiembros } = require('./memberPool');
 const cola = require('./groupQueue');
 const notificador = require('../../db/rotationNotifier');
+const requestContext = require('../../observability/requestContext');
 
 // ETAPA 0 — ROTACION. De un groupId a un flujo SECUENCIAL y PERSISTENTE de
 // miembros: la busqueda de hoy empieza donde termino la de ayer, da la vuelta
@@ -62,7 +63,18 @@ const ordenAleatorio = () => ORDENES[Math.floor(Math.random() * ORDENES.length)]
 // legitimas y la ruta las traduce a una respuesta clara. Cualquier otro fallo
 // (la base) degrada a modo efimero, que es como funcionaba antes de existir la
 // persistencia: la API de outfits nunca ha dependido de Postgres.
-async function abrirRotacion(groupId, stats, { onEncolado = null } = {}) {
+async function abrirRotacion(groupId, stats, {
+    onEncolado = null,
+    // Duracion del lease que pide ESTA busqueda: su presupuesto de tiempo mas
+    // margen. Ver budget.duracionDelLease y el comentario de
+    // config.pluginRotation.leaseMs.
+    leaseMs = config.pluginRotation.leaseMs,
+    // Techo de PAGINAS de miembros que puede llegar a pedir esta busqueda. Es
+    // proteccion anti-bucle y vive aqui, y no en quien llama, porque un solo
+    // `siguienteSegmento` puede recorrer muchas paginas sin devolver a nadie
+    // (todas ya vistas): comprobarlo solo entre segmentos no cortaria nada.
+    maxPaginas = config.pluginSearch.maxMemberPages,
+} = {}) {
     // Puerta 1: la cola local. Sin base de datos es la unica que hay.
     const soltarTurno = await cola.tomarTurno(groupId, { onEncolado });
 
@@ -76,12 +88,12 @@ async function abrirRotacion(groupId, stats, { onEncolado = null } = {}) {
             return crear(groupId, {
                 groupId, sortOrder: inicial, cursor: null, intraPageOffset: 0,
                 lastUserId: null, cycle: 1, cursorResets: 0, owner: null,
-            }, MODO.EPHEMERAL, stats, soltarTurno);
+            }, MODO.EPHEMERAL, stats, soltarTurno, { leaseMs, maxPaginas });
         }
 
         // Puerta 2: el lease global.
-        const estado = await adquirirGlobal(groupId, inicial, onEncolado);
-        return crear(groupId, estado, MODO.LEASED, stats, soltarTurno);
+        const estado = await adquirirGlobal(groupId, inicial, onEncolado, leaseMs);
+        return crear(groupId, estado, MODO.LEASED, stats, soltarTurno, { leaseMs, maxPaginas });
     } catch (err) {
         // Si algo revienta ANTES de que la rotacion exista, el turno local se
         // suelta aqui: si no, el grupo quedaria bloqueado para los que esperan.
@@ -104,10 +116,10 @@ async function abrirRotacion(groupId, stats, { onEncolado = null } = {}) {
 //
 // Solo se consulta la base cuando de verdad ha pasado algo. Mientras nadie
 // suelta y el lease sigue vivo, esto no hace ni una consulta.
-async function adquirirGlobal(groupId, sortOrderInicial, onEncolado) {
+async function adquirirGlobal(groupId, sortOrderInicial, onEncolado, leaseMs) {
     const limite = Date.now() + config.pluginQueue.waitTimeoutMs;
 
-    const primero = await repo.adquirir(groupId, sortOrderInicial);
+    const primero = await repo.adquirir(groupId, sortOrderInicial, leaseMs);
     if (primero) return primero;
 
     // Lo tiene otra instancia (o otra busqueda que aun no ha soltado). A partir
@@ -123,7 +135,7 @@ async function adquirirGlobal(groupId, sortOrderInicial, onEncolado) {
 
         await esperarSeñal(groupId, restante);
 
-        const estado = await repo.adquirir(groupId, sortOrderInicial);
+        const estado = await repo.adquirir(groupId, sortOrderInicial, leaseMs);
         if (estado) return estado;
     }
 }
@@ -181,8 +193,8 @@ async function esperarSeñal(groupId, restanteMs) {
     }
 }
 
-function crear(groupId, estadoInicial, modo, stats, soltarTurno) {
-    const estado = { ...estadoInicial, groupId: String(groupId) };
+function crear(groupId, estadoInicial, modo, stats, soltarTurno, { leaseMs, maxPaginas } = {}) {
+    const estado = { ...estadoInicial, groupId: String(groupId), leaseMs };
     const inicio = { cursor: estado.cursor, offset: estado.intraPageOffset, cycle: estado.cycle };
 
     // Miembros ya entregados EN ESTA busqueda. Es lo que impide evaluar dos
@@ -193,10 +205,18 @@ function crear(groupId, estadoInicial, modo, stats, soltarTurno) {
     let agotado = false;
     let persistePendiente = false;
 
+    // Paginas de miembros pedidas en ESTA busqueda, y si se llego al techo.
+    // Son dos cosas distintas de `agotado`: agotado significa "no queda nadie
+    // nuevo que mirar" y esto significa "queda gente, pero dejamos de pedir
+    // paginas". Quien llama las distingue para dar el motivo de parada bueno.
+    let paginas = 0;
+    let topePaginas = false;
+
     // Pagina actual en memoria, para no volver a pedirla en cada segmento.
     let pagina = null; // { miembros, nextCursor, cursor }
 
     async function cargarPagina(cursor) {
+        paginas++;
         try {
             const traida = await traerPaginaDeMiembros(groupId, estado.sortOrder, cursor, stats);
             return { ...traida, cursor };
@@ -231,6 +251,8 @@ function crear(groupId, estadoInicial, modo, stats, soltarTurno) {
         get cursorResets() { return estado.cursorResets; },
         get wraps() { return wraps; },
         get agotado() { return agotado; },
+        get paginas() { return paginas; },
+        get topePaginas() { return topePaginas; },
         get inicio() { return inicio; },
         get posicion() { return { cursor: estado.cursor, offset: estado.intraPageOffset, cycle: estado.cycle }; },
 
@@ -244,6 +266,21 @@ function crear(groupId, estadoInicial, modo, stats, soltarTurno) {
 
             while (segmento.length < cuantos && !agotado) {
                 if (pagina === null || pagina.cursor !== estado.cursor) {
+                    // TECHO DE PAGINAS. Se comprueba justo antes de pedir una,
+                    // que es el unico sitio donde puede cortar el bucle
+                    // patologico: paginas que Roblox sirve indefinidamente y en
+                    // las que no viene nadie nuevo. Ahi `examinados` no crece,
+                    // asi que su techo no llegaria a dispararse jamas.
+                    if (paginas >= maxPaginas) {
+                        topePaginas = true;
+                        agotado = true;
+                        logger.warn('Busqueda del plugin detenida: techo de paginas de miembros', {
+                            requestId: requestContext.requestId(),
+                            searchId: requestContext.searchId(),
+                            groupId: estado.groupId, paginas, maxPaginas, cycle: estado.cycle,
+                        });
+                        break;
+                    }
                     pagina = await cargarPagina(estado.cursor);
                 }
 

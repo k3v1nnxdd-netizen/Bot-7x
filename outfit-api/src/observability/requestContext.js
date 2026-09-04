@@ -19,10 +19,18 @@ const { AsyncLocalStorage } = require('async_hooks');
 // asincrona puede leerlo, incluido el limitador, sin que las capas de en medio
 // se enteren de que existe.
 //
-// NO ES UN CANAL DE DATOS DE NEGOCIO. Aqui solo entra lo que sirve para
-// CORRELACIONAR lineas de log: hoy, el requestId. Nunca credenciales, nunca
-// datos de usuario, nunca nada de lo que decida una respuesta — un valor que
-// viaja invisible es exactamente el sitio donde no debe vivir la logica.
+// NO ES UN CANAL DE DATOS DE NEGOCIO. Aqui solo entran los identificadores que
+// sirven para CORRELACIONAR lineas de log: el requestId y el searchId. Nunca
+// credenciales, nunca datos de usuario, nunca nada de lo que decida una
+// respuesta — un valor que viaja invisible es exactamente el sitio donde no
+// debe vivir la logica.
+//
+// POR QUE HACEN FALTA LOS DOS. El requestId identifica la peticion HTTP que
+// arranco la busqueda; el searchId es lo que el plugin tiene delante y lo unico
+// por lo que se puede preguntar despues. En modo asincrono la peticion HTTP
+// termina en milisegundos y la busqueda sigue durante minutos, asi que TODO lo
+// que se registre a partir de ahi — un 429 del avatar, un fallo de Postgres —
+// solo se puede cruzar con lo que ve el usuario a traves del searchId.
 const almacen = new AsyncLocalStorage();
 
 // Ejecuta `fn` con `contexto` disponible para toda su cadena asincrona.
@@ -38,9 +46,15 @@ function actual() {
     return almacen.getStore() ?? null;
 }
 
-// Atajo para el unico campo que se usa hoy.
+// Atajos para los dos campos que se usan hoy. Devuelven null fuera de contexto
+// por el mismo motivo que `actual`: perder detalle en un log jamas puede ser
+// motivo para romper una peticion.
 function requestId() {
     return almacen.getStore()?.requestId ?? null;
 }
 
-module.exports = { ejecutarCon, actual, requestId };
+function searchId() {
+    return almacen.getStore()?.searchId ?? null;
+}
+
+module.exports = { ejecutarCon, actual, requestId, searchId };

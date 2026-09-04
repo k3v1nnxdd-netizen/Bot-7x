@@ -62,7 +62,8 @@ async function crear(trabajo) {
                 (search_id, group_id, status, requested, instance_id, heartbeat_at)
              VALUES ($1, $2, $3, $4, $5, NOW())
              ON CONFLICT (search_id) DO NOTHING`,
-            [trabajo.searchId, String(trabajo.groupId), trabajo.status, trabajo.target, INSTANCIA]
+            [trabajo.searchId, String(trabajo.groupId), trabajo.status, trabajo.target, INSTANCIA],
+            'jobs.create'
         );
     } catch (err) {
         // Un trabajo que no se puede persistir sigue sirviendo desde memoria:
@@ -96,7 +97,8 @@ async function actualizar(trabajo) {
                 trabajo.progress ? JSON.stringify(trabajo.progress) : null,
                 trabajo.startedAt ? new Date(trabajo.startedAt) : null,
                 INSTANCIA,
-            ]
+            ],
+            'jobs.snapshot'
         );
     } catch (err) {
         logger.debug('No se pudo volcar el progreso del trabajo', {
@@ -133,7 +135,8 @@ async function terminar(trabajo) {
                 JSON.stringify({ outfits: trabajo.outfits ?? [], stats: trabajo.stats ?? null }),
                 trabajo.error?.code ?? null,
                 config.pluginJobs.retentionMs,
-            ]
+            ],
+            'jobs.finish'
         );
     } catch (err) {
         logger.warn('No se pudo persistir el resultado del trabajo', {
@@ -146,7 +149,7 @@ async function leer(searchId) {
     if (!disponible()) return null;
     try {
         const { rows } = await db.query(
-            `SELECT * FROM plugin_search_jobs WHERE search_id = $1`, [searchId]
+            `SELECT * FROM plugin_search_jobs WHERE search_id = $1`, [searchId], 'jobs.read'
         );
         return filaAJob(rows[0]);
     } catch (err) {
@@ -162,6 +165,13 @@ async function leer(searchId) {
 // llegar nunca. Se comprueba por LATIDO y no por instancia: una replica viva
 // sigue latiendo, asi que solo caen los que de verdad estan huerfanos — lo que
 // hace este barrido seguro tambien con varias replicas arrancando a la vez.
+//
+// DOS PLAZOS, y no uno, porque son dos situaciones distintas. Un trabajo
+// 'running' late en cada segmento: si deja de latir un par de minutos, esta
+// muerto. Un trabajo 'queued' NO LATE — esperar turno es exactamente no hacer
+// nada — y con presupuestos de hasta tres minutos, una espera legitima detras
+// de una busqueda grande dura mas que el plazo de latido. Compartir reloj
+// convertia esa espera en un 'expired' mentiroso.
 async function expirarHuerfanos() {
     if (!disponible()) return 0;
     try {
@@ -174,8 +184,15 @@ async function expirarHuerfanos() {
                     expires_at = NOW() + ($1::bigint * INTERVAL '1 millisecond')
               WHERE status IN ('queued', 'running')
                 AND (heartbeat_at IS NULL
-                     OR heartbeat_at < NOW() - ($2::bigint * INTERVAL '1 millisecond'))`,
-            [config.pluginJobs.retentionMs, config.pluginJobs.heartbeatTimeoutMs]
+                     OR heartbeat_at < NOW() - (
+                         CASE WHEN status = 'queued' THEN $3::bigint ELSE $2::bigint END
+                         * INTERVAL '1 millisecond'))`,
+            [
+                config.pluginJobs.retentionMs,
+                config.pluginJobs.heartbeatTimeoutMs,
+                config.pluginJobs.queuedTimeoutMs,
+            ],
+            'jobs.expireOrphans'
         );
         if (rowCount > 0) {
             logger.warn('Trabajos de busqueda huerfanos marcados como expirados', { trabajos: rowCount });
@@ -194,7 +211,8 @@ async function limpiarVencidos() {
     if (!disponible()) return 0;
     try {
         const { rowCount } = await db.query(
-            `DELETE FROM plugin_search_jobs WHERE expires_at IS NOT NULL AND expires_at < NOW()`
+            `DELETE FROM plugin_search_jobs WHERE expires_at IS NOT NULL AND expires_at < NOW()`,
+            [], 'jobs.cleanup'
         );
         if (rowCount > 0) logger.info('Trabajos de busqueda vencidos eliminados', { trabajos: rowCount });
         return rowCount;

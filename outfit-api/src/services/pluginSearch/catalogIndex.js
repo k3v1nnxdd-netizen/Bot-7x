@@ -109,6 +109,7 @@ function crearIndiceDeCatalogo(stats) {
                     for (const assetId of lote) irresolubles.add(assetId);
                     logger.warn('Busqueda del plugin detenida: el catalogo de Roblox esta limitado', {
                         requestId: requestContext.requestId(),
+                        searchId: requestContext.searchId(),
                         routeKey: RUTA_CATALOGO,
                         reason: freno.reason,
                         cooldownRemainingMs: freno.cooldownRemainingMs,
@@ -153,6 +154,7 @@ function crearIndiceDeCatalogo(stats) {
                         frenadoPorLimite = true;
                         logger.warn('Busqueda del plugin detenida: Roblox limito el catalogo a mitad', {
                             requestId: requestContext.requestId(),
+                            searchId: requestContext.searchId(),
                             routeKey: RUTA_CATALOGO,
                             reason: despues.reason,
                             cooldownRemainingMs: despues.cooldownRemainingMs,

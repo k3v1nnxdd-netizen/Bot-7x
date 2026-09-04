@@ -66,9 +66,9 @@ function toGroup(row) {
 // Envoltorio comun: traduce el error crudo de `pg` a nuestra taxonomia (503
 // si la base no esta, el error original si es un bug nuestro) sin que cada
 // funcion tenga que acordarse.
-async function run(text, params) {
+async function run(text, params, op = 'whitelist.query') {
     try {
-        return await db.query(text, params);
+        return await db.query(text, params, op);
     } catch (err) {
         throw translateDbError(err);
     }

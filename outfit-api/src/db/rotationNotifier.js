@@ -131,7 +131,7 @@ async function anunciarLiberacion(groupId) {
 
     if (!disponible()) return;
     try {
-        await db.query(`SELECT pg_notify($1, $2)`, [CANAL, String(groupId)]);
+        await db.query(`SELECT pg_notify($1, $2)`, [CANAL, String(groupId)], 'rotation.notify');
     } catch (err) {
         logger.debug('No se pudo anunciar la liberacion del grupo', {
             groupId: String(groupId), detail: err?.message,

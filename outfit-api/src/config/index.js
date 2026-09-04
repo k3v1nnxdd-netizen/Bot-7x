@@ -212,41 +212,140 @@ const maxCatalogBatchSize = intFromEnv('MAX_CATALOG_BATCH_SIZE', 100);
 // (comprobado en vivo: 121 -> 400 "Invalid count").
 // ── Busqueda de outfits para el plugin de Studio ─────────────────────────────
 //
-// TODO ESTE BLOQUE EXISTE PARA QUE LA BUSQUEDA NO PUEDA IRSE DE LAS MANOS.
-// Cada candidato cuesta como minimo una llamada a Roblox (su avatar) y a
-// menudo dos (la ficha de catalogo de lo que lleva puesto), asi que sin topes
-// duros un `amount` alto sobre un grupo grande se traduce en miles de
-// peticiones salientes y en una respuesta que no llega nunca.
+// `amount` SON OUTFITS VALIDOS, NO INTENTOS. Un candidato que no encaja no
+// gasta plaza: se sustituye por el siguiente de la comunidad. La busqueda tiene
+// que poder seguir recorriendo miembros y paginas hasta juntar lo pedido.
 //
-// Los tres topes son independientes y el primero que se cumpla corta la
-// busqueda; se devuelve lo encontrado hasta ese momento en vez de un error,
-// porque media lista es util y un timeout no.
+// DE AHI QUE HAYA DOS PRESUPUESTOS DE CANDIDATOS, Y NO UNO:
+//
+//   DESEADO (adaptativo)  cuantos candidatos ESPERAMOS necesitar ahora mismo.
+//                         Se recalcula en cada vuelta con la tasa de aceptacion
+//                         real de esta busqueda y con la EWMA historica del
+//                         grupo. Sirve para dimensionar, estimar y
+//                         diagnosticar; NO para terminar. Un grupo caro
+//                         simplemente sube el numero y se sigue buscando.
+//
+//   TECHO DURO (hard)     proteccion extrema contra bucles. Esta pensado para
+//                         NO alcanzarse en una busqueda sana: lo normal es
+//                         terminar por `amount` alcanzado, por vuelta completa
+//                         a la comunidad, por limite real de Roblox o por
+//                         presupuesto de tiempo.
+//
+// Un solo numero hacia las dos cosas, y por eso una busqueda de 10 outfits en
+// un grupo con un 3% de aceptacion moria en 60 candidatos con 2 resultados: el
+// SUELO del presupuesto (60) era tambien su TECHO.
 const pluginSearch = {
-    // Paginas de miembros (100 por pagina) que se llegan a pedir como maximo.
-    // 10 paginas = hasta 1000 candidatos en el bombo del que se muestrea.
-    maxMemberPages: intFromEnv('PLUGIN_SEARCH_MAX_MEMBER_PAGES', 10),
+    // ── Techo ABSOLUTO de paginas de miembros por busqueda ───────────────────
+    //
+    // No es el limite normal: el normal sale del techo de candidatos (una
+    // pagina son 100 candidatos como mucho). Esto cubre el caso patologico en
+    // el que Roblox devuelve paginas indefinidamente y NINGUNA trae miembros
+    // nuevos — ahi los candidatos no crecen, asi que su techo no cortaria nunca.
+    maxMemberPages: intFromEnv('PLUGIN_SEARCH_MAX_MEMBER_PAGES', 400),
 
-    // Candidatos que se llegan a EXAMINAR (avatar + precio) como maximo. Es el
-    // tope que de verdad acota el gasto: el bombo puede tener 1000 usuarios,
-    // pero no se miran todos si no hace falta.
-    maxCandidates: intFromEnv('PLUGIN_SEARCH_MAX_CANDIDATES', 600),
+    // Paginas de margen sobre las que exige el techo de candidatos. Cubre las
+    // que se gastan sin producir candidatos utiles: el solape del wrap-around y
+    // los miembros ya vistos en esta misma busqueda.
+    memberPageSlack: intFromEnv('PLUGIN_SEARCH_MEMBER_PAGE_SLACK', 10),
 
-    // Cuantos candidatos se examinan por cada resultado pedido. Con el filtro
-    // de precio la mayoria no encaja, asi que hace falta mirar bastantes mas
-    // de los que se piden — pero proporcionalmente: pedir 5 no puede costar lo
-    // mismo que pedir 500.
+    // ── Presupuesto DESEADO (adaptativo) ─────────────────────────────────────
+
+    // Coste asumido por resultado MIENTRAS NO HAY EVIDENCIA: ni tasa de
+    // aceptacion propia ni historial del grupo. En cuanto aparece cualquiera de
+    // las dos, este numero deja de usarse.
     candidatesPerResult: intFromEnv('PLUGIN_SEARCH_CANDIDATES_PER_RESULT', 4),
 
-    // Suelo del calculo anterior. Con `amount` bajo y un rango de precio
-    // estrecho, 4 candidatos por resultado no encontrarian nada; este minimo
-    // garantiza una muestra con sentido aunque se pida un solo outfit.
+    // Suelo del deseado. Con `amount` bajo y un rango estrecho, cuatro
+    // candidatos por resultado no encontrarian nada; esto garantiza una muestra
+    // con sentido aunque se pida un solo outfit.
     minCandidates: intFromEnv('PLUGIN_SEARCH_MIN_CANDIDATES', 60),
 
-    // Presupuesto de TIEMPO de la busqueda entera. Es el tope que le importa a
-    // quien espera delante de Studio: agotarlo devuelve lo que se lleve
-    // encontrado, nunca un error. Es tambien la red que sostiene el peor caso
-    // cuando Roblox va lento y los otros dos topes irian sobrados.
-    timeBudgetMs: intFromEnv('PLUGIN_SEARCH_TIME_BUDGET_MS', 25_000),
+    // Margen sobre el coste estimado. La estimacion es una media: sin margen,
+    // la mitad de las busquedas se quedarian cortas por definicion.
+    candidateBudgetMargin: Number(process.env.PLUGIN_SEARCH_CANDIDATE_MARGIN ?? 1.5),
+
+    // Techo de la ESTIMACION de coste por resultado. Una racha mala al principio
+    // (los diez primeros candidatos fallan) no puede proyectar un presupuesto
+    // absurdo para todo el resto.
+    maxCandidatesPerResult: intFromEnv('PLUGIN_SEARCH_MAX_CANDIDATES_PER_RESULT', 120),
+
+    // Candidatos examinados a partir de los cuales la evidencia VIVA de esta
+    // busqueda pesa el 100% y el historial del grupo deja de contar. Por debajo
+    // se mezclan proporcionalmente: con 10 candidatos la tasa propia es ruido y
+    // el historial estima mejor; con 100 ya no.
+    candidateFullWeightSample: intFromEnv('PLUGIN_SEARCH_CANDIDATE_FULL_WEIGHT_SAMPLE', 100),
+
+    // ── TECHO DURO de candidatos ─────────────────────────────────────────────
+    //
+    // El techo es `clamp(amount * hardCandidatesPerResult, min, max)`, asi que
+    // la tolerancia por resultado NO es constante: la constante de abajo solo
+    // manda en el TRAMO PROPORCIONAL, y en los extremos la cambian el suelo y
+    // el techo absoluto.
+    //
+    //   amount    techo    candidatos/resultado
+    //      1      1 500          1 500      <- suelo
+    //     10      1 500            150      <- suelo, justo al ras
+    //    100     15 000            150      <- proporcional
+    //    500     25 000             50      <- techo absoluto
+    //
+    // Por eso la busqueda publica `effectiveHardCandidatesPerResult` en stats:
+    // comparar la tasa de aceptacion observada contra "150" seria comparar
+    // contra un numero que en media busqueda no es el que se esta aplicando.
+    //
+    // Y alcanzar el techo NO demuestra que en la comunidad no haya outfits en
+    // el rango pedido: demuestra unicamente que no conseguimos encontrar los
+    // suficientes dentro de nuestros limites seguros. La rotacion continua
+    // donde quedo, asi que reintentar mira gente nueva y puede dar mas.
+    hardCandidatesPerResult: intFromEnv('PLUGIN_SEARCH_HARD_CANDIDATES_PER_RESULT', 150),
+
+    // Suelo del techo duro. Pedir 1 outfit tiene que poder recorrer una
+    // comunidad de tamaño normal entera antes de darse por vencido.
+    minHardCandidates: intFromEnv('PLUGIN_SEARCH_MIN_HARD_CANDIDATES', 1_500),
+
+    // Techo ABSOLUTO, pase lo que pase y se pida lo que se pida. Es lo que
+    // baja la tolerancia a 50 por resultado en un pedido de 500, y es
+    // deliberado: 25.000 candidatos ya son 25.000 llamadas de avatar — la unica
+    // etapa que no admite lote — y subirlo para conservar la proporcion
+    // cargaria la cuota de Roblox del servicio entero persiguiendo un caso que
+    // el presupuesto de tiempo cortaria igualmente antes.
+    maxCandidates: intFromEnv('PLUGIN_SEARCH_MAX_CANDIDATES', 25_000),
+
+    // Override explicito del techo duro. null = se calcula por `amount`. Existe
+    // para poder bajarlo en caliente sin redeploy si algo se desmadra.
+    hardCandidateLimit: process.env.PLUGIN_SEARCH_HARD_CANDIDATE_LIMIT === undefined
+        ? null
+        : intFromEnv('PLUGIN_SEARCH_HARD_CANDIDATE_LIMIT', 1_500),
+
+    // ── Presupuesto de TIEMPO ────────────────────────────────────────────────
+    //
+    // Es el tope que de verdad le importa a quien espera delante de Studio y el
+    // que sostiene el peor caso cuando Roblox va lento. Agotarlo devuelve lo
+    // encontrado, nunca un error.
+    //
+    // ESCALA CON `amount` porque el trabajo escala con `amount`: 25 s eran
+    // razonables para 10 outfits en modo sincrono y absurdamente cortos para
+    // 500. Ahora la busqueda es asincrona — nadie sostiene un socket — asi que
+    // el limite puede ser el que el trabajo necesita en vez del que aguanta una
+    // peticion HTTP.
+    //
+    //   10  ->  30 s     100 -> 100 s     500 -> 180 s (techo)
+    //
+    // El presupuesto NO empieza a correr mientras la busqueda espera turno del
+    // grupo: hacer cola no es buscar, y cobrarselo dejaba a la segunda busqueda
+    // de una comunidad sin tiempo antes de mirar a nadie.
+    timeBudgetMs: process.env.PLUGIN_SEARCH_TIME_BUDGET_MS === undefined
+        ? null // null = se calcula por `amount`; un valor explicito manda sobre todo
+        : intFromEnv('PLUGIN_SEARCH_TIME_BUDGET_MS', 30_000),
+
+    timeBudgetBaseMs: intFromEnv('PLUGIN_SEARCH_TIME_BUDGET_BASE_MS', 20_000),
+    timeBudgetPerResultMs: intFromEnv('PLUGIN_SEARCH_TIME_BUDGET_PER_RESULT_MS', 800),
+    timeBudgetMinMs: intFromEnv('PLUGIN_SEARCH_TIME_BUDGET_MIN_MS', 30_000),
+    timeBudgetMaxMs: intFromEnv('PLUGIN_SEARCH_TIME_BUDGET_MAX_MS', 180_000),
+
+    // Techo del presupuesto en modo SINCRONO. Ahi si hay un socket abierto al
+    // otro lado, y HttpService de Roblox tiene su propio plazo: prometer tres
+    // minutos seria prometer un timeout. El modo asincrono no tiene este techo.
+    timeBudgetSyncCeilingMs: intFromEnv('PLUGIN_SEARCH_TIME_BUDGET_SYNC_CEILING_MS', 25_000),
 
     // Candidatos cuyos avatares se piden en paralelo. Por encima del gate
     // global de salida (UPSTREAM_MAX_CONCURRENT) no se gana nada — el limitador
@@ -289,12 +388,23 @@ const pluginSearch = {
 // aleatorio de siempre: la API de outfits nunca ha dependido de la base y no va
 // a empezar ahora.
 const pluginRotation = {
-    // Cuanto vale un lease sobre la rotacion de un grupo. Tiene que superar la
-    // duracion maxima de una busqueda (el presupuesto de tiempo) con margen: si
-    // expirase a mitad, otra busqueda podria empezar a avanzar el mismo cursor.
-    // Y no puede ser eterno, porque un proceso que muera con el lease cogido
-    // dejaria el grupo bloqueado hasta el fin de los tiempos.
+    // SUELO de la duracion de un lease sobre la rotacion de un grupo. El valor
+    // real lo pide cada busqueda al abrir la rotacion, y es su propio
+    // presupuesto de tiempo mas `leaseMarginMs`: un lease que expira a mitad
+    // deja que OTRA busqueda empiece a avanzar el mismo cursor, que es
+    // exactamente la corrupcion que el lease existe para impedir.
+    //
+    // Por que se pide por busqueda y no se fija aqui al maximo posible: con el
+    // presupuesto de tiempo escalando de 30 s a 180 s, un lease unico y
+    // dimensionado para el peor caso dejaria un grupo bloqueado tres minutos
+    // cada vez que un proceso muriese durante una busqueda de 10 outfits. Cada
+    // busqueda reserva lo que de verdad puede llegar a durar, y ni un ms mas.
     leaseMs: intFromEnv('PLUGIN_ROTATION_LEASE_MS', 90_000),
+
+    // Margen del lease sobre el presupuesto de tiempo de la busqueda. Cubre lo
+    // que va entre la ultima renovacion (que ocurre al persistir, o sea una vez
+    // por segmento) y el cierre.
+    leaseMarginMs: intFromEnv('PLUGIN_ROTATION_LEASE_MARGIN_MS', 30_000),
 
     // Al reanudar, se vuelve a mirar al ultimo miembro procesado?
     //
@@ -329,9 +439,17 @@ const pluginQueue = {
     maxWaiting: intFromEnv('PLUGIN_QUEUE_MAX_WAITING', 8),
 
     // Espera maxima en cola antes de rendirse. Tiene que dar para que termine
-    // la busqueda de delante (su presupuesto de tiempo) con margen; mas alla de
-    // eso, quien espera prefiere un 'ahora no' claro a un socket colgado.
-    waitTimeoutMs: intFromEnv('PLUGIN_QUEUE_WAIT_TIMEOUT_MS', 45_000),
+    // la busqueda de delante CON SU PRESUPUESTO MAXIMO, mas margen: si fuera
+    // menor, una busqueda de 500 outfits (hasta 180 s) expulsaria de la cola a
+    // todas las que llegasen detras, y el 'queue_timeout' que verian no diria
+    // nada de lo que en realidad paso.
+    //
+    // Esperar no cuesta nada aqui: el trabajo asincrono esta en `queued` y el
+    // plugin lo enseña como "esperando turno (2º)" en vez de fingir progreso.
+    waitTimeoutMs: intFromEnv(
+        'PLUGIN_QUEUE_WAIT_TIMEOUT_MS',
+        pluginSearch.timeBudgetMaxMs + 30_000
+    ),
 
     // Solo para el caso multi-instancia: si el lease del grupo lo tiene OTRO
     // proceso, no se puede esperar a una promesa local. Se espera una vez hasta
@@ -363,11 +481,23 @@ const pluginJobs = {
     // no hay hitos, cada este intervalo — que ademas hace de latido.
     snapshotMs: intFromEnv('PLUGIN_JOB_SNAPSHOT_MS', 2_000),
 
-    // Sin latido durante este tiempo, un trabajo en curso se da por muerto.
+    // Sin latido durante este tiempo, un trabajo EN CURSO se da por muerto.
     // Es lo que impide que un proceso que se cayo deje jobs eternamente
     // 'running' en la base. Holgado respecto a snapshotMs para no matar a un
-    // trabajo vivo que solo va lento.
-    heartbeatTimeoutMs: intFromEnv('PLUGIN_JOB_HEARTBEAT_TIMEOUT_MS', 60_000),
+    // trabajo vivo que solo va lento: un latido sale al cerrar cada segmento, y
+    // un segmento son 25 avatares.
+    heartbeatTimeoutMs: intFromEnv('PLUGIN_JOB_HEARTBEAT_TIMEOUT_MS', 120_000),
+
+    // Y este es el plazo de los trabajos que aun ESPERAN TURNO, que es distinto
+    // y no puede compartir reloj con el anterior: un trabajo en cola no late
+    // porque no esta haciendo nada — es correcto que no se mueva — y matarlo
+    // por eso convertiria una espera legitima en un 'expired' mentiroso. El
+    // unico plazo que le aplica es el de la propia cola, que ya lo saca con un
+    // motivo claro; esto es solo la red por si ese camino se pierde.
+    queuedTimeoutMs: intFromEnv(
+        'PLUGIN_JOB_QUEUED_TIMEOUT_MS',
+        pluginQueue.waitTimeoutMs + 30_000
+    ),
 
     // Cuanto sobrevive un trabajo TERMINADO en la base, con sus resultados.
     // Es lo que permite recoger el resultado tras un redeploy o desde otra

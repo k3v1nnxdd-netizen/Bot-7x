@@ -19,14 +19,39 @@ const logger = require('../../observability/logger');
 // devolvio Roblox.
 
 // Motivos de parada, en orden de "lo que le interesa saber a quien mira".
-// `completed` y `candidatesExhausted` son finales normales; los otros tres
-// dicen que la busqueda se corto y que reintentar mas tarde puede dar mas.
+// `completed` y `candidatesExhausted` son finales normales; los demas dicen que
+// la busqueda se corto y que reintentar mas tarde puede dar mas.
+//
+// CONJUNTO CERRADO: un valor fuera de esta lista seria una fuga de detalle
+// interno hacia el cliente. Dos matices que conviene tener presentes:
+//
+//   TOPE_CANDIDATOS  significa TECHO DURO alcanzado (candidatos o paginas), no
+//                    "se acabo el presupuesto previsto". Un presupuesto
+//                    previsto que se queda corto ya no termina nada: se
+//                    recalcula y la busqueda sigue.
+//
+//   LIMITE_*         UN MOTIVO POR RUTA, y no uno generico. Que Roblox nos
+//                    frene el catalogo y que nos frene el avatar son dos
+//                    incidentes distintos, con endpoints distintos, cuotas
+//                    distintas y arreglos distintos. Meter los dos bajo un
+//                    nombre que dice "catalog" obligaria a leer OTRO campo para
+//                    saber si la palabra del primero es literal — y manda a
+//                    mirar el endpoint equivocado a quien no lo lea.
 const PARADA = Object.freeze({
     COMPLETO: 'completed',
     SIN_CANDIDATOS: 'candidatesExhausted',
     TOPE_CANDIDATOS: 'candidateCap',
     TIEMPO: 'timeBudget',
     LIMITE_CATALOGO: 'catalogRateLimit',
+    LIMITE_AVATAR: 'avatarRateLimit',
+});
+
+// Los dos motivos que significan "Roblox nos esta frenando". Se agrupan aqui y
+// no en cada sitio que necesite la pregunta, para que añadir una tercera ruta
+// limitada el dia de mañana no obligue a acordarse de tres condicionales.
+const PARADAS_POR_LIMITE = Object.freeze({
+    [PARADA.LIMITE_CATALOGO]: 'catalogDetails',
+    [PARADA.LIMITE_AVATAR]: 'userAvatar',
 });
 
 // Motivo interno de descarte -> casilla publica.
@@ -51,6 +76,21 @@ function crearStats() {
         // Trabajo hecho
         avatarRequests: 0,        // llamadas al avatar, incluidas las que fallaron
         avatarsFetched: 0,        // de esas, las que devolvieron un avatar usable
+
+        // De los avatares que fallaron, los que fallaron PORQUE ROBLOX NOS
+        // ESTA FRENANDO (429, cooldown de la ruta, breaker abierto). Va aparte
+        // de rejectedAvatarError, que es el veredicto del candidato, porque son
+        // dos preguntas distintas: "cuantos candidatos se cayeron" y "cuantos
+        // se cayeron por culpa nuestra/de Roblox y no porque la cuenta este
+        // baneada". Sin este contador, una busqueda entera podia salir con
+        // found bajo y ningun campo de limitacion activo mientras el log se
+        // llenaba de 429 del avatar, y nada en stats lo relacionaba.
+        //
+        // Es ademas independiente de la parada: cuenta los avatares perdidos
+        // por un limite AUNQUE la busqueda acabara completando el pedido. Un
+        // valor alto con `stoppedBy: completed` avisa de que la siguiente
+        // busqueda de ese grupo puede no tener tanta suerte.
+        avatarRateLimited: 0,
         assetIdsSeen: 0,          // con repeticiones, tal como venian en los avatares
         assetIdsUnique: 0,        // distintos en TODA la busqueda
         assetIdsRequested: 0,     // los que de verdad se mandaron a Roblox
@@ -90,6 +130,13 @@ function crearStats() {
     // mismo grupo NO recorrieron el mismo tramo.
     let rotacion = null;
 
+    // Los presupuestos con los que corrio, tal como quedaron al final. Se
+    // publican porque son la mitad de la respuesta a "por que paro aqui": un
+    // `candidateCap` no dice nada sin saber en que numero estaba el techo, y un
+    // deseado muy por encima de lo examinado dice que la busqueda se quedo sin
+    // tiempo, no sin ganas.
+    let presupuestos = null;
+
     return {
         contadores,
 
@@ -123,12 +170,21 @@ function crearStats() {
 
         // La ULTIMA parada gana: se llama en cuanto se detecta la condicion, y
         // las condiciones se comprueban en orden de prioridad.
+        //
+        // La ruta limitada NO se pasa: se DERIVA del motivo (ver
+        // PARADAS_POR_LIMITE). Asi `stoppedBy` y `rateLimitedRoute` no pueden
+        // contradecirse, que es justo lo que pasaria si dependieran de que cada
+        // sitio que corta la busqueda se acuerde de mandar la etiqueta buena.
         pararPor(motivo) {
             parada = motivo;
         },
 
         anotarRotacion(datos) {
             rotacion = datos;
+        },
+
+        anotarPresupuestos(datos) {
+            presupuestos = datos;
         },
 
         get parada() {
@@ -161,6 +217,28 @@ function crearStats() {
                 rotationCursorResets: rotacion?.cursorResets ?? 0,
                 avatarRequests: contadores.avatarRequests,
                 avatarsFetched: contadores.avatarsFetched,
+                avatarRateLimited: contadores.avatarRateLimited,
+
+                // Presupuestos con los que corrio. `desiredCandidateBudget` es
+                // la PREVISION final (cuantos candidatos se esperaba necesitar)
+                // y `hardCandidateLimit` la proteccion anti-bucle; que el
+                // segundo aparezca en `candidatesExamined` es lo unico que
+                // justifica un stoppedBy 'candidateCap'.
+                desiredCandidateBudget: presupuestos?.deseado ?? null,
+                hardCandidateLimit: presupuestos?.techo ?? null,
+
+                // Candidatos por resultado que el techo permite DE VERDAD para
+                // este `amount`. La constante de configuracion (150) solo vale
+                // en el tramo proporcional: con amount=10 el suelo lo deja
+                // igual en 150, pero con amount=500 el techo absoluto lo baja a
+                // 50. Sin este campo, comparar la tasa de aceptacion observada
+                // contra "150" seria comparar contra un numero que en media
+                // busqueda no es el que se esta aplicando.
+                effectiveHardCandidatesPerResult: presupuestos?.porResultadoEfectivo ?? null,
+
+                memberPageLimit: presupuestos?.techoPaginas ?? null,
+                timeBudgetMs: presupuestos?.tiempoMs ?? null,
+                candidatesPerResultEstimate: presupuestos?.costePorResultado ?? null,
 
                 assetIdsSeen: contadores.assetIdsSeen,
                 assetIdsUnique: contadores.assetIdsUnique,
@@ -194,11 +272,37 @@ function crearStats() {
                 assetsDeleted: contadores.assetsDeleted,
 
                 stoppedBy: parada,
-                // Booleano explicito ademas de `stoppedBy`, y no es redundante:
-                // es LA condicion sobre la que el plugin tiene que ramificar
-                // para decirle a quien mira "Roblox esta limitando, prueba en un
-                // momento" en vez de "no se encontro nada".
+
+                // ── Los tres campos de limitacion, y por que son tres ────────
+                //
+                // Booleanos explicitos ademas de `stoppedBy` porque son LA
+                // condicion sobre la que hay que ramificar para decir "Roblox
+                // esta limitando, prueba en un momento" en vez de "no se
+                // encontro nada". Pero cada uno responde una pregunta distinta
+                // y ninguno se puede deducir de otro sin comparar cadenas:
+                //
+                //   stoppedByRobloxRateLimit  ¿nos freno Roblox?  <- para el
+                //                             mensaje al usuario, que es el
+                //                             mismo venga el freno de donde
+                //                             venga. Añadir una tercera ruta
+                //                             limitada no cambia a quien lo lea.
+                //
+                //   stoppedByCatalogRateLimit ¿fue el CATALOGO?   <- literal, y
+                //                             solo eso. Un 429 del avatar aqui
+                //                             es `false`: un campo que dice
+                //                             "catalog" no puede significar
+                //                             "cualquier ruta" sin mandar a
+                //                             mirar el endpoint equivocado.
+                //
+                //   rateLimitedRoute          ¿cual exactamente? <- el bucket
+                //                             del limitador, para cruzarlo con
+                //                             el campo `routeKey` de sus lineas
+                //                             de log.
+                stoppedByRobloxRateLimit: Object.hasOwn(PARADAS_POR_LIMITE, parada),
                 stoppedByCatalogRateLimit: parada === PARADA.LIMITE_CATALOGO,
+                rateLimitedRoute: Object.hasOwn(PARADAS_POR_LIMITE, parada)
+                    ? PARADAS_POR_LIMITE[parada]
+                    : null,
 
                 // Proporcion de candidatos que acabaron siendo outfits validos.
                 // Es el numero que de verdad explica cuanto costo la busqueda, y

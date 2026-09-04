@@ -150,6 +150,12 @@ async function arrancar(trabajo, peticion, { relanzar = false } = {}) {
     try {
         const resultado = await pluginSearch.searchOutfits(peticion, {
             requestId: trabajo.requestId,
+            // El searchId viaja al contexto de correlacion, no solo al log
+            // final: en modo asincrono la peticion HTTP termina en
+            // milisegundos y la busqueda sigue minutos, asi que todo lo que se
+            // registre despues (un 429 del avatar, un fallo de Postgres) solo
+            // se puede atar a lo que el usuario tiene delante por este id.
+            searchId: trabajo.searchId,
             onProgress: progreso => jobs.actualizarProgreso(trabajo.searchId, progreso),
             onEncolado: posicion => jobs.marcarEnCola(trabajo.searchId, posicion),
         });

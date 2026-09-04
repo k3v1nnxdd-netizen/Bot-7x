@@ -61,15 +61,27 @@ const SQL_ADQUIRIR = `
     RETURNING *
 `;
 
+// `leaseMs` lo elige cada busqueda a partir de su propio presupuesto de tiempo
+// (ver services/pluginSearch/budget.js): una de 10 outfits reserva el grupo un
+// minuto y una de 500 lo reserva tres, en vez de reservarlo siempre para el peor
+// caso. Aqui solo se acota por abajo al minimo configurado, para que un llamador
+// despistado no pueda pedir un lease de cero y dejar el grupo abierto a dos
+// recorridos simultaneos.
+function leaseValido(leaseMs) {
+    return Number.isFinite(leaseMs) && leaseMs > 0
+        ? Math.max(leaseMs, config.pluginRotation.leaseMs)
+        : config.pluginRotation.leaseMs;
+}
+
 // Devuelve el estado de rotacion con el lease ya cogido, o null si otro lo
 // tiene (o si no hay base). Nunca lanza.
-async function adquirir(groupId, sortOrderInicial) {
+async function adquirir(groupId, sortOrderInicial, leaseMs) {
     if (!disponible()) return null;
 
     try {
         const { rows } = await db.query(SQL_ADQUIRIR, [
-            String(groupId), sortOrderInicial, DUEÑO, config.pluginRotation.leaseMs,
-        ]);
+            String(groupId), sortOrderInicial, DUEÑO, leaseValido(leaseMs),
+        ], 'rotation.acquire');
         if (rows.length === 0) return null; // lo tiene otra busqueda viva
         return { ...filaARotacion(rows[0]), owner: DUEÑO };
     } catch (err) {
@@ -111,9 +123,9 @@ async function guardar(estado) {
             estado.lastUserId,
             estado.cycle,
             estado.cursorResets,
-            config.pluginRotation.leaseMs,
+            leaseValido(estado.leaseMs),
             estado.owner,
-        ]);
+        ], 'rotation.save');
         return rowCount > 0;
     } catch (err) {
         // Perder el progreso significa repetir un tramo en la siguiente
@@ -137,7 +149,7 @@ const SQL_SOLTAR = `
 async function soltar(groupId, owner) {
     if (!disponible()) return;
     try {
-        await db.query(SQL_SOLTAR, [String(groupId), owner]);
+        await db.query(SQL_SOLTAR, [String(groupId), owner], 'rotation.release');
     } catch (err) {
         // Si esto falla, el lease caduca solo. No hay nada que arreglar aqui.
         logger.debug('No se pudo soltar el lease de rotacion', {
@@ -166,7 +178,7 @@ async function esperaDelLease(groupId) {
             `SELECT GREATEST(0, EXTRACT(EPOCH FROM (lease_expires_at - NOW())) * 1000)::bigint AS espera
                FROM plugin_group_rotation
               WHERE group_id = $1 AND lease_expires_at IS NOT NULL AND lease_expires_at > NOW()`,
-            [String(groupId)]
+            [String(groupId)], 'rotation.leaseWait'
         );
         // Sin fila, o con el lease vencido o libre: el grupo esta disponible.
         if (rows.length === 0) return 0;
@@ -197,7 +209,7 @@ async function posicionGlobalEnCola(groupId) {
             `SELECT COUNT(*)::int AS delante
                FROM plugin_search_jobs
               WHERE group_id = $1 AND status = 'queued'`,
-            [String(groupId)]
+            [String(groupId)], 'rotation.queuePosition'
         );
         return (rows[0]?.delante ?? 0) + 1;
     } catch (err) {
@@ -214,7 +226,7 @@ async function leerStats(groupId) {
     if (!disponible()) return null;
     try {
         const { rows } = await db.query(
-            `SELECT * FROM plugin_group_stats WHERE group_id = $1`, [String(groupId)]
+            `SELECT * FROM plugin_group_stats WHERE group_id = $1`, [String(groupId)], 'rotation.readStats'
         );
         if (rows.length === 0) return null;
         const fila = rows[0];
@@ -267,7 +279,7 @@ async function registrarBusqueda(groupId, muestra) {
             muestra.candidatesPerResult,
             muestra.durationMs,
             config.pluginEta.ewmaAlpha,
-        ]);
+        ], 'rotation.writeStats');
     } catch (err) {
         logger.debug('No se pudieron actualizar las estadisticas del grupo', {
             groupId: String(groupId), detail: err?.message,

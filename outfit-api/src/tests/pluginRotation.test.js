@@ -480,6 +480,104 @@ module.exports = async function run() {
         assert.ok(res.body.found <= 8, 'devolvio mas outfits que miembros tiene la comunidad');
     });
 
+    // ── Paginacion dentro de UNA busqueda ────────────────────────────────────
+    //
+    // La rotacion no solo recuerda por donde va entre busquedas: dentro de una
+    // sola tiene que poder pasar de la pagina 1 a la 2, a la 3 y a las que
+    // hagan falta. El sintoma que se vio en produccion fue `memberPagesFetched:
+    // 1`: la busqueda se quedaba en los primeros 100 miembros porque el
+    // presupuesto se agotaba antes de necesitar la segunda pagina.
+
+    test('una busqueda sola cruza varias paginas y la rotacion queda en la pagina y el offset exactos', async () => {
+        // Uno de cada 60 encaja: para juntar 5 hay que llegar a la tercera pagina.
+        poblar({ miembros: 500, precio: userId => (userId % 60 === 0 ? 500 : 10) });
+        const res = await buscar(port, { amount: 5, minPrice: 400 });
+
+        assert.strictEqual(res.body.found, 5);
+        assert.ok(res.body.stats.memberPagesFetched >= 3,
+            `solo pidio ${res.body.stats.memberPagesFetched} paginas`);
+
+        const fila = base.rotaciones.get(String(GROUP_ID));
+        assert.ok(fila, 'no se persistio la rotacion');
+        assert.ok(fila.cursor !== null, 'la rotacion se quedo guardada en la primera pagina');
+        assert.strictEqual(fila.cycle, 1, 'no deberia haber dado la vuelta a la comunidad');
+
+        // La posicion viva que publica stats es EXCLUSIVA (el siguiente a
+        // mirar); lo que se guarda es la INCLUSIVA, un miembro por detras. Esa
+        // diferencia de uno es toda la definicion de resumeInclusive.
+        assert.strictEqual(fila.intraPageOffset, res.body.stats.rotationEnd.offset - 1);
+
+        // Y el ultimo miembro guardado es el ultimo que la rotacion ENTREGO, no
+        // el ultimo que resulto valido: la rotacion marca por donde va el
+        // recorrido de la comunidad, no cuantos outfits salieron de el. El
+        // sentido del recorrido se sortea por grupo, asi que valen los dos.
+        const examinados = res.body.stats.candidatesExamined;
+        const ascendente = 100000 + examinados - 1;
+        const descendente = 100000 + 500 - examinados;
+        assert.ok([ascendente, descendente].map(String).includes(String(fila.lastUserId)),
+            `lastUserId=${fila.lastUserId} no cuadra con ${examinados} candidatos entregados`);
+
+        // Y la siguiente busqueda arranca EXACTAMENTE ahi, en su pagina.
+        // La fila del doble es la MISMA referencia que muta la busqueda
+        // siguiente: sin copiarla aqui, lo que se compara despues ya no es lo
+        // que dejo la primera.
+        const guardado = { ...fila };
+        const segunda = await buscar(port, { amount: 1, minPrice: 400 });
+        assert.strictEqual(segunda.body.stats.rotationStart.offset, guardado.intraPageOffset);
+        assert.strictEqual(segunda.body.stats.rotationStart.cursor,
+            String(guardado.cursor).slice(0, 12));
+        assert.strictEqual(segunda.body.stats.rotationCycle, 1);
+    });
+
+    test('cruzar paginas dentro de una busqueda no repite a nadie', async () => {
+        // El wrap-around y el salto de pagina son los dos sitios donde un
+        // miembro podria colarse dos veces; `visitedUserIds` los cubre los dos.
+        poblar({ miembros: 350, precio: () => 100 });
+        const res = await buscar(port, { amount: 120 });
+
+        const ids = idsDe(res);
+        assert.strictEqual(new Set(ids).size, ids.length, 'hay userIds repetidos');
+        assert.ok(res.body.stats.memberPagesFetched >= 2,
+            'el caso no llego a cruzar de pagina, no prueba nada');
+    });
+
+    test('esperar turno NO consume el presupuesto de tiempo de la busqueda', async () => {
+        // El reloj arrancaba al aceptar la peticion, no al empezar a buscar. Con
+        // presupuestos cortos eso dejaba a la SEGUNDA busqueda de una comunidad
+        // sin tiempo antes de haber mirado a nadie: hacia cola, entraba con el
+        // presupuesto ya gastado y devolvia `timeBudget` con found:0.
+        poblar({ miembros: 250 });
+
+        const presupuestoOriginal = config.pluginSearch.timeBudgetMs;
+        const listarOriginal = roblox.listGroupMembers;
+        config.pluginSearch.timeBudgetMs = 400;
+
+        // La busqueda de delante tarda MAS que ese presupuesto en soltar el grupo.
+        let primeraLlamada = true;
+        roblox.listGroupMembers = async (...args) => {
+            if (primeraLlamada) {
+                primeraLlamada = false;
+                await new Promise(resolve => setTimeout(resolve, 600));
+            }
+            return listarOriginal(...args);
+        };
+
+        try {
+            const [a, b] = await Promise.all([
+                buscar(port, { amount: 5 }),
+                buscar(port, { amount: 5 }),
+            ]);
+
+            assert.strictEqual(a.body.found, 5);
+            assert.strictEqual(b.body.found, 5,
+                'la segunda busqueda se quedo sin presupuesto haciendo cola');
+            assert.notStrictEqual(b.body.stats.stoppedBy, 'timeBudget');
+        } finally {
+            config.pluginSearch.timeBudgetMs = presupuestoOriginal;
+            roblox.listGroupMembers = listarOriginal;
+        }
+    });
+
     // ── amount = outfits validos, no intentos ────────────────────────────────
 
     test('los candidatos invalidos se sustituyen: 10 pedidos, 10 conseguidos', async () => {
@@ -521,13 +619,23 @@ module.exports = async function run() {
 
     // ── Presupuestos ─────────────────────────────────────────────────────────
 
-    test('el tope de candidatos sigue cortando aunque falten resultados', async () => {
+    test('el TECHO DURO sigue cortando aunque falten resultados', async () => {
+        // Con el techo real (100 x 150 = 15.000) una comunidad de 5000 se agota
+        // primero, que es lo que se quiere. Aqui se baja a proposito para
+        // comprobar que la proteccion anti-bucle existe y funciona.
+        const original = config.pluginSearch.hardCandidateLimit;
+        config.pluginSearch.hardCandidateLimit = 200;
         poblar({ miembros: 5000, precio: () => 10 });
-        const res = await buscar(port, { amount: 100, minPrice: 999999 });
 
-        assert.strictEqual(res.body.found, 0);
-        assert.strictEqual(res.body.stats.stoppedBy, 'candidateCap');
-        assert.ok(res.body.stats.candidatesExamined <= config.pluginSearch.maxCandidates);
+        try {
+            const res = await buscar(port, { amount: 100, minPrice: 999999 });
+
+            assert.strictEqual(res.body.found, 0);
+            assert.strictEqual(res.body.stats.stoppedBy, 'candidateCap');
+            assert.ok(res.body.stats.candidatesExamined <= 200 + config.pluginRotation.segmentSize);
+        } finally {
+            config.pluginSearch.hardCandidateLimit = original;
+        }
     });
 
     test('el presupuesto de tiempo corta limpiamente', async () => {

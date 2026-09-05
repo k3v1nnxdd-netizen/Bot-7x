@@ -38,9 +38,20 @@ async function registrarPagina(groupId, miembros) {
 
     try {
         const { rowCount } = await db.query(
+            // EL EXISTS ES UNA VALLA CONTRA EL BORRADO. El crawler pide una
+            // pagina y tarda en recibirla; si mientras tanto alguien elimina la
+            // comunidad, esta insercion la resucitaba a medias: cien filas de
+            // pertenencia de un grupo que ya no figura en el indice, que el
+            // panel no puede ver y que nadie va a volver a limpiar, pero que
+            // una busqueda si serviria como outfits.
+            //
+            // Se comprueba que exista el recorrido, no que este activo: una
+            // comunidad recien cancelada SI debe quedarse con los miembros que
+            // su ciclo alcanzo a leer. Cancelar conserva datos; borrar no.
             `INSERT INTO plugin_group_member (group_id, user_id, username, discovered_at, last_seen_at)
              SELECT $1, id, nombre, NOW(), NOW()
                FROM UNNEST($2::text[], $3::text[]) AS entrada(id, nombre)
+              WHERE EXISTS (SELECT 1 FROM plugin_index_crawl c WHERE c.group_id = $1)
              ON CONFLICT (group_id, user_id) DO UPDATE SET
                  username     = COALESCE(EXCLUDED.username, plugin_group_member.username),
                  last_seen_at = NOW(),
@@ -61,6 +72,11 @@ async function registrarPagina(groupId, miembros) {
 // Marca como bajas a quien no aparecio en la ultima vuelta COMPLETA. Se llama
 // solo al cerrar un ciclo entero, nunca a mitad: a mitad de recorrido "no le he
 // visto" significa "aun no he llegado a el", que no es lo mismo.
+// VALLADO CONTRA LA CANCELACION. El crawler decide si puede marcar bajas con
+// una copia en memoria de la fila, leida al empezar el ciclo; una cancelacion a
+// mitad de vuelta cambia la fila pero no esa copia. Con el EXISTS aqui dentro
+// la comprobacion es atomica: o la cancelacion llega antes y no se marca ni una
+// baja, o llega despues y las bajas son de una vuelta que si se completo.
 async function marcarBajas(groupId, desde) {
     if (!disponible()) return 0;
     const { rowCount } = await db.query(
@@ -68,7 +84,11 @@ async function marcarBajas(groupId, desde) {
             SET left_at = NOW()
           WHERE group_id = $1
             AND left_at IS NULL
-            AND last_seen_at < $2`,
+            AND last_seen_at < $2
+            AND EXISTS (SELECT 1 FROM plugin_index_crawl c
+                         WHERE c.group_id = $1
+                           AND c.enabled
+                           AND c.paused_at IS NULL)`,
         [String(groupId), new Date(desde)],
         OP.marcarBajas
     );

@@ -572,6 +572,10 @@ function crearBaseFalsa() {
             // ── PERTENENCIA ─────────────────────────────────────────────
             memberRepo.registrarPagina = async (groupId, lista) => {
                 if (!disponible) return 0;
+                // El EXISTS de la sentencia real: sin recorrido no hay
+                // pertenencia. Es lo que impide que un ciclo en vuelo resucite
+                // a medias una comunidad que acaban de eliminar.
+                if (!recorridos.has(String(groupId))) return 0;
                 for (const m of lista) {
                     const clave = `${groupId}|${m.userId}`;
                     const previa = miembros.get(clave);
@@ -589,6 +593,11 @@ function crearBaseFalsa() {
             };
 
             memberRepo.marcarBajas = async (groupId, desde) => {
+                // El EXISTS de la sentencia real: sobre una comunidad apagada o
+                // cancelada NO se marca ni una baja, aunque el ciclo que la
+                // pidio arrancara antes de la cancelacion.
+                const recorrido = recorridos.get(String(groupId));
+                if (recorrido && (!recorrido.enabled || recorrido.pausedAt)) return 0;
                 let n = 0;
                 for (const fila of miembros.values()) {
                     if (fila.groupId !== String(groupId) || fila.leftAt) continue;
@@ -634,6 +643,7 @@ function crearBaseFalsa() {
                 membersSeen: 0, usersIndexed: 0, lastRunAt: null, lastFullPassAt: null,
                 cycleStartedAt: null, lapClean: false,
                 lastError: null, leaseOwner: null, leaseExpiresAt: null, enabled: true,
+                pausedAt: null, pausedReason: null,
             });
 
             crawlRepo.asegurar = async groupId => {
@@ -647,6 +657,10 @@ function crearBaseFalsa() {
                 const clave = String(groupId);
                 if (!recorridos.has(clave)) recorridos.set(clave, nuevoRecorrido(clave));
                 const fila = recorridos.get(clave);
+                // Igual que el `WHERE ... paused_at IS NULL` del ON CONFLICT
+                // real: sobre una comunidad cancelada la demanda no hace nada.
+                // Es lo que impide que buscar en ella la reactive por detras.
+                if (fila.pausedAt) return false;
                 fila.priority = Math.min(fila.priority + Math.max(1, Math.round(faltan * peso)), 10000);
                 fila.demands++;
                 fila.lastDemandAt = Date.now();
@@ -697,7 +711,12 @@ function crearBaseFalsa() {
                 }
                 // La EVIDENCIA de vuelta limpia viaja con el cursor: una vuelta
                 // dura muchos ciclos y es lo unico que autoriza marcar bajas.
-                fila.lapClean = avance.lapClean === true;
+                //
+                // Sobre una comunidad cancelada el veredicto se descarta, igual
+                // que el `CASE WHEN paused_at IS NULL` de la sentencia real: el
+                // ciclo que ya estaba en marcha termina de guardar su cursor,
+                // pero no puede declarar limpia una vuelta que se interrumpio.
+                fila.lapClean = fila.pausedAt ? false : avance.lapClean === true;
                 if (avance.vueltaCompleta) fila.lastFullPassAt = Date.now();
                 fila.priority = Math.max(0, fila.priority - (avance.prioridadConsumida ?? 0));
                 fila.leaseExpiresAt = Date.now() + (avance.leaseMs ?? 60_000);
@@ -730,6 +749,114 @@ function crearBaseFalsa() {
                 .sort((a, b) => b.priority - a.priority || (b.lastRunAt ?? 0) - (a.lastRunAt ?? 0))
                 .slice(0, limite)
                 .map(f => ({ ...f }));
+
+            // ── ADMINISTRACION POR COMUNIDAD ────────────────────────────
+            //
+            // Sin estos dobles, el codigo real correria contra `db.query`, que
+            // sin DATABASE_URL lanza — y con un .env puesto escribiria en la
+            // base de verdad desde la suite. Cada uno reproduce EXACTAMENTE lo
+            // que hace su sentencia, campo por campo, porque un doble que se
+            // parece pero no coincide es un test verde que describe una API
+            // que nadie va a recibir.
+
+            crawlRepo.pausar = async (groupId, { motivo = null } = {}) => {
+                if (!disponible) return null;
+                const fila = recorridos.get(String(groupId));
+                if (!fila) return null;
+                fila.enabled = false;
+                fila.pausedAt = fila.pausedAt ?? Date.now();
+                fila.pausedReason = motivo;
+                // La vuelta en curso deja de estar limpia: se interrumpio a la
+                // mitad y no puede autorizar bajas al reanudar.
+                fila.lapClean = false;
+                // El lease NO se suelta: el ciclo que estuviera en marcha tiene
+                // que poder guardar su avance, que esta vallado por lease.
+                return { ...fila };
+            };
+
+            crawlRepo.reanudar = async groupId => {
+                if (!disponible) return null;
+                const fila = recorridos.get(String(groupId));
+                if (!fila) return null;
+                fila.enabled = true;
+                fila.pausedAt = null;
+                fila.pausedReason = null;
+                // `lapClean` NO se restaura: sigue siendo una vuelta rota.
+                return { ...fila };
+            };
+
+            crawlRepo.eliminar = async groupId => {
+                if (!disponible) return null;
+                const clave = String(groupId);
+                const existia = recorridos.has(clave);
+
+                // Los avatares que se quedan sin ninguna comunidad. Se CUENTAN
+                // y no se borran, igual que en produccion: son globales.
+                const deEste = new Set();
+                const deOtros = new Set();
+                for (const fila of miembros.values()) {
+                    if (fila.groupId === clave) { deEste.add(String(fila.userId)); continue; }
+                    // Solo cuenta como "esta en otra" una pertenencia VIVA: si
+                    // se fue de la otra comunidad hace meses, el avatar SI se
+                    // queda huerfano.
+                    if (!fila.leftAt) deOtros.add(String(fila.userId));
+                }
+                let huerfanos = 0;
+                for (const userId of deEste) {
+                    if (!deOtros.has(userId) && avatares.has(userId)) huerfanos++;
+                }
+
+
+                let borrados = 0;
+                for (const [k, fila] of [...miembros.entries()]) {
+                    if (fila.groupId === clave) { miembros.delete(k); borrados++; }
+                }
+                let trabajos = 0;
+                for (const t of trabajosPersistidos.values()) {
+                    if (String(t.groupId) === clave && (t.status === 'queued' || t.status === 'running')) {
+                        t.status = 'expired'; t.stoppedBy = 'expired';
+                        t.errorCode = 'group_deleted'; t.instanceId = null;
+                        // Con caducidad: el recolector borra por fecha, y sin
+                        // ella estas filas serian las unicas que no caducan.
+                        t.expiresAt = Date.now() + config.pluginJobs.retentionMs;
+                        t.finishedAt = Date.now();
+                        trabajos++;
+                    }
+                }
+                rotaciones.delete(clave);
+                estadisticas.delete(clave);
+                recorridos.delete(clave);
+
+                return {
+                    groupId: clave, existia,
+                    miembrosBorrados: borrados,
+                    trabajosRetirados: trabajos,
+                    avataresHuerfanos: huerfanos,
+                };
+            };
+
+            crawlRepo.listarTodas = async ({ limite = 100, minAccessories = 0 } = {}) =>
+                [...recorridos.values()]
+                    // SIN filtro por `enabled`: el panel tiene que ver
+                    // precisamente las canceladas, que son las unicas sobre las
+                    // que se puede pulsar "reanudar".
+                    .sort((a, b) => (a.pausedAt ? 1 : 0) - (b.pausedAt ? 1 : 0)
+                        || b.priority - a.priority
+                        || (b.lastRunAt ?? 0) - (a.lastRunAt ?? 0))
+                    .slice(0, limite)
+                    .map(fila => {
+                        let conocidos = 0, indexados = 0, elegibles = 0;
+                        for (const m of miembros.values()) {
+                            if (m.groupId !== fila.groupId || m.leftAt) continue;
+                            conocidos++;
+                            const a = avatares.get(String(m.userId));
+                            if (!a) continue;
+                            indexados++;
+                            if (a.state === 'valid' && (a.accessories ?? 0) >= minAccessories) elegibles++;
+                        }
+                        // Sin whitelist en el doble: el panel enseña el numero.
+                        return { ...fila, groupName: null, knownMembers: conocidos, indexed: indexados, eligible: elegibles };
+                    });
 
             // ── LA TRANSACCION QUE SIRVE DESDE EL INDICE ────────────────
             //
@@ -786,9 +913,13 @@ function crearBaseFalsa() {
                     }
 
                     if (sql.includes('INSERT INTO plugin_index_crawl')) {
+                        // Es LA MISMA sentencia que `registrarDemanda`: desde que
+                        // las dos comparten `SQL_DEMANDA`, delegar aqui ya no es
+                        // una aproximacion. Y se devuelve el rowCount de verdad,
+                        // que sobre una comunidad cancelada es cero.
                         const [groupId, faltan] = params;
-                        await crawlRepo.registrarDemanda(groupId, { faltan });
-                        return { rows: [], rowCount: 1 };
+                        const subio = await crawlRepo.registrarDemanda(groupId, { faltan });
+                        return { rows: [], rowCount: subio ? 1 : 0 };
                     }
 
                     if (sql.includes('COUNT(DISTINCT') && sql.includes('conocidos')) {
@@ -858,6 +989,7 @@ function crearBaseFalsa() {
                     usersIndexed: 0, lastRunAt: null, lastFullPassAt: null, cycleStartedAt: null,
                     lapClean: false, lastError: null,
                     leaseOwner: null, leaseExpiresAt: null, enabled: true,
+                    pausedAt: null, pausedReason: null,
                 });
             }
             const fila = recorridos.get(clave);

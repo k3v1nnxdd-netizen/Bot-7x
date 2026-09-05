@@ -1,6 +1,7 @@
 'use strict';
 
 const db = require('../../db/pool');
+const crawlRepo = require('../../db/indexCrawlRepo');
 const config = require('../../config');
 const logger = require('../../observability/logger');
 const requestContext = require('../../observability/requestContext');
@@ -115,17 +116,14 @@ async function servir({
             // ── 3. Si faltan, se pide mas indice ────────────────────────────
             // Tambien aqui dentro: la demanda es consecuencia de esta entrega y
             // no debe perderse si algo falla despues.
+            //
+            // Se usa LA MISMA sentencia que `crawlRepo.registrarDemanda`, no
+            // una copia: lleva dentro la guarda que impide que buscar en una
+            // comunidad con la indexacion cancelada le suba la prioridad y la
+            // deje la primera de la cola el dia que alguien la reanude.
             const faltan = amount - outfits.length;
             if (faltan > 0) {
-                await q(
-                    `INSERT INTO plugin_index_crawl (group_id, priority, demands, last_demand_at)
-                     VALUES ($1, $2, 1, NOW())
-                     ON CONFLICT (group_id) DO UPDATE SET
-                         priority       = LEAST(plugin_index_crawl.priority + $2, 10000),
-                         demands        = plugin_index_crawl.demands + 1,
-                         last_demand_at = NOW()`,
-                    [String(groupId), Math.min(faltan, 10000)]
-                );
+                await q(crawlRepo.SQL_DEMANDA, [String(groupId), Math.min(faltan, 10000)]);
             }
 
             // ── 4. La foto de la comunidad, para el plugin ──────────────────

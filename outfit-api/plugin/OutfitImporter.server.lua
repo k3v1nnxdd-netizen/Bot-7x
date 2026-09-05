@@ -111,234 +111,826 @@ openButton.Click:Connect(
 )
 
 -- =========================================================
--- FONDO
+-- PALETA Y MEDIDAS
+-- =========================================================
+--
+-- Todo el aspecto sale de aqui. Un color repetido a mano en quince sitios es
+-- un color que dentro de un mes esta puesto en catorce.
+
+local TweenService = game:GetService("TweenService")
+
+local COLOR_PANEL = Color3.fromRGB(18, 18, 21)
+local COLOR_HUECO = Color3.fromRGB(7, 7, 9)
+local COLOR_TARJETA = Color3.fromRGB(26, 26, 30)
+local COLOR_TEXTO = Color3.fromRGB(245, 245, 248)
+local COLOR_TENUE = Color3.fromRGB(146, 146, 156)
+local COLOR_APAGADO = Color3.fromRGB(96, 96, 106)
+local COLOR_VERDE = Color3.fromRGB(58, 202, 108)
+local COLOR_ROJO = Color3.fromRGB(226, 74, 74)
+local COLOR_BORRAR = Color3.fromRGB(176, 32, 32)
+local COLOR_AMBAR = Color3.fromRGB(224, 168, 62)
+local COLOR_AZUL = Color3.fromRGB(78, 148, 236)
+
+local ESPACIO = 10
+local RADIO = 12
+local ALTO_ETIQUETA = 20
+local ALTO_CAMPO = 42
+local ALTO_BOTON = 44
+local ALTO_BARRA = 32
+local ALTO_TAB = 34
+
+-- Por debajo de este ancho, lo que iba en fila pasa a columna. El plugin tiene
+-- que seguir siendo usable en un panel acoplado y estrecho, y una fila de dos
+-- botones a 320 px son dos botones ilegibles.
+local ANCHO_COMPACTO = 380
+
+-- =========================================================
+-- HELPERS DE FORMA
 -- =========================================================
 
-local background =
-	Instance.new("Frame")
+local function redondear(instancia, radio)
 
-background.Name =
-	"Background"
+	local esquina = Instance.new("UICorner")
+	esquina.CornerRadius = UDim.new(0, radio or RADIO)
+	esquina.Parent = instancia
+	return esquina
 
-background.Size =
-	UDim2.fromScale(
-		1,
-		1
-	)
+end
 
-background.BackgroundColor3 =
-	Color3.fromRGB(
-		25,
-		25,
-		28
-	)
+local function acolchar(instancia, vertical, horizontal)
 
-background.BorderSizePixel =
-	0
+	local relleno = Instance.new("UIPadding")
+	relleno.PaddingTop = UDim.new(0, vertical)
+	relleno.PaddingBottom = UDim.new(0, vertical)
+	relleno.PaddingLeft = UDim.new(0, horizontal)
+	relleno.PaddingRight = UDim.new(0, horizontal)
+	relleno.Parent = instancia
+	return relleno
 
-background.Parent =
-	widget
+end
 
-local padding =
-	Instance.new("UIPadding")
+local function enFila(padre, separacion, alineacion)
 
-padding.PaddingTop =
-	UDim.new(
-		0,
-		20
-	)
+	local disposicion = Instance.new("UIListLayout")
+	disposicion.FillDirection = Enum.FillDirection.Horizontal
+	disposicion.Padding = UDim.new(0, separacion or ESPACIO)
+	disposicion.SortOrder = Enum.SortOrder.LayoutOrder
+	disposicion.HorizontalAlignment = alineacion or Enum.HorizontalAlignment.Center
+	disposicion.VerticalAlignment = Enum.VerticalAlignment.Center
+	disposicion.Parent = padre
+	return disposicion
 
-padding.PaddingBottom =
-	UDim.new(
-		0,
-		20
-	)
+end
 
-padding.PaddingLeft =
-	UDim.new(
-		0,
-		20
-	)
+local function enColumna(padre, separacion, alineacion)
 
-padding.PaddingRight =
-	UDim.new(
-		0,
-		20
-	)
+	local disposicion = Instance.new("UIListLayout")
+	disposicion.FillDirection = Enum.FillDirection.Vertical
+	disposicion.Padding = UDim.new(0, separacion or ESPACIO)
+	disposicion.SortOrder = Enum.SortOrder.LayoutOrder
+	disposicion.HorizontalAlignment = alineacion or Enum.HorizontalAlignment.Center
+	disposicion.Parent = padre
+	return disposicion
 
-padding.Parent =
-	background
+end
 
-local layout =
-	Instance.new("UIListLayout")
+-- =========================================================
+-- ANIMACION
+-- =========================================================
+--
+-- Todo lo que se mueve pasa por aqui, y por una razon: TweenService interpola
+-- en el motor, mientras que un bucle propio con `task.wait` interpola en Lua y
+-- paga el coste en cada fotograma. Con tres tabs, una lista de tarjetas y
+-- media docena de contadores, la diferencia entre las dos formas es la
+-- diferencia entre un panel y un panel que ralentiza Studio.
 
-layout.Padding =
-	UDim.new(
-		0,
-		10
-	)
+local SUAVE = TweenInfo.new(0.18, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+local BARRA = TweenInfo.new(0.35, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+local APARECER = TweenInfo.new(0.22, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
 
-layout.SortOrder =
-	Enum.SortOrder.LayoutOrder
+local function animar(instancia, info, propiedades)
 
-layout.Parent =
-	background
+	local tween = TweenService:Create(instancia, info, propiedades)
+	tween:Play()
+	return tween
+
+end
+
+-- Un boton que responde al raton. El hover agranda un pelo y el click encoge:
+-- es la señal minima de que algo es pulsable, y no cuesta un fotograma.
+--
+-- El tamaño base se lee en el momento del evento, no se guarda: en modo
+-- compacto los botones cambian de tamaño y una copia guardada al crearlos
+-- devolveria el boton al ancho de antes en cuanto alguien pasara el raton.
+local function botonVivo(boton, obtenerMedida)
+
+	local function escalar(factor)
+		if boton.Active == false then return end
+		local base = obtenerMedida()
+		animar(boton, SUAVE, {
+			Size = UDim2.new(
+				base.X.Scale * factor, base.X.Offset * factor,
+				base.Y.Scale * factor, base.Y.Offset * factor
+			),
+		})
+	end
+
+	boton.MouseEnter:Connect(function() escalar(1.02) end)
+	boton.MouseLeave:Connect(function() escalar(1) end)
+	boton.MouseButton1Down:Connect(function() escalar(0.97) end)
+	boton.MouseButton1Up:Connect(function() escalar(1.02) end)
+
+end
+
+-- Numeros que cuentan en vez de saltar.
+--
+-- El TOKEN es lo que hace que esto funcione con datos que llegan solos: cada
+-- animacion nueva invalida la anterior sobre esa misma etiqueta. Sin el, dos
+-- respuestas del sondeo separadas por medio segundo dejarian dos bucles
+-- escribiendo en el mismo sitio y el numero parpadearia entre los dos valores.
+local contadores = {}
+
+local function animarNumero(etiqueta, destino, formatear)
+
+	destino = tonumber(destino) or 0
+	formatear = formatear or function(n) return tostring(n) end
+
+	local estado = contadores[etiqueta]
+	if estado == nil then
+		estado = { valor = destino, token = 0 }
+		contadores[etiqueta] = estado
+		etiqueta.Text = formatear(destino)
+		return
+	end
+
+	if estado.valor == destino then
+		etiqueta.Text = formatear(destino)
+		return
+	end
+
+	estado.token = estado.token + 1
+	local token = estado.token
+	local desde = estado.valor
+	estado.valor = destino
+
+	-- 0,5 s repartidos en unos treinta pasos. Funciona igual bajando que
+	-- subiendo porque interpola entre dos numeros, sin suponer cual es mayor.
+	task.spawn(function()
+		local pasos = 30
+		for i = 1, pasos do
+			if estado.token ~= token then return end
+			local t = i / pasos
+			-- Desaceleracion: el numero llega y se posa, no frena en seco.
+			local suavizado = 1 - (1 - t) * (1 - t)
+			etiqueta.Text = formatear(math.floor(desde + (destino - desde) * suavizado + 0.5))
+			task.wait(0.5 / pasos)
+		end
+		if estado.token == token then
+			etiqueta.Text = formatear(destino)
+		end
+	end)
+
+end
+
+-- =========================================================
+-- FONDO Y PESTAÑAS
+-- =========================================================
+
+local root = Instance.new("Frame")
+
+root.Name = "Root"
+root.Size = UDim2.fromScale(1, 1)
+root.BackgroundColor3 = COLOR_PANEL
+root.BorderSizePixel = 0
+root.BackgroundTransparency = 1
+root.Parent = widget
+
+acolchar(root, 12, 12)
+
+-- Apertura: el panel entra con un fundido corto. Se hace sobre el fondo y no
+-- sobre cada hijo para no pagar una animacion por elemento.
+animar(root, TweenInfo.new(0.35), { BackgroundTransparency = 0 })
+
+local barraTabs = Instance.new("Frame")
+
+barraTabs.Name = "Tabs"
+barraTabs.Size = UDim2.new(1, 0, 0, ALTO_TAB)
+barraTabs.Position = UDim2.new(0, 0, 0, 0)
+barraTabs.BackgroundColor3 = COLOR_HUECO
+barraTabs.BorderSizePixel = 0
+barraTabs.Parent = root
+
+redondear(barraTabs, 10)
+acolchar(barraTabs, 3, 3)
+enFila(barraTabs, 3)
+
+-- El contenedor de paginas ocupa TODO lo que sobra. Es scale menos el offset
+-- de la barra: crece y encoge con el widget sin que haya una sola altura
+-- escrita a mano que se quede vieja.
+local contenedor = Instance.new("Frame")
+
+contenedor.Name = "Pages"
+contenedor.Position = UDim2.new(0, 0, 0, ALTO_TAB + ESPACIO)
+contenedor.Size = UDim2.new(1, 0, 1, -(ALTO_TAB + ESPACIO))
+contenedor.BackgroundTransparency = 1
+contenedor.Parent = root
+
+-- Cada pagina es un ScrollingFrame. Si el contenido no cabe se desplaza; nunca
+-- se recorta. Un Frame a secas esconderia el boton de buscar en un widget
+-- estrecho sin decir nada.
+local function crearPagina(nombre, orden)
+
+	local pagina = Instance.new("ScrollingFrame")
+
+	pagina.Name = nombre
+	pagina.LayoutOrder = orden
+	pagina.Size = UDim2.fromScale(1, 1)
+	pagina.BackgroundTransparency = 1
+	pagina.BorderSizePixel = 0
+	pagina.CanvasSize = UDim2.new()
+	pagina.AutomaticCanvasSize = Enum.AutomaticSize.Y
+	pagina.ScrollBarThickness = 4
+	pagina.ScrollBarImageColor3 = COLOR_TENUE
+	pagina.ScrollBarImageTransparency = 0.65
+	pagina.Visible = orden == 1
+	pagina.Parent = contenedor
+
+	enColumna(pagina, ESPACIO)
+
+	return pagina
+
+end
+
+local paginaBuscar = crearPagina("Buscar", 1)
+local paginaComunidades = crearPagina("Comunidades", 2)
+local paginaActividad = crearPagina("Actividad", 3)
+
+local tabs = {}
+local tabActiva = "Buscar"
+
+local function mostrarTab(nombre)
+
+	if tabActiva == nombre then return end
+	tabActiva = nombre
+
+	for clave, ficha in pairs(tabs) do
+
+		local activa = clave == nombre
+
+		animar(ficha.boton, SUAVE, {
+			BackgroundTransparency = activa and 0 or 1,
+			TextColor3 = activa and COLOR_TEXTO or COLOR_TENUE,
+		})
+
+		ficha.pagina.Visible = activa
+
+	end
+
+	-- La pagina entrante se desliza un poco al aparecer. Un fundido de verdad
+	-- necesitaria un CanvasGroup —un ScrollingFrame no tiene transparencia de
+	-- grupo— y meter una capa mas en el arbol por una animacion de dos
+	-- decimas no compensa: el deslizamiento se lee igual de bien.
+	local entrante = tabs[nombre]
+	if entrante ~= nil then
+		entrante.pagina.Position = UDim2.new(0, 0, 0, 10)
+		animar(entrante.pagina, APARECER, { Position = UDim2.new(0, 0, 0, 0) })
+	end
+
+end
+
+local function crearTab(nombre, pagina, orden)
+
+	local boton = Instance.new("TextButton")
+
+	boton.Name = nombre
+	boton.LayoutOrder = orden
+	boton.Size = UDim2.new(1 / 3, -2, 1, 0)
+	boton.BackgroundColor3 = COLOR_TARJETA
+	boton.BackgroundTransparency = orden == 1 and 0 or 1
+	boton.BorderSizePixel = 0
+	boton.Text = nombre
+	boton.TextColor3 = orden == 1 and COLOR_TEXTO or COLOR_TENUE
+	boton.TextSize = 13
+	boton.Font = Enum.Font.GothamBold
+	boton.AutoButtonColor = false
+	boton.Parent = barraTabs
+
+	redondear(boton, 8)
+
+	tabs[nombre] = { boton = boton, pagina = pagina }
+	boton.MouseButton1Click:Connect(function() mostrarTab(nombre) end)
+
+	return boton
+
+end
+
+crearTab("Buscar", paginaBuscar, 1)
+crearTab("Comunidades", paginaComunidades, 2)
+crearTab("Actividad", paginaActividad, 3)
 
 -- =========================================================
 -- HELPERS DE UI
 -- =========================================================
 
-local function createLabel(
-	text,
-	order
-)
+local function createLabel(text, order, padre)
 
-	local label =
-		Instance.new(
-			"TextLabel"
-		)
+	local label = Instance.new("TextLabel")
 
-	label.LayoutOrder =
-		order
-
-	label.Size =
-		UDim2.new(
-			1,
-			0,
-			0,
-			22
-		)
-
-	label.BackgroundTransparency =
-		1
-
-	label.Text =
-		text
-
-	label.TextColor3 =
-		Color3.fromRGB(
-			200,
-			200,
-			205
-		)
-
-	label.TextSize =
-		14
-
-	label.Font =
-		Enum.Font.Gotham
-
-	label.TextXAlignment =
-		Enum.TextXAlignment.Left
-
-	label.Parent =
-		background
+	label.LayoutOrder = order
+	label.Size = UDim2.new(1, 0, 0, ALTO_ETIQUETA)
+	label.BackgroundTransparency = 1
+	label.Text = text
+	label.TextColor3 = COLOR_TEXTO
+	label.TextSize = 13
+	label.Font = Enum.Font.GothamBold
+	label.TextXAlignment = Enum.TextXAlignment.Center
+	label.Parent = padre or paginaBuscar
 
 	return label
 
 end
 
-local function createTextBox(
-	defaultText,
-	placeholder,
-	order
-)
+local function createTextBox(defaultText, placeholder, order, padre)
 
-	local box =
-		Instance.new(
-			"TextBox"
-		)
+	local box = Instance.new("TextBox")
 
-	box.LayoutOrder =
-		order
+	box.LayoutOrder = order
+	box.Size = UDim2.new(1, 0, 0, ALTO_CAMPO)
+	box.BackgroundColor3 = COLOR_HUECO
+	box.BorderSizePixel = 0
+	box.Text = defaultText
+	box.PlaceholderText = placeholder
+	box.TextColor3 = COLOR_TEXTO
+	box.PlaceholderColor3 = COLOR_APAGADO
+	box.TextSize = 15
+	box.Font = Enum.Font.GothamMedium
+	box.TextXAlignment = Enum.TextXAlignment.Center
+	box.ClearTextOnFocus = false
+	box.Parent = padre or paginaBuscar
 
-	box.Size =
-		UDim2.new(
-			1,
-			0,
-			0,
-			42
-		)
+	redondear(box)
+	acolchar(box, 0, 12)
 
-	box.BackgroundColor3 =
-		Color3.fromRGB(
-			38,
-			38,
-			42
-		)
+	-- Un borde que solo aparece al escribir: dice donde esta el foco sin
+	-- dibujar cuatro marcos permanentes que compiten con el contenido.
+	local borde = Instance.new("UIStroke")
+	-- BORDER, no el modo por defecto. En Contextual el trazo se aplica al
+	-- contenido renderizado, y en un TextBox el contenido es EL TEXTO: se
+	-- perfilaba cada cifra en verde y el campo seguia sin marca de foco.
+	borde.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+	borde.Color = COLOR_VERDE
+	borde.Thickness = 1
+	borde.Transparency = 1
+	borde.Parent = box
 
-	box.BorderSizePixel =
-		0
-
-	box.Text =
-		defaultText
-
-	box.PlaceholderText =
-		placeholder
-
-	box.TextColor3 =
-		Color3.fromRGB(
-			255,
-			255,
-			255
-		)
-
-	box.PlaceholderColor3 =
-		Color3.fromRGB(
-			120,
-			120,
-			125
-		)
-
-	box.TextSize =
-		15
-
-	box.Font =
-		Enum.Font.Gotham
-
-	box.ClearTextOnFocus =
-		false
-
-	box.Parent =
-		background
-
-	local corner =
-		Instance.new(
-			"UICorner"
-		)
-
-	corner.CornerRadius =
-		UDim.new(
-			0,
-			8
-		)
-
-	corner.Parent =
-		box
-
-	local inputPadding =
-		Instance.new(
-			"UIPadding"
-		)
-
-	inputPadding.PaddingLeft =
-		UDim.new(
-			0,
-			12
-		)
-
-	inputPadding.PaddingRight =
-		UDim.new(
-			0,
-			12
-		)
-
-	inputPadding.Parent =
-		box
+	box.Focused:Connect(function()
+		animar(borde, SUAVE, { Transparency = 0.35 })
+	end)
+	box.FocusLost:Connect(function()
+		animar(borde, SUAVE, { Transparency = 1 })
+	end)
 
 	return box
 
 end
+
+local function crearBoton(texto, color, order, padre)
+
+	local boton = Instance.new("TextButton")
+
+	boton.LayoutOrder = order
+	boton.Size = UDim2.new(1, 0, 0, ALTO_BOTON)
+	boton.BackgroundColor3 = color
+	boton.BorderSizePixel = 0
+	boton.Text = texto
+	boton.TextColor3 = COLOR_TEXTO
+	boton.TextSize = 15
+	boton.Font = Enum.Font.GothamBold
+	boton.AutoButtonColor = true
+	boton.Parent = padre
+
+	redondear(boton)
+
+	return boton
+
+end
+
+-- Una linea de texto que crece sola si no cabe en una. Es lo que evita tener
+-- que adivinar alturas: con seis cifras de miembros, la misma frase ocupa una
+-- linea o dos segun el ancho del widget.
+local function crearTexto(padre, texto, orden, medida, color, negrita)
+
+	local label = Instance.new("TextLabel")
+
+	label.LayoutOrder = orden
+	label.Size = UDim2.new(1, 0, 0, 0)
+	label.AutomaticSize = Enum.AutomaticSize.Y
+	label.BackgroundTransparency = 1
+	label.Text = texto
+	label.TextColor3 = color or COLOR_TENUE
+	label.TextSize = medida or 12
+	label.Font = negrita and Enum.Font.GothamBold or Enum.Font.Gotham
+	label.TextWrapped = true
+	label.TextXAlignment = Enum.TextXAlignment.Center
+	label.Parent = padre
+
+	return label
+
+end
+
+-- =========================================================
+-- PESTAÑA BUSCAR
+-- =========================================================
+
+local cabecera = Instance.new("Frame")
+
+cabecera.Name = "Header"
+cabecera.LayoutOrder = 1
+cabecera.Size = UDim2.new(1, 0, 0, 50)
+cabecera.BackgroundColor3 = COLOR_HUECO
+cabecera.BorderSizePixel = 0
+cabecera.Parent = paginaBuscar
+
+redondear(cabecera)
+
+local title = Instance.new("TextLabel")
+
+title.Name = "Title"
+title.Size = UDim2.fromScale(1, 1)
+title.BackgroundTransparency = 1
+title.Text = "7x Outfit Importer"
+title.TextColor3 = COLOR_TEXTO
+title.TextSize = 21
+title.Font = Enum.Font.GothamBlack
+title.TextXAlignment = Enum.TextXAlignment.Center
+title.Parent = cabecera
+
+createLabel("Cantidad de Outfits", 2)
+local amountBox = createTextBox("100", "Ejemplo: 100", 3)
+
+createLabel("ID de comunidad", 4)
+local groupBox = createTextBox("59218460", "Ejemplo: 59218460", 5)
+
+createLabel("Precio mínimo", 6)
+local minPriceBox = createTextBox("100", "Ejemplo: 100", 7)
+
+createLabel("Precio máximo", 8)
+local maxPriceBox = createTextBox("3000", "Ejemplo: 3000", 9)
+
+-- ── Los dos botones ─────────────────────────────────────────────────────────
+--
+-- En fila cuando cabe; en columna cuando no. La decision la toma el bloque
+-- responsive de mas abajo, que es el unico sitio que sabe cuanto mide el
+-- widget en cada momento.
+
+local filaBotones = Instance.new("Frame")
+
+filaBotones.Name = "Buttons"
+filaBotones.LayoutOrder = 10
+filaBotones.Size = UDim2.new(1, 0, 0, ALTO_BOTON)
+filaBotones.BackgroundTransparency = 1
+filaBotones.Parent = paginaBuscar
+
+local disposicionBotones = enFila(filaBotones, ESPACIO)
+
+local searchButton = crearBoton("Buscar", COLOR_VERDE, 1, filaBotones)
+local cancelImportButton = crearBoton("Cancelar importación", COLOR_ROJO, 2, filaBotones)
+
+cancelImportButton.TextSize = 13
+
+local modoCompacto = false
+
+local function medidaDeBoton()
+	if modoCompacto then
+		return UDim2.new(1, 0, 0, ALTO_BOTON)
+	end
+	return UDim2.new(0.5, -ESPACIO / 2, 1, 0)
+end
+
+botonVivo(searchButton, medidaDeBoton)
+botonVivo(cancelImportButton, medidaDeBoton)
+
+local statusLabel = crearTexto(paginaBuscar, "Esperando...", 11, 12, COLOR_TENUE)
+
+-- ── La barra ────────────────────────────────────────────────────────────────
+
+local progressTrack = Instance.new("Frame")
+
+progressTrack.Name = "Progress"
+progressTrack.LayoutOrder = 12
+progressTrack.Size = UDim2.new(1, 0, 0, ALTO_BARRA)
+progressTrack.BackgroundColor3 = COLOR_HUECO
+progressTrack.BorderSizePixel = 0
+progressTrack.ClipsDescendants = true
+progressTrack.Parent = paginaBuscar
+
+redondear(progressTrack)
+
+local progressFill = Instance.new("Frame")
+
+progressFill.Name = "Fill"
+progressFill.Size = UDim2.fromScale(0, 1)
+progressFill.BackgroundColor3 = COLOR_VERDE
+progressFill.BorderSizePixel = 0
+progressFill.ZIndex = 2
+progressFill.Parent = progressTrack
+
+redondear(progressFill)
+
+-- EL BRILLO. Se mueve mientras hay trabajo y se para cuando no lo hay, asi que
+-- dice algo que el relleno no puede decir: que el proceso sigue vivo aunque el
+-- porcentaje lleve un rato quieto — que es exactamente lo que pasa cuando
+-- Roblox esta limitando.
+--
+-- Es UN tween con Reverses y repeticion infinita, no un bucle. El motor lo
+-- lleva solo y no cuesta nada por fotograma.
+local brillo = Instance.new("Frame")
+
+brillo.Name = "Shine"
+brillo.Size = UDim2.new(0.25, 0, 1, 0)
+brillo.Position = UDim2.new(-0.3, 0, 0, 0)
+brillo.BackgroundColor3 = COLOR_TEXTO
+brillo.BackgroundTransparency = 0.88
+brillo.BorderSizePixel = 0
+brillo.Visible = false
+brillo.ZIndex = 3
+brillo.Parent = progressTrack
+
+local tweenBrillo = TweenService:Create(
+	brillo,
+	TweenInfo.new(1.1, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true),
+	{ Position = UDim2.new(1.05, 0, 0, 0) }
+)
+
+local function brillar(encendido)
+	if encendido then
+		brillo.Visible = true
+		tweenBrillo:Play()
+	else
+		tweenBrillo:Pause()
+		brillo.Visible = false
+		brillo.Position = UDim2.new(-0.3, 0, 0, 0)
+	end
+end
+
+local progressText = Instance.new("TextLabel")
+
+progressText.Name = "ProgressText"
+progressText.Size = UDim2.fromScale(1, 1)
+progressText.BackgroundTransparency = 1
+progressText.Text = "0/0 encontrados"
+progressText.TextColor3 = COLOR_TEXTO
+progressText.TextSize = 14
+progressText.Font = Enum.Font.GothamBold
+progressText.TextXAlignment = Enum.TextXAlignment.Center
+progressText.ZIndex = 4
+progressText.Parent = progressTrack
+
+-- El relleno NUNCA retrocede por cuenta propia: representa progreso real. Lo
+-- unico que se suaviza es el salto entre dos valores reales.
+local function moverBarra(ratio)
+	animar(progressFill, BARRA, { Size = UDim2.fromScale(math.clamp(ratio, 0, 1), 1) })
+end
+
+local progressMeta = crearTexto(paginaBuscar, "Sin búsqueda activa.", 13, 12, COLOR_TENUE)
+
+local indexLine = Instance.new("TextLabel")
+
+indexLine.Name = "IndexStats"
+indexLine.LayoutOrder = 14
+indexLine.Size = UDim2.new(1, 0, 0, 0)
+indexLine.AutomaticSize = Enum.AutomaticSize.Y
+indexLine.BackgroundColor3 = COLOR_HUECO
+indexLine.BorderSizePixel = 0
+indexLine.Text = "Índice sin consultar todavía"
+indexLine.TextColor3 = COLOR_TENUE
+indexLine.TextSize = 12
+indexLine.Font = Enum.Font.GothamMedium
+indexLine.TextWrapped = true
+indexLine.TextXAlignment = Enum.TextXAlignment.Center
+indexLine.Parent = paginaBuscar
+
+redondear(indexLine, 10)
+acolchar(indexLine, 8, 12)
+
+-- =========================================================
+-- PESTAÑA COMUNIDADES
+-- =========================================================
+
+local panelAhora = Instance.new("Frame")
+
+panelAhora.Name = "Now"
+panelAhora.LayoutOrder = 1
+panelAhora.Size = UDim2.new(1, 0, 0, 0)
+panelAhora.AutomaticSize = Enum.AutomaticSize.Y
+panelAhora.BackgroundColor3 = COLOR_HUECO
+panelAhora.BorderSizePixel = 0
+panelAhora.Parent = paginaComunidades
+
+redondear(panelAhora)
+acolchar(panelAhora, 12, 12)
+enColumna(panelAhora, 4)
+
+crearTexto(panelAhora, "INDEXANDO AHORA", 1, 11, COLOR_APAGADO, true)
+local ahoraNombre = crearTexto(panelAhora, "Worker en espera", 2, 15, COLOR_TEXTO, true)
+local ahoraGrupo = crearTexto(panelAhora, "", 3, 12, COLOR_TENUE)
+local ahoraEtapa = crearTexto(panelAhora, "", 4, 12, COLOR_VERDE, true)
+local ahoraProgreso = crearTexto(panelAhora, "", 5, 12, COLOR_TENUE)
+local ahoraDisponibles = crearTexto(panelAhora, "", 6, 12, COLOR_TENUE)
+local ahoraUltimo = crearTexto(panelAhora, "", 7, 11, COLOR_APAGADO)
+
+local listaComunidades = Instance.new("Frame")
+
+listaComunidades.Name = "Communities"
+listaComunidades.LayoutOrder = 2
+listaComunidades.Size = UDim2.new(1, 0, 0, 0)
+listaComunidades.AutomaticSize = Enum.AutomaticSize.Y
+listaComunidades.BackgroundTransparency = 1
+listaComunidades.Parent = paginaComunidades
+
+enColumna(listaComunidades, ESPACIO)
+
+local avisoComunidades = crearTexto(paginaComunidades, "Consultando el índice...", 3, 12, COLOR_APAGADO)
+
+-- =========================================================
+-- PESTAÑA ACTIVIDAD
+-- =========================================================
+
+local panelWorker = Instance.new("Frame")
+
+panelWorker.Name = "Worker"
+panelWorker.LayoutOrder = 1
+panelWorker.Size = UDim2.new(1, 0, 0, 0)
+panelWorker.AutomaticSize = Enum.AutomaticSize.Y
+panelWorker.BackgroundColor3 = COLOR_HUECO
+panelWorker.BorderSizePixel = 0
+panelWorker.Parent = paginaActividad
+
+redondear(panelWorker)
+acolchar(panelWorker, 12, 12)
+enColumna(panelWorker, 4)
+
+crearTexto(panelWorker, "ESTADO DEL WORKER", 1, 11, COLOR_APAGADO, true)
+
+local campos = {}
+
+local function crearCampo(clave, titulo, orden)
+	local label = crearTexto(panelWorker, titulo .. ": —", orden, 12, COLOR_TENUE)
+	campos[clave] = { label = label, titulo = titulo }
+	return label
+end
+
+crearCampo("comunidad", "Comunidad", 2)
+crearCampo("etapa", "Etapa", 3)
+crearCampo("miembros", "Miembros descubiertos", 4)
+crearCampo("avatares", "Avatares indexados", 5)
+crearCampo("precios", "Usuarios valorados", 6)
+crearCampo("cooldown", "Cooldown por ruta", 7)
+crearCampo("ultimoCiclo", "Último ciclo", 8)
+crearCampo("siguienteCiclo", "Siguiente ciclo", 9)
+crearCampo("ultimoProgreso", "Último progreso", 10)
+
+local listaEventos = Instance.new("Frame")
+
+listaEventos.Name = "Events"
+listaEventos.LayoutOrder = 2
+listaEventos.Size = UDim2.new(1, 0, 0, 0)
+listaEventos.AutomaticSize = Enum.AutomaticSize.Y
+listaEventos.BackgroundTransparency = 1
+listaEventos.Parent = paginaActividad
+
+enColumna(listaEventos, 4)
+
+crearTexto(listaEventos, "ÚLTIMOS EVENTOS", 1, 11, COLOR_APAGADO, true)
+
+-- =========================================================
+-- DIALOGO DE CONFIRMACION
+-- =========================================================
+--
+-- Una sola capa reutilizada por las tres cosas que preguntan: buscar en una
+-- comunidad cancelada, cancelar la indexacion y eliminar. Tres dialogos
+-- distintos serian tres sitios donde arreglar el mismo fallo de maquetacion.
+
+local velo = Instance.new("Frame")
+
+velo.Name = "Modal"
+velo.Size = UDim2.fromScale(1, 1)
+velo.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+velo.BackgroundTransparency = 1
+velo.Visible = false
+velo.ZIndex = 50
+-- ACTIVE, no solo ZIndex. Un Frame nace con Active = false y entonces no
+-- participa en el reparto de clics: se dibuja encima pero los clics lo
+-- ATRAVIESAN. El dialogo parecia modal y no lo era — con la confirmacion de
+-- borrado en pantalla se podia pulsar "eliminar" en otra tarjeta, y preguntar
+-- reescribia el dialogo abierto sin que se notara que habia cambiado de
+-- destinatario.
+velo.Active = true
+velo.Parent = root
+
+local cuadro = Instance.new("Frame")
+
+cuadro.Name = "Dialog"
+cuadro.AnchorPoint = Vector2.new(0.5, 0.5)
+cuadro.Position = UDim2.fromScale(0.5, 0.5)
+cuadro.Size = UDim2.new(1, -24, 0, 0)
+cuadro.AutomaticSize = Enum.AutomaticSize.Y
+cuadro.BackgroundColor3 = COLOR_TARJETA
+cuadro.BorderSizePixel = 0
+cuadro.ZIndex = 51
+cuadro.Parent = velo
+
+redondear(cuadro)
+acolchar(cuadro, 14, 14)
+enColumna(cuadro, 8)
+
+local dialogoTitulo = crearTexto(cuadro, "", 1, 15, COLOR_TEXTO, true)
+local dialogoTexto = crearTexto(cuadro, "", 2, 12, COLOR_TENUE)
+dialogoTitulo.ZIndex = 52
+dialogoTexto.ZIndex = 52
+
+local dialogoEntrada = createTextBox("", "Escribe el ID para confirmar", 3, cuadro)
+dialogoEntrada.ZIndex = 52
+dialogoEntrada.Visible = false
+
+local dialogoBotones = Instance.new("Frame")
+
+dialogoBotones.LayoutOrder = 4
+dialogoBotones.Size = UDim2.new(1, 0, 0, 0)
+dialogoBotones.AutomaticSize = Enum.AutomaticSize.Y
+dialogoBotones.BackgroundTransparency = 1
+dialogoBotones.ZIndex = 52
+dialogoBotones.Parent = cuadro
+
+enColumna(dialogoBotones, 6)
+
+-- El apagado va con testigo. Sin el, cerrar un dialogo y abrir otro antes de
+-- 0,18 s dejaba que el temporizador del primero apagara el segundo: la
+-- confirmacion desaparecia sola y la accion no llegaba a ejecutarse.
+local dialogoAbierto = 0
+
+local function cerrarDialogo()
+	dialogoAbierto = dialogoAbierto + 1
+	local mio = dialogoAbierto
+	animar(velo, SUAVE, { BackgroundTransparency = 1 })
+	task.delay(0.18, function()
+		if dialogoAbierto == mio then velo.Visible = false end
+	end)
+end
+
+-- `opciones` es una lista de { texto, color, alPulsar }. La ultima siempre es
+-- la salida sin consecuencias, y se añade sola.
+local function preguntar(titulo, mensaje, opciones, exigirTexto)
+
+	dialogoTitulo.Text = titulo
+	dialogoTexto.Text = mensaje
+
+	dialogoEntrada.Visible = exigirTexto ~= nil
+	dialogoEntrada.Text = ""
+
+	for _, hijo in ipairs(dialogoBotones:GetChildren()) do
+		if hijo:IsA("TextButton") then hijo:Destroy() end
+	end
+
+	for indice, opcion in ipairs(opciones) do
+
+		local boton = crearBoton(opcion.texto, opcion.color, indice, dialogoBotones)
+		boton.TextSize = 13
+		boton.ZIndex = 52
+		botonVivo(boton, function() return UDim2.new(1, 0, 0, ALTO_BOTON) end)
+
+		boton.MouseButton1Click:Connect(function()
+
+			-- La confirmacion por escrito se comprueba AQUI y tambien en el
+			-- servidor. Aqui evita el susto; alli evita el error de verdad.
+			if exigirTexto ~= nil and dialogoEntrada.Text ~= exigirTexto then
+				dialogoTexto.Text = "El ID no coincide. Escribe " .. exigirTexto .. " para confirmar."
+				return
+			end
+
+			cerrarDialogo()
+			task.spawn(opcion.alPulsar)
+
+		end)
+
+	end
+
+	local salir = crearBoton("Volver", COLOR_TARJETA, #opciones + 1, dialogoBotones)
+	salir.TextSize = 13
+	salir.TextColor3 = COLOR_TENUE
+	salir.ZIndex = 52
+	salir.MouseButton1Click:Connect(cerrarDialogo)
+
+	dialogoAbierto = dialogoAbierto + 1
+	velo.Visible = true
+	velo.BackgroundTransparency = 1
+	animar(velo, APARECER, { BackgroundTransparency = 0.45 })
+
+end
+
+-- =========================================================
+-- FORMATO
+-- =========================================================
 
 local function formatMilliseconds(
 	milliseconds
@@ -399,404 +991,683 @@ local function formatMilliseconds(
 
 end
 
--- =========================================================
--- TÍTULO
--- =========================================================
-
-local title =
-	Instance.new(
-		"TextLabel"
-	)
-
-title.LayoutOrder =
-	1
-
-title.Size =
-	UDim2.new(
-		1,
-		0,
-		0,
-		38
-	)
-
-title.BackgroundTransparency =
-	1
-
-title.Text =
-	"7x Outfit Importer"
-
-title.TextColor3 =
-	Color3.fromRGB(
-		255,
-		255,
-		255
-	)
-
-title.TextSize =
-	22
-
-title.Font =
-	Enum.Font.GothamBold
-
-title.TextXAlignment =
-	Enum.TextXAlignment.Left
-
-title.Parent =
-	background
+local function haceCuanto(ms)
+	if type(ms) ~= "number" then return "—" end
+	local texto = formatMilliseconds(ms)
+	if texto == nil then return "—" end
+	return "hace " .. texto
+end
 
 -- =========================================================
--- CAMPOS
+-- LA LINEA DEL INDICE
 -- =========================================================
-
-createLabel(
-	"Cantidad de outfits",
-	2
+--
+-- Se usa `eligible` y no `indexed`: el segundo cuenta tambien avatares vacios
+-- y cuentas borradas, y ninguno de esos va a ser un outfit.
+local function actualizarIndice(
+	coverage
 )
 
-local amountBox =
-	createTextBox(
-		"100",
-		"Ejemplo: 100",
-		3
-	)
+	if type(coverage) ~= "table" then
 
-createLabel(
-	"ID de comunidad",
-	4
-)
+		return
 
-local groupBox =
-	createTextBox(
-		"59218460",
-		"Ejemplo: 59218460",
-		5
-	)
+	end
 
-createLabel(
-	"Precio mínimo",
-	6
-)
+	local indexados =
+		tonumber(
+			coverage.eligible
+		)
 
-local minPriceBox =
-	createTextBox(
-		"100",
-		"Ejemplo: 100",
-		7
-	)
+	if indexados == nil then
 
-createLabel(
-	"Precio máximo",
-	8
-)
+		indexados =
+			tonumber(
+				coverage.indexed
+			)
+			or 0
 
-local maxPriceBox =
-	createTextBox(
-		"3000",
-		"Ejemplo: 3000",
-		9
-	)
+	end
 
--- =========================================================
--- BOTÓN BUSCAR
--- =========================================================
+	local miembros =
+		tonumber(
+			coverage.knownMembers
+		)
 
-local searchButton =
-	Instance.new(
-		"TextButton"
-	)
+	if miembros == nil then
 
-searchButton.LayoutOrder =
-	10
+		miembros =
+			tonumber(
+				coverage.members
+			)
+			or 0
 
-searchButton.Size =
-	UDim2.new(
-		1,
-		0,
-		0,
-		48
-	)
+	end
 
-searchButton.BackgroundColor3 =
-	Color3.fromRGB(
-		70,
-		110,
-		255
-	)
+	indexLine.Text =
+		tostring(
+			indexados
+		)
+		.. " Outfits indexados  |  "
+		.. tostring(
+			miembros
+		)
+		.. " miembros vistos"
 
-searchButton.BorderSizePixel =
-	0
-
-searchButton.Text =
-	"BUSCAR"
-
-searchButton.TextColor3 =
-	Color3.fromRGB(
-		255,
-		255,
-		255
-	)
-
-searchButton.TextSize =
-	15
-
-searchButton.Font =
-	Enum.Font.GothamBold
-
-searchButton.Parent =
-	background
-
-local searchCorner =
-	Instance.new(
-		"UICorner"
-	)
-
-searchCorner.CornerRadius =
-	UDim.new(
-		0,
-		8
-	)
-
-searchCorner.Parent =
-	searchButton
+end
 
 -- =========================================================
--- ESTADO
+-- CANCELAR IMPORTACION
 -- =========================================================
+--
+-- Es LO MAS LOCAL que hay en todo el plugin, y conviene decir en voz alta lo
+-- que NO es: no toca el backend, no toca Postgres, no pausa la comunidad, no
+-- para el worker y no borra nada de Workspace. Solo deja de meter modelos.
+--
+-- Los treinta y siete outfits que ya entraron se quedan donde estan. Borrarlos
+-- seria destruir trabajo que la persona ya puede estar usando, y nadie que
+-- pulsa "cancelar" espera que le quiten lo que ya tiene.
+--
+-- La comprobacion es ENTRE OUTFIT Y OUTFIT, en un punto donde no hay ningun
+-- modelo a medio armar. Matar la tarea a lo bruto dejaria un rig sin cabeza
+-- colgando de Workspace.
 
-local statusLabel =
-	Instance.new(
-		"TextLabel"
-	)
+local importacion = {
+	enCurso = false,     -- hay un bucle de insercion corriendo
+	pendiente = false,   -- hay resultados en la mano, aun sin insertar
+	cancelada = false,
+}
 
-statusLabel.LayoutOrder =
-	11
+-- Esta busqueda salio de una comunidad con la indexacion cancelada y con lo
+-- que ya habia en el indice. Se avisa al terminar, porque un resultado corto
+-- de una comunidad cancelada no significa lo mismo que uno corto de una que
+-- se esta indexando, y sin decirlo parecen lo mismo.
+local avisoExistente = false
 
-statusLabel.Size =
-	UDim2.new(
-		1,
-		0,
-		0,
-		42
-	)
+local function puedeCancelarImportacion()
+	return importacion.enCurso or importacion.pendiente
+end
 
-statusLabel.BackgroundTransparency =
-	1
+local function refrescarBotonCancelar()
 
-statusLabel.Text =
-	"Esperando..."
+	local activo = puedeCancelarImportacion()
 
-statusLabel.TextColor3 =
-	Color3.fromRGB(
-		150,
-		150,
-		155
-	)
+	cancelImportButton.Active = activo
+	cancelImportButton.AutoButtonColor = activo
 
-statusLabel.TextSize =
-	13
+	animar(cancelImportButton, SUAVE, {
+		BackgroundTransparency = activo and 0 or 0.6,
+		TextTransparency = activo and 0 or 0.45,
+	})
 
-statusLabel.Font =
-	Enum.Font.Gotham
+end
 
-statusLabel.TextWrapped =
-	true
+refrescarBotonCancelar()
 
-statusLabel.TextXAlignment =
-	Enum.TextXAlignment.Left
+cancelImportButton.MouseButton1Click:Connect(function()
 
-statusLabel.TextYAlignment =
-	Enum.TextYAlignment.Top
+	if not puedeCancelarImportacion() then return end
 
-statusLabel.Parent =
-	background
+	importacion.cancelada = true
+	statusLabel.Text = "Cancelando la importación..."
 
--- =========================================================
--- TEXTO DE PROGRESO
--- =========================================================
-
-local progressText =
-	Instance.new(
-		"TextLabel"
-	)
-
-progressText.LayoutOrder =
-	12
-
-progressText.Size =
-	UDim2.new(
-		1,
-		0,
-		0,
-		22
-	)
-
-progressText.BackgroundTransparency =
-	1
-
-progressText.Text =
-	"0 / 0 encontrados"
-
-progressText.TextColor3 =
-	Color3.fromRGB(
-		230,
-		230,
-		235
-	)
-
-progressText.TextSize =
-	13
-
-progressText.Font =
-	Enum.Font.GothamMedium
-
-progressText.TextXAlignment =
-	Enum.TextXAlignment.Left
-
-progressText.Parent =
-	background
+end)
 
 -- =========================================================
--- BARRA DE PROGRESO
+-- EL PANEL: SONDEO Y ACCIONES
 -- =========================================================
+--
+-- `pedirJson` se rellena mas abajo, cuando `requestJson` existe. Declararlo
+-- aqui permite que la UI se construya entera antes que la capa de red sin que
+-- ninguna de las dos tenga que saber de la otra.
+local pedirJson
 
-local progressTrack =
-	Instance.new(
-		"Frame"
+local API_PANEL = string.gsub(API_URL, "/plugin/outfits/search$", "/plugin/index")
+
+-- Lo que el panel sabe de cada comunidad, para poder preguntar antes de buscar
+-- sin tener que ir al servidor otra vez.
+local comunidadesConocidas = {}
+
+local ESTADOS = {
+	cancelled = { texto = "Indexación cancelada", color = COLOR_ROJO },
+	indexing = { texto = "Indexando", color = COLOR_VERDE },
+	cooldown = { texto = "Cooldown", color = COLOR_AMBAR },
+	waiting = { texto = "Esperando", color = COLOR_AZUL },
+	up_to_date = { texto = "Al día", color = COLOR_VERDE },
+	error = { texto = "Error", color = COLOR_ROJO },
+}
+
+local ETAPAS = {
+	crawler = "Miembros",
+	avatar = "Avatar",
+	pricing = "Precios",
+	idle = "En espera",
+}
+
+-- Las tarjetas se REUTILIZAN entre sondeos. Reconstruirlas cada cinco segundos
+-- tiraria el scroll al principio y haria parpadear la lista entera; ademas,
+-- volveria a lanzar la animacion de aparicion en bucle.
+local tarjetas = {}
+
+local refrescarComunidades   -- declaradas antes de usarse en los botones
+local refrescarEstado
+
+local function accionSobre(groupId, ruta, metodo, cuerpo, alTerminar)
+
+	task.spawn(function()
+
+		local datos, err = pedirJson(
+			metodo,
+			API_PANEL .. "/groups/" .. tostring(groupId) .. ruta,
+			cuerpo
+		)
+
+		if datos == nil then
+
+			-- `requestJson` devuelve dos formas de error distintas: la de red,
+			-- con `message`, y la de HTTP, que trae el cuerpo ya decodificado.
+			-- Leer solo una deja la mitad de los fallos como "error de red".
+			local detalle = "error de red"
+			if err ~= nil then
+				if err.body ~= nil and err.body.error ~= nil and err.body.error.message ~= nil then
+					detalle = tostring(err.body.error.message)
+				elseif err.message ~= nil then
+					detalle = tostring(err.message)
+				elseif err.statusCode ~= nil then
+					detalle = "HTTP " .. tostring(err.statusCode)
+				end
+			end
+
+			avisoComunidades.Text = "No se pudo completar la acción: " .. detalle
+			avisoComunidades.TextColor3 = COLOR_ROJO
+			return
+
+		end
+
+		if alTerminar ~= nil then alTerminar(datos) end
+		refrescarComunidades()
+		refrescarEstado()
+
+	end)
+
+end
+
+local function cancelarIndexacion(groupId)
+
+	preguntar(
+		"Cancelar indexación",
+		"El worker dejará de procesar la comunidad " .. tostring(groupId)
+			.. ". No se borra nada: se conservan el cursor, los miembros, los avatares y los precios. "
+			.. "Puedes reanudarla cuando quieras.",
+		{
+			{
+				texto = "Cancelar indexación",
+				color = COLOR_ROJO,
+				alPulsar = function()
+					accionSobre(groupId, "/cancel", "POST", { reason = "cancelada desde el plugin" })
+				end,
+			},
+		}
 	)
 
-progressTrack.LayoutOrder =
-	13
+end
 
-progressTrack.Size =
-	UDim2.new(
-		1,
-		0,
-		0,
-		10
+local function reanudarIndexacion(groupId, despues)
+
+	accionSobre(groupId, "/resume", "POST", nil, despues)
+
+end
+
+local function eliminarComunidad(groupId)
+
+	preguntar(
+		"Eliminar comunidad",
+		"Eliminar esta comunidad borrará su progreso e información indexada. "
+			.. "Esta acción no se puede deshacer.",
+		{
+			{
+				texto = "Eliminar definitivamente",
+				color = COLOR_BORRAR,
+				alPulsar = function()
+					accionSobre(groupId, "", "DELETE", { confirm = tostring(groupId) })
+				end,
+			},
+		},
+		tostring(groupId)
 	)
 
-progressTrack.BackgroundColor3 =
-	Color3.fromRGB(
-		45,
-		45,
-		50
+end
+
+-- ── UNA TARJETA ─────────────────────────────────────────────────────────────
+
+local function crearTarjeta(groupId)
+
+	local tarjeta = Instance.new("Frame")
+
+	tarjeta.Name = "G" .. tostring(groupId)
+	tarjeta.Size = UDim2.new(1, 0, 0, 0)
+	tarjeta.AutomaticSize = Enum.AutomaticSize.Y
+	tarjeta.BackgroundColor3 = COLOR_TARJETA
+	tarjeta.BorderSizePixel = 0
+	tarjeta.BackgroundTransparency = 1
+	tarjeta.Parent = listaComunidades
+
+	redondear(tarjeta)
+	acolchar(tarjeta, 12, 12)
+	enColumna(tarjeta, 5)
+
+	local ficha = {
+		marco = tarjeta,
+		nombre = crearTexto(tarjeta, "", 1, 14, COLOR_TEXTO, true),
+		grupo = crearTexto(tarjeta, "", 2, 11, COLOR_APAGADO),
+		estado = crearTexto(tarjeta, "", 3, 12, COLOR_TENUE, true),
+		miembros = crearTexto(tarjeta, "", 4, 12, COLOR_TENUE),
+		outfits = crearTexto(tarjeta, "", 5, 12, COLOR_TENUE),
+		etapa = crearTexto(tarjeta, "", 6, 11, COLOR_APAGADO),
+		progreso = crearTexto(tarjeta, "", 7, 11, COLOR_APAGADO),
+	}
+
+	local acciones = Instance.new("Frame")
+	acciones.LayoutOrder = 8
+	acciones.Size = UDim2.new(1, 0, 0, 0)
+	acciones.AutomaticSize = Enum.AutomaticSize.Y
+	acciones.BackgroundTransparency = 1
+	acciones.Parent = tarjeta
+
+	ficha.acciones = acciones
+	ficha.disposicionAcciones = enColumna(acciones, 6)
+
+	-- Aparicion: solo el fundido. El deslizamiento se quito porque no se veia:
+	-- la tarjeta es hija de un UIListLayout, que reescribe la posicion de sus
+	-- hijos en cada pasada de maquetacion y le gana la partida a cualquier
+	-- tween sobre Position. Animar algo que otro sobrescribe no es una
+	-- animacion sutil, es una que no ocurre.
+	animar(tarjeta, APARECER, { BackgroundTransparency = 0 })
+
+	return ficha
+
+end
+
+local ALTO_ACCION = 36
+
+-- El tamaño BASE de un boton de tarjeta. Tiene que salir de aqui y no de
+-- `boton.Size`: durante el hover el boton ya esta escalado, y leerlo entonces
+-- compondria la escala una y otra vez hasta deformarlo.
+local function medidaDeAccion()
+	if modoCompacto then
+		return UDim2.new(1, 0, 0, ALTO_ACCION)
+	end
+	return UDim2.new(0.5, -3, 0, ALTO_ACCION)
+end
+
+local function ajustarAcciones(ficha)
+
+	local horizontal = not modoCompacto
+	ficha.disposicionAcciones.FillDirection = horizontal
+		and Enum.FillDirection.Horizontal
+		or Enum.FillDirection.Vertical
+
+	for _, hijo in ipairs(ficha.acciones:GetChildren()) do
+		if hijo:IsA("TextButton") then
+			hijo.Size = medidaDeAccion()
+		end
+	end
+
+	ficha.acciones.Size = UDim2.new(
+		1, 0, 0,
+		horizontal and ALTO_ACCION or (ALTO_ACCION * 2 + 6)
 	)
 
-progressTrack.BorderSizePixel =
-	0
+end
 
-progressTrack.Parent =
-	background
+local function pintarAcciones(ficha, grupo)
 
-local trackCorner =
-	Instance.new(
-		"UICorner"
-	)
+	-- Solo se rehacen si cambio lo que ofrecen. La lista se refresca sola cada
+	-- diez segundos, y destruir y recrear tres botones en cada vuelta genera
+	-- basura sin parar y ademas quita el foco a quien tenga el raton encima.
+	local firma = grupo.paused and "pausada" or "activa"
+	if ficha.firmaAcciones == firma then return end
+	ficha.firmaAcciones = firma
 
-trackCorner.CornerRadius =
-	UDim.new(
-		1,
-		0
-	)
+	for _, hijo in ipairs(ficha.acciones:GetChildren()) do
+		if hijo:IsA("TextButton") then hijo:Destroy() end
+	end
 
-trackCorner.Parent =
-	progressTrack
+	local groupId = grupo.groupId
 
-local progressFill =
-	Instance.new(
-		"Frame"
-	)
+	if grupo.paused then
 
-progressFill.Name =
-	"Fill"
+		local reanudar = crearBoton("Reanudar indexación", COLOR_VERDE, 1, ficha.acciones)
+		reanudar.TextSize = 13
+		botonVivo(reanudar, medidaDeAccion)
+		reanudar.MouseButton1Click:Connect(function() reanudarIndexacion(groupId) end)
 
-progressFill.Size =
-	UDim2.fromScale(
-		0,
-		1
-	)
+	else
 
-progressFill.BackgroundColor3 =
-	Color3.fromRGB(
-		70,
-		110,
-		255
-	)
+		local cancelar = crearBoton("Cancelar indexación", COLOR_ROJO, 1, ficha.acciones)
+		cancelar.TextSize = 13
+		botonVivo(cancelar, medidaDeAccion)
+		cancelar.MouseButton1Click:Connect(function() cancelarIndexacion(groupId) end)
 
-progressFill.BorderSizePixel =
-	0
+	end
 
-progressFill.Parent =
-	progressTrack
+	local eliminar = crearBoton("Eliminar comunidad", COLOR_BORRAR, 2, ficha.acciones)
+	eliminar.TextSize = 13
+	botonVivo(eliminar, medidaDeAccion)
+	eliminar.MouseButton1Click:Connect(function() eliminarComunidad(groupId) end)
 
-local fillCorner =
-	Instance.new(
-		"UICorner"
-	)
+	ajustarAcciones(ficha)
 
-fillCorner.CornerRadius =
-	UDim.new(
-		1,
-		0
-	)
+end
 
-fillCorner.Parent =
-	progressFill
+local function pintarComunidades(grupos)
+
+	local vistos = {}
+
+	for indice, grupo in ipairs(grupos) do
+
+		local clave = tostring(grupo.groupId)
+		vistos[clave] = true
+		comunidadesConocidas[clave] = grupo
+
+		local ficha = tarjetas[clave]
+		if ficha == nil then
+			ficha = crearTarjeta(clave)
+			tarjetas[clave] = ficha
+		end
+
+		ficha.marco.LayoutOrder = indice
+
+		local estado = ESTADOS[grupo.status] or { texto = grupo.status, color = COLOR_TENUE }
+
+		ficha.nombre.Text = grupo.groupName or ("Comunidad " .. clave)
+		ficha.grupo.Text = clave
+
+		-- El indicador cambia de color con una transicion, no de golpe: es la
+		-- forma de que se note que ALGO cambio en una lista que se refresca
+		-- sola cada diez segundos.
+		ficha.estado.Text = estado.texto
+		animar(ficha.estado, SUAVE, { TextColor3 = estado.color })
+
+		animarNumero(ficha.miembros, grupo.indexed or 0, function(n)
+			return tostring(n) .. " de " .. tostring(grupo.knownMembers or 0) .. " miembros con avatar"
+		end)
+
+		animarNumero(ficha.outfits, grupo.eligible or 0, function(n)
+			return tostring(n) .. " outfits disponibles"
+		end)
+
+		ficha.etapa.Text = grupo.stage ~= nil
+			and ("Etapa: " .. (ETAPAS[grupo.stage] or grupo.stage))
+			or (grupo.lastError and ("Último error: " .. tostring(grupo.lastError)) or "Etapa: —")
+
+		ficha.progreso.Text = "Último progreso: " .. haceCuanto(grupo.lastProgressAgoMs)
+
+		pintarAcciones(ficha, grupo)
+
+	end
+
+	for clave, ficha in pairs(tarjetas) do
+		if not vistos[clave] then
+			-- Los contadores estan indexados por etiqueta: si la tarjeta se va
+			-- y su entrada se queda, la tabla crece con cada comunidad
+			-- eliminada durante toda la sesion de Studio.
+			contadores[ficha.miembros] = nil
+			contadores[ficha.outfits] = nil
+			ficha.marco:Destroy()
+			tarjetas[clave] = nil
+			comunidadesConocidas[clave] = nil
+		end
+	end
+
+	if #grupos == 0 then
+		avisoComunidades.Text = "El índice no conoce ninguna comunidad todavía."
+		avisoComunidades.TextColor3 = COLOR_APAGADO
+	else
+		avisoComunidades.Text = tostring(#grupos) .. " comunidades en el índice"
+		avisoComunidades.TextColor3 = COLOR_APAGADO
+	end
+
+end
+
+-- ── INDEXANDO AHORA ─────────────────────────────────────────────────────────
+
+local function pintarAhora(actual)
+
+	if actual == nil then
+
+		ahoraNombre.Text = "Worker en espera"
+		ahoraGrupo.Text = ""
+		ahoraEtapa.Text = ""
+		ahoraProgreso.Text = ""
+		ahoraDisponibles.Text = ""
+		ahoraUltimo.Text = ""
+		return
+
+	end
+
+	local clave = tostring(actual.groupId)
+	local grupo = comunidadesConocidas[clave]
+
+	ahoraNombre.Text = (grupo and grupo.groupName) or ("Comunidad " .. clave)
+	ahoraGrupo.Text = clave
+	ahoraEtapa.Text = "Etapa: " .. (ETAPAS[actual.stage] or tostring(actual.stage))
+
+	if grupo ~= nil then
+		animarNumero(ahoraProgreso, grupo.indexed or 0, function(n)
+			return tostring(n) .. " / " .. tostring(grupo.knownMembers or 0) .. " miembros indexados"
+		end)
+		animarNumero(ahoraDisponibles, grupo.eligible or 0, function(n)
+			return tostring(n) .. " outfits disponibles"
+		end)
+		ahoraUltimo.Text = "Último progreso: " .. haceCuanto(grupo.lastProgressAgoMs)
+	end
+
+end
+
+-- ── ACTIVIDAD ───────────────────────────────────────────────────────────────
+
+local etiquetasEvento = {}
+
+local TEXTO_EVENTO = {
+	cycle = "Ciclo terminado",
+	lap_complete = "Vuelta completa",
+	cooldown_start = "Entró en cooldown",
+	cooldown_end = "Salió del cooldown",
+	group_paused = "Comunidad cancelada",
+	group_resumed = "Comunidad reanudada",
+	group_deleted = "Comunidad eliminada",
+	error = "Error",
+}
+
+local function pintarEventos(eventos)
+
+	for indice = 1, 20 do
+
+		local evento = eventos[indice]
+		local label = etiquetasEvento[indice]
+
+		if evento == nil then
+			if label ~= nil then label.Visible = false end
+		else
+
+			if label == nil then
+				label = crearTexto(listaEventos, "", indice + 1, 11, COLOR_APAGADO)
+				label.TextXAlignment = Enum.TextXAlignment.Left
+				etiquetasEvento[indice] = label
+			end
+
+			label.Visible = true
+			label.Text = (TEXTO_EVENTO[evento.tipo] or evento.tipo)
+				.. (evento.groupId and ("  ·  " .. evento.groupId) or "")
+				.. (evento.detalle and ("  ·  " .. evento.detalle) or "")
+
+		end
+
+	end
+
+end
+
+-- ── LOS DOS SONDEOS ─────────────────────────────────────────────────────────
+--
+-- Ninguno de los dos llama a Roblox ni crea trabajo: el servidor los sirve de
+-- Postgres y de su propia memoria. Por eso se pueden repetir cada pocos
+-- segundos sin quitarle cuota al worker, que es quien la necesita.
+--
+-- El estado va cada 5 s porque es lo que cambia deprisa y es lo mas barato (no
+-- toca la base siquiera). La lista de comunidades va cada 10 s porque cuenta
+-- filas, y contar filas cada cinco segundos para enseñar un numero que se
+-- mueve despacio es pagar de mas.
+
+local generacionSondeo = 0
+
+refrescarEstado = function()
+
+	if pedirJson == nil then return end
+
+	local datos = pedirJson("GET", API_PANEL .. "/status")
+	if datos == nil then return end
+
+	local worker = datos.worker or {}
+	local contadores = datos.counters or {}
+
+	pintarAhora(worker.groupId ~= nil and worker.etapa ~= "idle"
+		and { groupId = worker.groupId, stage = worker.etapa } or nil)
+
+	campos.comunidad.label.Text = "Comunidad: " .. tostring(worker.groupId or "—")
+	campos.etapa.label.Text = "Etapa: " .. (ETAPAS[worker.etapa] or tostring(worker.etapa))
+
+	animarNumero(campos.miembros.label, contadores.memberRowsSeen or 0,
+		function(n) return "Miembros descubiertos: " .. tostring(n) end)
+	animarNumero(campos.avatares.label, contadores.avatarsIndexed or 0,
+		function(n) return "Avatares indexados: " .. tostring(n) end)
+	animarNumero(campos.precios.label, contadores.usersPriced or 0,
+		function(n) return "Usuarios valorados: " .. tostring(n) end)
+
+	local frenos = {}
+	for ruta, freno in pairs(datos.cooldowns or {}) do
+		if freno.remainingMs and freno.remainingMs > 0 then
+			table.insert(frenos, ruta .. " " .. (formatMilliseconds(freno.remainingMs) or "?"))
+		end
+	end
+	campos.cooldown.label.Text = "Cooldown por ruta: "
+		.. (#frenos > 0 and table.concat(frenos, ", ") or "ninguno")
+
+	campos.ultimoCiclo.label.Text = "Último ciclo: "
+		.. (contadores.lastCycleMs and (formatMilliseconds(contadores.lastCycleMs) or "—") or "—")
+	campos.siguienteCiclo.label.Text = "Siguiente ciclo: en "
+		.. (formatMilliseconds(datos.nextCycleInMs) or "—")
+	campos.ultimoProgreso.label.Text = "Último progreso: " .. haceCuanto(worker.lastProgressAgoMs)
+
+	pintarEventos(datos.events or {})
+
+end
+
+refrescarComunidades = function()
+
+	if pedirJson == nil then return end
+
+	local datos = pedirJson("GET", API_PANEL .. "/groups")
+	if datos == nil then
+		avisoComunidades.Text = "No se pudo consultar el índice."
+		avisoComunidades.TextColor3 = COLOR_ROJO
+		return
+	end
+
+	pintarComunidades(datos.groups or {})
+	pintarAhora(datos.current)
+
+end
+
+local function arrancarSondeo()
+
+	generacionSondeo = generacionSondeo + 1
+	local mia = generacionSondeo
+
+	task.spawn(function()
+
+		local vueltas = 0
+
+		while widget.Enabled and generacionSondeo == mia do
+
+			-- pcall: un fallo de red no puede llevarse por delante el bucle. Si
+			-- se cae, el panel deja de refrescarse hasta que alguien reabra el
+			-- widget, y eso es un fallo peor que el que lo causo.
+			pcall(refrescarEstado)
+
+			if vueltas % 2 == 0 then
+				pcall(refrescarComunidades)
+			end
+
+			vueltas = vueltas + 1
+			task.wait(5)
+
+		end
+
+	end)
+
+end
+
+-- Cerrar el widget para el sondeo. Sin esto, un plugin abierto una vez seguiria
+-- preguntando cada cinco segundos durante toda la sesion de Studio.
+widget:GetPropertyChangedSignal("Enabled"):Connect(function()
+	if widget.Enabled then
+		arrancarSondeo()
+	else
+		generacionSondeo = generacionSondeo + 1
+	end
+end)
+
+-- Y RECARGAR EL PLUGIN tambien lo para. generacionSondeo protege contra
+-- duplicados dentro de una misma carga, pero no entre cargas: al recargar, la
+-- corrutina vieja seguia viva comparando contra SU propio contador y mirando SU
+-- propio widget, que conserva Enabled = true aunque este destruido. Cada
+-- guardado del archivo durante el desarrollo dejaba un sondeo huerfano mas, y
+-- no habia forma de pararlos salvo reiniciar Studio.
+plugin.Unloading:Connect(function()
+	generacionSondeo = generacionSondeo + 1
+end)
 
 -- =========================================================
--- META DE PROGRESO
+-- RESPONSIVE
 -- =========================================================
+--
+-- El unico sitio que sabe cuanto mide el widget. Cambia lo MINIMO: la
+-- direccion de las filas y el tamaño de los botones. No reconstruye nada, que
+-- es lo que haria que arrastrar el borde del panel diera tirones.
 
-local progressMeta =
-	Instance.new(
-		"TextLabel"
-	)
+local function aplicarAncho()
 
-progressMeta.LayoutOrder =
-	14
+	local compacto = root.AbsoluteSize.X < ANCHO_COMPACTO
+	if compacto == modoCompacto then return end
+	modoCompacto = compacto
 
-progressMeta.Size =
-	UDim2.new(
-		1,
-		0,
-		0,
-		48
-	)
+	if compacto then
 
-progressMeta.BackgroundTransparency =
-	1
+		disposicionBotones.FillDirection = Enum.FillDirection.Vertical
+		filaBotones.Size = UDim2.new(1, 0, 0, ALTO_BOTON * 2 + ESPACIO)
+		searchButton.Size = UDim2.new(1, 0, 0, ALTO_BOTON)
+		cancelImportButton.Size = UDim2.new(1, 0, 0, ALTO_BOTON)
 
-progressMeta.Text =
-	"Sin búsqueda activa."
+	else
 
-progressMeta.TextColor3 =
-	Color3.fromRGB(
-		145,
-		145,
-		150
-	)
+		disposicionBotones.FillDirection = Enum.FillDirection.Horizontal
+		filaBotones.Size = UDim2.new(1, 0, 0, ALTO_BOTON)
+		searchButton.Size = UDim2.new(0.5, -ESPACIO / 2, 1, 0)
+		cancelImportButton.Size = UDim2.new(0.5, -ESPACIO / 2, 1, 0)
 
-progressMeta.TextSize =
-	12
+	end
 
-progressMeta.Font =
-	Enum.Font.Gotham
+	-- Las tarjetas ya creadas se reajustan; NO se reconstruyen. Rehacer la
+	-- lista al arrastrar el borde del panel daria tirones y perderia el scroll.
+	for _, ficha in pairs(tarjetas) do
+		ajustarAcciones(ficha)
+	end
 
-progressMeta.TextWrapped =
-	true
+end
 
-progressMeta.TextXAlignment =
-	Enum.TextXAlignment.Left
-
-progressMeta.TextYAlignment =
-	Enum.TextYAlignment.Top
-
-progressMeta.Parent =
-	background
-
--- =========================================================
--- VALIDACIÓN
--- =========================================================
+root:GetPropertyChangedSignal("AbsoluteSize"):Connect(aplicarAncho)
+aplicarAncho()
 
 local function readInteger(
 	box,
@@ -957,6 +1828,11 @@ end
 -- =========================================================
 -- ERRORES HTTP
 -- =========================================================
+
+-- El panel ya puede hablar. Se engancha aqui, y no antes, porque la UI se
+-- construye entera antes de que exista la capa de red: asi ninguna de las dos
+-- tiene que saber en que orden se cargo la otra.
+pedirJson = requestJson
 
 local function showApiError(
 	errorInfo
@@ -1263,21 +2139,24 @@ local function renderProgress(
 
 	end
 
-	progressFill.Size =
-		UDim2.fromScale(
-			ratio,
-			1
-		)
+	-- El relleno representa progreso REAL y nunca retrocede por su cuenta: lo
+	-- unico que se suaviza es el salto entre dos valores que ya son reales.
+	moverBarra(ratio)
 
-	progressText.Text =
-		tostring(
-			found
-		)
-		.. " / "
-		.. tostring(
-			target
-		)
-		.. " encontrados"
+	animarNumero(
+		progressText,
+		found,
+		function(n)
+			return tostring(n) .. "/" .. tostring(target) .. " encontrados"
+		end
+	)
+
+	-- La linea del indice se refresca en cada pintado, con la cobertura que
+	-- venga en la respuesta. Si no viene, se queda la anterior: borrarla en
+	-- cada sondeo la dejaria parpadeando.
+	actualizarIndice(
+		job.coverage
+	)
 
 	-- =====================================================
 	-- EN COLA
@@ -1751,18 +2630,26 @@ local function setSearching(
 	if value then
 
 		searchButton.Text =
-			"BUSCANDO..."
+			"Buscando..."
 
 		searchButton.Active =
 			false
 
 		searchButton.AutoButtonColor =
 			false
+
+		searchButton.BackgroundTransparency =
+			0.4
+
+		-- EL BRILLO se enciende mientras hay trabajo. Dice algo que el relleno
+		-- no puede decir: que el proceso sigue vivo aunque el porcentaje lleve
+		-- un rato quieto, que es justo lo que pasa cuando Roblox esta limitando.
+		brillar(true)
 
 	else
 
 		searchButton.Text =
-			"BUSCAR"
+			"Buscar"
 
 		searchButton.Active =
 			true
@@ -1770,7 +2657,17 @@ local function setSearching(
 		searchButton.AutoButtonColor =
 			true
 
+		searchButton.BackgroundTransparency =
+			0
+
+		brillar(false)
+
 	end
+
+	-- El boton de cancelar la importacion NO depende de si se esta buscando,
+	-- sino de si hay algo que insertar. Son dos cosas distintas: la busqueda
+	-- puede haber terminado y la insercion seguir a la mitad.
+	refrescarBotonCancelar()
 
 end
 
@@ -1935,6 +2832,8 @@ local function importOutfits(outfits)
 		errores = {},
 	}
 	if resumen.recibidos == 0 then
+		importacion.pendiente = false
+		refrescarBotonCancelar()
 		return resumen
 	end
 
@@ -1946,7 +2845,29 @@ local function importOutfits(outfits)
 	-- sistema y no se le añade nada que no le corresponda.
 	local base = #carpeta:GetChildren()
 
+	-- Si lo cancelaron mientras llegaba la respuesta, no se empieza siquiera.
+	if importacion.cancelada then
+		resumen.cancelado = true
+		importacion.pendiente = false
+		refrescarBotonCancelar()
+		return resumen
+	end
+
+	importacion.enCurso = true
+	refrescarBotonCancelar()
+
 	for indice, outfit in ipairs(outfits) do
+
+		-- EL PUNTO SEGURO. Se comprueba aqui, entre un outfit y el siguiente,
+		-- donde no hay ningun rig a medio armar. Matar la tarea a lo bruto
+		-- dejaria un modelo sin cabeza colgando de Workspace. Y los que ya
+		-- entraron se quedan donde estan: nadie que pulsa "cancelar" espera
+		-- que ademas le quiten lo que ya tiene.
+		if importacion.cancelada then
+			resumen.cancelado = true
+			break
+		end
+
 		local ok, resultado = pcall(construirOutfit, outfit, carpeta)
 
 		if ok and resultado then
@@ -1983,6 +2904,10 @@ local function importOutfits(outfits)
 		-- contra Roblox y ochenta seguidas sin pausa se ganan un limite.
 		task.wait(0.1)
 	end
+
+	importacion.enCurso = false
+	importacion.pendiente = false
+	refrescarBotonCancelar()
 
 	return resumen
 end
@@ -2741,6 +3666,14 @@ local function searchOutfits()
 	-- encontrados son ochenta y un outfits que insertar, no una razon para
 	-- esperar a los cien.
 
+	-- Con los resultados YA en la mano y antes de meter el primer modelo, la
+	-- cancelacion pasa a estar disponible. Es lo que permite pararlo entre que
+	-- llega la respuesta y empieza la insercion, que en cien outfits es una
+	-- ventana de varios segundos.
+	importacion.cancelada = false
+	importacion.pendiente = true
+	refrescarBotonCancelar()
+
 	progressMeta.Text =
 		"Insertando "
 		.. tostring(
@@ -2763,33 +3696,62 @@ local function searchOutfits()
 		"fallaron"
 	)
 
-	statusLabel.Text =
-		tostring(
-			resumen.recibidos
-		)
-		.. " outfits encontrados"
+	-- Las dos lineas de estadisticas, con las cifras de esta busqueda: lo
+	-- insertado sale del resumen de la importacion, lo buscado es lo que se
+	-- pidio y lo encontrado es lo que devolvio el servidor.
+	if resumen.cancelado then
 
-	if resumen.fallidos > 0 then
-
-		progressMeta.Text =
-			tostring(
+		-- Lo que ya entro se queda. Se dice cuanto, porque "cancelado" a secas
+		-- deja a quien lo pulso sin saber si tiene 37 outfits o ninguno.
+		statusLabel.Text =
+			"Importación cancelada · "
+			.. tostring(
 				resumen.insertados
 			)
-			.. " insertados · "
-			.. tostring(
+			.. " outfits insertados se conservan"
+
+	elseif resumen.fallidos > 0 then
+
+		statusLabel.Text =
+			tostring(
 				resumen.fallidos
 			)
-			.. " fallaron"
+			.. " no se pudieron importar"
 
 	else
 
-		progressMeta.Text =
-			tostring(
-				resumen.insertados
-			)
-			.. " insertados en Workspace.Outfits"
+		statusLabel.Text =
+			"Búsqueda terminada."
 
 	end
+
+	if avisoExistente then
+
+		statusLabel.Text =
+			"Resultados obtenidos del índice existente. "
+			.. "La indexación de esta comunidad está cancelada."
+
+		avisoExistente = false
+
+	end
+
+	progressMeta.Text =
+		tostring(
+			resumen.insertados
+		)
+		.. " Outfits insertados  |  "
+		.. tostring(
+			amount
+		)
+		.. " Outfits buscados  |  "
+		.. tostring(
+			resumen.recibidos
+		)
+		.. " Outfits encontrados"
+
+	actualizarIndice(
+		finalData.coverage
+	)
 
 end
 
@@ -2797,6 +3759,107 @@ end
 -- CONEXIÓN DEL BOTÓN
 -- =========================================================
 
+-- BUSCAR EN UNA COMUNIDAD CON LA INDEXACION CANCELADA.
+--
+-- Nunca se reactiva en silencio. El panel ya sabe el estado de cada comunidad
+-- porque lo sondea, asi que la pregunta se hace ANTES de salir a la red y las
+-- dos salidas son explicitas:
+--
+--   REANUDAR Y BUSCAR       se reanuda de verdad —conservando cursor y
+--                           progreso, sin empezar de cero— y despues se busca.
+--   BUSCAR CON LO QUE HAY   no se toca el estado de la comunidad. La busqueda
+--                           sale del indice que ya existe, y se avisa de que
+--                           eso es lo que se esta enseñando.
+-- LA UNICA PUERTA POR LA QUE SE LANZA UNA BUSQUEDA.
+--
+-- Los tres caminos —el directo, y los dos del dialogo de comunidad cancelada—
+-- pasan por aqui. Antes la proteccion vivia en el manejador del boton, y los
+-- dos caminos del dialogo se la saltaban: corren en otra corrutina, lanzada
+-- desde preguntar, asi que un fallo alli mataba la corrutina en silencio y
+-- dejaba el boton clavado en Buscando... hasta recargar el plugin.
+local function ejecutarBusqueda()
+
+	local ok, fallo = pcall(searchOutfits)
+
+	-- Se reponen SIEMPRE, salga como salga. El aviso de indice existente
+	-- tambien: se encendia al elegir buscar con datos existentes y solo se
+	-- apagaba al final del camino feliz, asi que una busqueda que fallara por
+	-- red lo dejaba puesto y la SIGUIENTE, sobre una comunidad perfectamente
+	-- activa, anunciaba que estaba cancelada.
+	importacion.enCurso = false
+	importacion.pendiente = false
+	avisoExistente = false
+	refrescarBotonCancelar()
+
+	if not ok then
+		warn("[7x Outfit Importer] La busqueda fallo:", fallo)
+		statusLabel.Text = "La búsqueda falló. Revisa el Output."
+		setSearching(false)
+	end
+
+end
+
+-- BUSCAR EN UNA COMUNIDAD CON LA INDEXACION CANCELADA.
+--
+-- Nunca se reactiva en silencio. El panel ya sabe el estado de cada comunidad
+-- porque lo sondea, asi que la pregunta se hace ANTES de salir a la red y las
+-- dos salidas son explicitas:
+--
+--   REANUDAR Y BUSCAR       se reanuda de verdad —conservando cursor y
+--                           progreso, sin empezar de cero— y despues se busca.
+--   BUSCAR CON LO QUE HAY   no se toca el estado de la comunidad. La busqueda
+--                           sale del indice que ya existe, y se avisa de que
+--                           eso es lo que se esta enseñando.
+local function buscarConAviso()
+
+	if searching then return end
+
+	local groupId = string.match(groupBox.Text or "", "%d+")
+	local grupo = groupId ~= nil and comunidadesConocidas[groupId] or nil
+
+	if grupo == nil or not grupo.paused then
+		ejecutarBusqueda()
+		return
+	end
+
+	preguntar(
+		"Indexación cancelada",
+		"La indexación de esta comunidad está cancelada. Puedes reanudarla "
+			.. "antes de buscar, o buscar solo con los datos que ya hay en el índice.",
+		{
+			{
+				texto = "Reanudar y buscar",
+				color = COLOR_VERDE,
+				alPulsar = function()
+					reanudarIndexacion(groupId, ejecutarBusqueda)
+				end,
+			},
+			{
+				texto = "Buscar con datos existentes",
+				color = COLOR_AZUL,
+				alPulsar = function()
+					avisoExistente = true
+					ejecutarBusqueda()
+				end,
+			},
+		}
+	)
+
+end
+
 searchButton.MouseButton1Click:Connect(
-	searchOutfits
+	function()
+		task.spawn(function()
+			local ok, fallo = pcall(buscarConAviso)
+			if not ok then
+				warn("[7x Outfit Importer] No se pudo abrir la busqueda:", fallo)
+			end
+		end)
+	end
 )
+
+-- El panel arranca si el widget ya estaba abierto al cargar el plugin. Si no,
+-- lo enciende y lo apaga el evento de Enabled.
+if widget.Enabled then
+	arrancarSondeo()
+end

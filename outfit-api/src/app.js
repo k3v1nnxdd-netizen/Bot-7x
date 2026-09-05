@@ -9,6 +9,7 @@ const adminGroupsRoute = require('./api/routes/adminGroups');
 const licenseRoute = require('./api/routes/license');
 const catalogRoute = require('./api/routes/catalog');
 const pluginRoute = require('./api/routes/plugin');
+const pluginIndexRoute = require('./api/routes/pluginIndex');
 const { requireApiKey } = require('./security/apiKey');
 const { requireAdminKey } = require('./security/adminKey');
 const { requirePluginKey } = require('./security/pluginKey');
@@ -145,6 +146,20 @@ function createApp() {
     // un byte del body y sin acercarse a Roblox. Importa mas aqui que en
     // ningun otro sitio — una sola peticion de esta ruta puede convertirse en
     // cientos de llamadas salientes.
+    // El panel del indice va DELANTE de /plugin, y el orden no es cosmetico:
+    // Express casa por prefijo y en orden de registro, asi que montado despues
+    // nunca recibiria una peticion — /plugin se las quedaria todas y el panel
+    // solo veria 404 desde dentro del router de busqueda.
+    //
+    // Misma credencial y mismo limitador. Ninguna de sus rutas llama a Roblox:
+    // el panel se sondea cada pocos segundos mientras alguien tiene Studio
+    // abierto, y gastar de la cuota de avatares para pintar una pantalla
+    // competiria con el worker por el unico recurso escaso que hay.
+    // Cierra su prefijo con `notFoundHandler`, igual que /v1/license y los
+    // demas. Sin el, una ruta inexistente bajo /plugin/index caia al montaje de
+    // /plugin y volvia a pasar por el limitador: una sola peticion consumia dos
+    // del cubo de esa IP.
+    app.use('/plugin/index', rateLimit, requirePluginKey, pluginIndexRoute, notFoundHandler);
     app.use('/plugin', rateLimit, requirePluginKey, pluginRoute);
 
     app.use(notFoundHandler);

@@ -555,6 +555,11 @@ module.exports = async function run() {
 
     test('DUPLICADOS: un usuario en dos grupos ocupa UNA fila de indice', async () => {
         poblar({ miembros: 10 });
+        // La pertenencia esta vallada contra el borrado: sin fila de recorrido
+        // no se escribe. Es el orden de produccion, donde el crawler solo pagina
+        // un grupo que ya tiene recorrido.
+        await crawlRepo.asegurar(GRUPO);
+        await crawlRepo.asegurar(OTRO_GRUPO);
         await memberRepo.registrarPagina(GRUPO, [{ userId: 5000, username: 'X' }]);
         await memberRepo.registrarPagina(OTRO_GRUPO, [{ userId: 5000, username: 'X' }]);
         await avatarRepo.upsertAvatar({

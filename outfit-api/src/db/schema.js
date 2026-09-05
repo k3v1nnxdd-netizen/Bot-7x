@@ -399,6 +399,22 @@ const DDL = [
             // mitad de una vuelta cuya limpieza nadie observo, y ante la duda
             // no se borra la pertenencia de nadie.
             "ALTER TABLE plugin_index_crawl ADD COLUMN IF NOT EXISTS lap_clean BOOLEAN NOT NULL DEFAULT FALSE",
+
+            // ── INDEXACION CANCELADA A MANO ─────────────────────────────
+            //
+            // Quien la cancelo lo hizo desde el plugin, y tiene que seguir
+            // cancelada despues de un redeploy: por eso vive aqui y no en
+            // memoria. Railway reinicia el proceso en cada despliegue, y una
+            // pausa que se evapora al reiniciar no es una pausa.
+            //
+            // La EXCLUSION la sigue haciendo `enabled`, que ya filtra tanto la
+            // seleccion del worker como su indice parcial. `paused_at` no
+            // duplica ese trabajo: dice POR QUE esta apagada. Sin esa
+            // distincion no se puede diferenciar "la apago una persona y
+            // quiere reanudarla" de "la apago el sistema", y el dia que algo
+            // mas apague grupos, reanudar los reactivaria todos a ciegas.
+            'ALTER TABLE plugin_index_crawl ADD COLUMN IF NOT EXISTS paused_at TIMESTAMPTZ',
+            'ALTER TABLE plugin_index_crawl ADD COLUMN IF NOT EXISTS paused_reason TEXT',
         ],
     },
     {

@@ -115,6 +115,10 @@ module.exports = async function run() {
 
         const lista = [];
         for (let i = 0; i < usuarios; i++) lista.push({ userId: 1000 + i, username: `U${1000 + i}` });
+        // La pertenencia esta vallada contra el borrado: sin fila de recorrido
+        // no se escribe. Es el orden de produccion, donde el crawler solo pagina
+        // un grupo que ya tiene recorrido.
+        await crawlRepo.asegurar(GRUPO);
         await memberRepo.registrarPagina(GRUPO, lista);
 
         for (const m of lista) {

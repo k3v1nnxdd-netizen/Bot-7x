@@ -2,6 +2,7 @@
 
 const config = require('../../config');
 const logger = require('../../observability/logger');
+const eventos = require('../../observability/indexEvents');
 const rateLimiter = require('../../roblox/rateLimiter');
 const crawlRepo = require('../../db/indexCrawlRepo');
 const memberRepo = require('../../db/groupMemberRepo');
@@ -429,7 +430,14 @@ function crearWorker({ instancia, repos = {} } = {}) {
 
         // ── Cierre del lease y del ciclo ────────────────────────────────────
         try {
-            await crawl.soltar(grupo.groupId, id, { error: metricas.lastError });
+            // El error DE ESTE CICLO, no el ultimo del proceso. `metricas.lastError`
+            // es global y no se limpia nunca: guardarlo aqui copiaba el fallo de
+            // una comunidad al `last_error` de todas las demas, y el panel las
+            // pintaba a todas en rojo hasta reiniciar. Un ciclo sin errores
+            // escribe null y limpia el rastro del anterior.
+            await crawl.soltar(grupo.groupId, id, {
+                error: r.errores > 0 ? metricas.lastError : null,
+            });
         } catch { /* soltar nunca puede tumbar un ciclo */ }
 
         const duracion = Date.now() - arranque;
@@ -438,6 +446,33 @@ function crearWorker({ instancia, repos = {} } = {}) {
         metricas.lastCycleAt = Date.now();
         metricas.lastCycleMs = duracion;
         metricas.lastGroupId = grupo.groupId;
+
+        // Una linea en el historial que ve el panel. Los contadores dicen
+        // cuantos ciclos hubo; esto dice que paso en el ultimo, que es lo que
+        // hace falta para entender por que el numero de al lado no sube.
+        // Solo si hay algo que contar. Un ciclo que no avanzo, no fallo y no
+        // se encontro con un cooldown no es una noticia: anotarlo cada cinco
+        // segundos expulsaba del anillo las cancelaciones y las vueltas
+        // completas, que son las unicas entradas que alguien va a buscar.
+        const merecePena = r.vueltaCompleta || r.errores > 0 || enfriando > 0 || progreso > 0;
+        if (merecePena) eventos.registrar(
+            r.vueltaCompleta ? eventos.TIPO.VUELTA_COMPLETA
+                : enfriando > 0 ? eventos.TIPO.COOLDOWN_ENTRA
+                : r.errores > 0 ? eventos.TIPO.ERROR
+                : eventos.TIPO.CICLO,
+            {
+                groupId: grupo.groupId,
+                etapa: vida.etapa,
+                detalle: r.errores > 0 ? metricas.lastError : null,
+                datos: {
+                    miembros: r.miembrosVistos,
+                    avatares: r.avataresEscritos,
+                    precios: r.usuariosValorados,
+                    cooldownMs: enfriando,
+                    ms: duracion,
+                },
+            }
+        );
         if (r.avataresPedidos > 0) {
             metricas.avatarsPerMinute = Math.round((r.avataresPedidos / Math.max(1, duracion)) * 60_000);
         }

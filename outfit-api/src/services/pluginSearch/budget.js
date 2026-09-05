@@ -201,7 +201,13 @@ function presupuestoDeTiempo(amount, { modoAsincrono = false } = {}) {
 // Pero algo tiene que acotar el total, porque quien mira el plugin mide en
 // reloj de pared y no en presupuestos. Esto es ese algo: trabajo + espera, y ni
 // un ms mas, se agote lo que se agote primero.
-function techoDeRelojDePared(presupuestoTiempoMs) {
+//
+// En modo SINCRONO no hay presupuesto de pausas: ahi hay un socket abierto y
+// HttpService tiene su plazo, asi que estacionarse minutos seria prometer un
+// timeout. Un cooldown en sincrono termina la busqueda con lo encontrado, que
+// es el contrato de siempre de ese modo.
+function techoDeRelojDePared(presupuestoTiempoMs, { modoAsincrono = true } = {}) {
+    if (!modoAsincrono) return presupuestoTiempoMs;
     return presupuestoTiempoMs + config.pluginSearch.rateLimitWaitBudgetMs;
 }
 

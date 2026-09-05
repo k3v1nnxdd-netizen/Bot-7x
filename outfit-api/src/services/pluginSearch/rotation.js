@@ -74,6 +74,11 @@ async function abrirRotacion(groupId, stats, {
     // `siguienteSegmento` puede recorrer muchas paginas sin devolver a nadie
     // (todas ya vistas): comprobarlo solo entre segmentos no cortaria nada.
     maxPaginas = config.pluginSearch.maxMemberPages,
+    // userIds que ESTA busqueda ya tiene en la mano (reanudacion desde un
+    // checkpoint: los outfits encontrados y los candidatos pendientes). Se
+    // siembran como vistos para que la rotacion, que retoma desde la ultima
+    // posicion PERSISTIDA, no los vuelva a entregar por segunda vez.
+    yaVistos = [],
 } = {}) {
     // Puerta 1: la cola local. Sin base de datos es la unica que hay.
     const soltarTurno = await cola.tomarTurno(groupId, { onEncolado });
@@ -88,12 +93,12 @@ async function abrirRotacion(groupId, stats, {
             return crear(groupId, {
                 groupId, sortOrder: inicial, cursor: null, intraPageOffset: 0,
                 lastUserId: null, cycle: 1, cursorResets: 0, owner: null,
-            }, MODO.EPHEMERAL, stats, soltarTurno, { leaseMs, maxPaginas });
+            }, MODO.EPHEMERAL, stats, soltarTurno, { leaseMs, maxPaginas, yaVistos });
         }
 
         // Puerta 2: el lease global.
         const estado = await adquirirGlobal(groupId, inicial, onEncolado, leaseMs);
-        return crear(groupId, estado, MODO.LEASED, stats, soltarTurno, { leaseMs, maxPaginas });
+        return crear(groupId, estado, MODO.LEASED, stats, soltarTurno, { leaseMs, maxPaginas, yaVistos });
     } catch (err) {
         // Si algo revienta ANTES de que la rotacion exista, el turno local se
         // suelta aqui: si no, el grupo quedaria bloqueado para los que esperan.
@@ -193,13 +198,15 @@ async function esperarSeñal(groupId, restanteMs) {
     }
 }
 
-function crear(groupId, estadoInicial, modo, stats, soltarTurno, { leaseMs, maxPaginas } = {}) {
+function crear(groupId, estadoInicial, modo, stats, soltarTurno, { leaseMs, maxPaginas, yaVistos = [] } = {}) {
     const estado = { ...estadoInicial, groupId: String(groupId), leaseMs };
     const inicio = { cursor: estado.cursor, offset: estado.intraPageOffset, cycle: estado.cycle };
 
     // Miembros ya entregados EN ESTA busqueda. Es lo que impide evaluar dos
     // veces al mismo usuario cuando el wrap-around ocurre a mitad de peticion.
-    const vistos = new Set();
+    // Al reanudar desde un checkpoint arranca sembrado con lo que la busqueda
+    // ya tenia en la mano.
+    const vistos = new Set(yaVistos.map(String));
 
     let wraps = 0;
     let agotado = false;
@@ -314,8 +321,8 @@ function crear(groupId, estadoInicial, modo, stats, soltarTurno, { leaseMs, maxP
                 const miembro = miembros[estado.intraPageOffset];
                 estado.intraPageOffset++;
 
-                if (miembro && !vistos.has(miembro.userId)) {
-                    vistos.add(miembro.userId);
+                if (miembro && !vistos.has(String(miembro.userId))) {
+                    vistos.add(String(miembro.userId));
                     segmento.push(miembro);
                     estado.lastUserId = String(miembro.userId);
                     persistePendiente = true;
@@ -349,12 +356,30 @@ function crear(groupId, estadoInicial, modo, stats, soltarTurno, { leaseMs, maxP
             return guardado;
         },
 
+        // Renueva SOLO el lease, sin guardar avance. Es lo que un trabajo
+        // ESTACIONADO hace en cada latido: no ha movido el cursor, pero el
+        // grupo tiene que seguir reservado hasta que reanude. Devuelve false si
+        // el lease ya no es nuestro — y entonces quien llama tiene que parar,
+        // porque otra busqueda puede estar moviendo el mismo cursor.
+        async renovar() {
+            if (modo !== MODO.LEASED) return true;
+            return repo.renovar(estado.groupId, estado.owner, estado.leaseMs);
+        },
+
         // Cierra la rotacion: guarda lo que quede y suelta el lease. SIEMPRE se
         // llama, haya ido bien o mal — un lease sin soltar bloquea el grupo
         // hasta que caduque.
-        async cerrar() {
+        //
+        // `guardarAvance: false` cierra SIN persistir el ultimo tramo. Es lo
+        // que hace la busqueda cuando termina con candidatos PENDIENTES (se le
+        // entregaron, pero Roblox no dejo mirarlos): la posicion guardada se
+        // queda en el ultimo tramo procesado entero, asi que la siguiente
+        // busqueda los vuelve a entregar en vez de saltarselos. Repetir un
+        // puñado es barato; perderlos es justo lo que un limite no puede
+        // provocar.
+        async cerrar({ guardarAvance = true } = {}) {
             try {
-                await this.persistir();
+                if (guardarAvance) await this.persistir();
             } finally {
                 try {
                     if (modo === MODO.LEASED) {

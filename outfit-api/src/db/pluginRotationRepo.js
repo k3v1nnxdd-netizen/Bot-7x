@@ -138,6 +138,42 @@ async function guardar(estado) {
     }
 }
 
+// Renueva SOLO el lease, sin tocar el avance. Es la operacion de un trabajo
+// ESTACIONADO: mientras espera a que Roblox reabra una ruta no ha movido el
+// cursor —no hay nada que guardar— pero el grupo tiene que seguir reservado.
+// Sin esto, el lease venceria a mitad de una pausa de 25 s y otra busqueda
+// del mismo grupo empezaria a avanzar el mismo cursor, que es exactamente la
+// corrupcion que el lease existe para impedir.
+//
+// El `WHERE lease_owner = $2` es la misma valla que en guardar(): si el lease
+// ya no es nuestro (caducado y cogido por otro), esto no toca nada y devuelve
+// false — y quien llama tiene que parar.
+const SQL_RENOVAR = `
+    UPDATE plugin_group_rotation
+       SET lease_expires_at = NOW() + ($3::bigint * INTERVAL '1 millisecond'),
+           updated_at = NOW()
+     WHERE group_id = $1
+       AND lease_owner = $2
+`;
+
+async function renovar(groupId, owner, leaseMs) {
+    if (!disponible()) return true; // sin base no hay lease que renovar
+    try {
+        const { rowCount } = await db.query(SQL_RENOVAR, [
+            String(groupId), owner, leaseValido(leaseMs),
+        ], 'rotation.renew');
+        return rowCount > 0;
+    } catch (err) {
+        logger.warn('No se pudo renovar el lease de rotacion', {
+            groupId: String(groupId), detail: err?.message,
+        });
+        // No se sabe: se asume que sigue siendo nuestro y se reintenta en el
+        // siguiente latido. Asumir lo contrario pararia busquedas por un bache
+        // de la base.
+        return true;
+    }
+}
+
 // Suelta el lease dejando el avance ya guardado. Se llama SIEMPRE al terminar,
 // haya ido bien o mal: si no, el grupo queda bloqueado hasta que caduque.
 const SQL_SOLTAR = `
@@ -249,17 +285,38 @@ async function leerStats(groupId) {
 // la escritura son una sola sentencia atomica y dos busquedas que terminen a
 // la vez no se pisan la media. COALESCE cubre la primera vez, donde no hay
 // valor anterior con el que mezclar y el dato nuevo pasa tal cual.
+//
+// ── LA CAUSA DE 'Consulta a Postgres fallida' ───────────────────────────────
+//
+// Todos los parametros llevan cast EXPLICITO a double precision, y no es
+// cosmetico. Sin el, Postgres infiere el tipo de un parametro por su PRIMER
+// uso en la sentencia, y el primer uso de $6 era `(1 - $6)`: un entero menos
+// un desconocido, que Postgres resuelve como ENTERO. El driver mandaba
+// entonces '0.3' (ewmaAlpha) para un parametro entero, y Postgres respondia
+// SQLSTATE 22P02 — "invalid input syntax for type integer" — en CADA busqueda
+// que terminaba. El error se registraba y se tragaba (esta escritura no puede
+// tumbar una respuesta), asi que el sintoma era una linea suelta en Railway y
+// un efecto invisible: la comunidad NUNCA aprendia nada, y cada busqueda
+// arrancaba con la constante en vez de con su historial.
 const SQL_STATS = `
     INSERT INTO plugin_group_stats (
         group_id, avg_acceptance_rate, avg_candidate_latency_ms,
         avg_candidates_per_result, avg_search_duration_ms, searches_completed
     )
-    VALUES ($1, $2, $3, $4, $5, 1)
+    VALUES ($1, $2::double precision, $3::double precision, $4::double precision, $5::double precision, 1)
     ON CONFLICT (group_id) DO UPDATE SET
-        avg_acceptance_rate = COALESCE(plugin_group_stats.avg_acceptance_rate * (1 - $6) + $2 * $6, $2),
-        avg_candidate_latency_ms = COALESCE(plugin_group_stats.avg_candidate_latency_ms * (1 - $6) + $3 * $6, $3),
-        avg_candidates_per_result = COALESCE(plugin_group_stats.avg_candidates_per_result * (1 - $6) + $4 * $6, $4),
-        avg_search_duration_ms = COALESCE(plugin_group_stats.avg_search_duration_ms * (1 - $6) + $5 * $6, $5),
+        avg_acceptance_rate = COALESCE(
+            plugin_group_stats.avg_acceptance_rate * (1 - $6::double precision) + $2::double precision * $6::double precision,
+            $2::double precision),
+        avg_candidate_latency_ms = COALESCE(
+            plugin_group_stats.avg_candidate_latency_ms * (1 - $6::double precision) + $3::double precision * $6::double precision,
+            $3::double precision),
+        avg_candidates_per_result = COALESCE(
+            plugin_group_stats.avg_candidates_per_result * (1 - $6::double precision) + $4::double precision * $6::double precision,
+            $4::double precision),
+        avg_search_duration_ms = COALESCE(
+            plugin_group_stats.avg_search_duration_ms * (1 - $6::double precision) + $5::double precision * $6::double precision,
+            $5::double precision),
         searches_completed = plugin_group_stats.searches_completed + 1,
         updated_at = NOW()
 `;
@@ -281,8 +338,11 @@ async function registrarBusqueda(groupId, muestra) {
             config.pluginEta.ewmaAlpha,
         ], 'rotation.writeStats');
     } catch (err) {
-        logger.debug('No se pudieron actualizar las estadisticas del grupo', {
-            groupId: String(groupId), detail: err?.message,
+        // warn y no debug: fallar aqui se estuvo tragando en silencio durante
+        // semanas (ver el comentario de SQL_STATS). Es una escritura que no
+        // puede tumbar la respuesta, pero si tiene que verse.
+        logger.warn('No se pudieron actualizar las estadisticas del grupo', {
+            groupId: String(groupId), code: err?.code ?? null, detail: err?.message,
         });
     }
 }
@@ -293,6 +353,7 @@ module.exports = {
     esperaDelLease,
     posicionGlobalEnCola,
     guardar,
+    renovar,
     soltar,
     leerStats,
     registrarBusqueda,

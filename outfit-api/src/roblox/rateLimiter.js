@@ -33,6 +33,7 @@ const {
     retryBaseDelayMs, retryMaxDelayMs, inlineWaitCeilingMs,
     circuitFailureThreshold, circuitBaseCooldownMs, circuitMaxCooldownMs,
     pacerBaseMs, pacerMaxMs, pacerMinMs, pacerDecay,
+    pacerHeaderFraction, routeConcurrency,
 } = config.upstream;
 
 function sleep(ms) {
@@ -88,10 +89,26 @@ function makeBucket(name) {
         spacingMs: 0,              // 0 = sin marcapasos (estado sano)
         nextAllowedAt: 0,
 
+        // ── Concurrencia efectiva POR RUTA ─────────────────────────────────
+        // Cuantas llamadas de ESTA ruta pueden estar en vuelo a la vez. Es
+        // independiente del gate global (que suma todas las rutas) y existe
+        // para el burst inicial: sin esto, una ola de 25 avatares mete tres
+        // en vuelo antes de que la primera respuesta haya podido enseñar nada.
+        // 0 = sin tope propio (solo el global).
+        maxInFlight: routeConcurrency[name] ?? 0,
+        inFlight: 0,
+        esperandoSlot: [],
+
+        // ── Cuota APRENDIDA de las cabeceras de Roblox ─────────────────────
+        // Lo ultimo que Roblox dijo de esta ruta. null hasta que lo diga: no
+        // se inventa ninguna cuota que Roblox no haya publicado.
+        quota: { limit: null, remaining: null, resetAt: null },
+
         metrics: {
             calls: 0, ok: 0, notFound: 0,
             rateLimited: 0, serverErrors: 0, networkErrors: 0, otherErrors: 0,
             retries: 0, shed: 0, circuitOpens: 0, paced: 0,
+            maxInFlightObserved: 0,
         },
     };
 }
@@ -243,7 +260,15 @@ function observeRateLimitHeaders(bucket, response, endpoint) {
     const headers = response?.headers;
     if (!headers) return;
     const remaining = Number(headers['x-ratelimit-remaining']);
-    if (!Number.isFinite(remaining) || remaining > 0) return;
+    if (!Number.isFinite(remaining)) return;
+
+    // ── APRENDIZAJE DE LA CUOTA ──────────────────────────────────────────────
+    // Lo que Roblox acaba de decir de esta ruta se guarda tal cual, para dos
+    // usos: marcar el paso ANTES de agotar la ventana (aqui abajo) y que quien
+    // mire el estado de la ruta sepa con que margen esta trabajando.
+    aprenderCuota(bucket, headers, remaining);
+
+    if (remaining > 0) return;
 
     // Roblox acaba de decir que la ventana esta agotada. Aunque la respuesta
     // fuera correcta, esto es la señal MAS TEMPRANA de presion que existe: es
@@ -263,6 +288,97 @@ function observeRateLimitHeaders(bucket, response, endpoint) {
         }),
         waitMs,
     });
+}
+
+// ── Cuota aprendida de las cabeceras ─────────────────────────────────────────
+//
+// EL BURST INICIAL, y por que el AIMD solo no lo evita. El marcapasos reacciona
+// a la presion; pero una ola de 25 avatares con tres en vuelo puede comerse la
+// ventana entera antes de que la primera respuesta haya enseñado nada. La
+// unica forma de no chocar es LEER LA CUOTA MIENTRAS SE GASTA: Roblox manda
+// x-ratelimit-limit / -remaining / -reset en estas rutas, y con eso se puede
+// repartir lo que queda de ventana a lo largo de lo que queda de tiempo en vez
+// de gastarlo tan deprisa como la red permita.
+//
+//   separacion = tiempo que queda de ventana / llamadas que quedan de cuota
+//
+// Solo se aplica cuando la fraccion restante baja de pacerHeaderFraction: con
+// la ventana casi entera por delante no hay nada que repartir, y el trafico
+// normal del juego no paga ninguna separacion. NO SE INVENTA NINGUNA CUOTA:
+// sin cabeceras, solo queda el AIMD reactivo.
+function aprenderCuota(bucket, headers, remaining) {
+    const limit = Number(headers['x-ratelimit-limit']);
+    const reset = Number(headers['x-ratelimit-reset']);
+    const ahora = Date.now();
+
+    bucket.quota = {
+        limit: Number.isFinite(limit) && limit > 0 ? limit : bucket.quota.limit,
+        remaining,
+        resetAt: Number.isFinite(reset) && reset > 0 && reset <= 3600 ? ahora + reset * 1000 : bucket.quota.resetAt,
+    };
+
+    const { limit: cuota, resetAt } = bucket.quota;
+    if (!cuota || !resetAt || remaining <= 0) return;
+
+    const fraccion = remaining / cuota;
+    if (fraccion > pacerHeaderFraction) return;
+
+    const ventanaRestanteMs = Math.max(0, resetAt - ahora);
+    const reparto = ventanaRestanteMs / remaining;
+    const objetivo = Math.min(pacerMaxMs, Math.max(pacerMinMs, reparto));
+
+    // Solo se aprieta, nunca se afloja desde aqui: aflojar es cosa del AIMD,
+    // que lo hace despacio y con evidencia de llamadas buenas.
+    if (objetivo > bucket.spacingMs) {
+        const previo = bucket.spacingMs;
+        bucket.spacingMs = objetivo;
+        if (previo === 0) {
+            logger.info('Marcapasos de Roblox activado por cabeceras: repartiendo la cuota restante', {
+                route: bucket.name, spacingMs: Math.round(objetivo), remaining, limit: cuota,
+                windowRemainingMs: Math.round(ventanaRestanteMs),
+            });
+        }
+    }
+}
+
+// Impone un cooldown desde FUERA del limitador. Existe para un unico caso: un
+// trabajo que se estaciono porque Roblox pidio esperar, murio con su proceso, y
+// lo reanuda otra instancia. Esa instancia arranca con los buckets limpios — el
+// estado del limitador vive en memoria — y sin esto mandaria peticiones contra
+// una ruta que Roblox ya dijo que estaba cerrada. El resumeAt persistido es la
+// unica memoria que sobrevive, y aqui se vuelve a aplicar.
+function imponerCooldown(routeKey, untilMs, reason = 'resumed') {
+    const bucket = buckets[routeKey];
+    if (!bucket) throw new Error(`routeKey desconocido: ${routeKey}`);
+    if (!Number.isFinite(untilMs) || untilMs <= Date.now()) return false;
+    bucket.cooldownUntil = Math.max(bucket.cooldownUntil, untilMs);
+    apretarMarcapasos(bucket);
+    logger.info('Cooldown de Roblox reaplicado a una ruta', {
+        route: bucket.name, reason, cooldownRemainingMs: untilMs - Date.now(),
+    });
+    return true;
+}
+
+// ── Concurrencia efectiva por ruta ───────────────────────────────────────────
+//
+// Un semaforo POR BUCKET, distinto del gate global. Se adquiere antes que el
+// marcapasos y que el gate: si no hay slot de ruta, la llamada ni reserva turno
+// ni ocupa un hueco global mientras espera.
+function acquireRouteSlot(bucket) {
+    if (bucket.maxInFlight <= 0 || bucket.inFlight < bucket.maxInFlight) {
+        bucket.inFlight++;
+        bucket.metrics.maxInFlightObserved = Math.max(bucket.metrics.maxInFlightObserved, bucket.inFlight);
+        return Promise.resolve();
+    }
+    return new Promise(resolve => bucket.esperandoSlot.push(resolve));
+}
+
+function releaseRouteSlot(bucket) {
+    const siguiente = bucket.esperandoSlot.shift();
+    // Mismo traspaso que el gate global: el slot pasa al siguiente sin bajar
+    // el contador, para que nadie se cuele entre medias.
+    if (siguiente) siguiente();
+    else bucket.inFlight--;
 }
 
 // ── Marcapasos adaptativo (AIMD) ─────────────────────────────────────────────
@@ -425,12 +541,41 @@ function backoffMs(attempt) {
     return Math.round(exponential * (0.5 + Math.random() * 0.5));
 }
 
-async function callOnce(fn) {
-    await acquire();
+// Una llamada, con todas las puertas en el orden que importa:
+//
+//   1. slot de RUTA         (cuantas de esta ruta en vuelo)
+//   2. marcapasos           (separacion entre llamadas de esta ruta)
+//   3. RECOMPROBAR cooldown (ver abajo)
+//   4. gate GLOBAL          (cuantas en vuelo sumando todas)
+//   5. la llamada
+//
+// LA RECOMPROBACION DEL PASO 3 ES LA INVARIANTE "cero peticiones durante un
+// cooldown". Entre que una llamada paso el cooldown al entrar en run() y que le
+// toca salir de verdad pueden pasar cientos de milisegundos de slot y de
+// marcapasos, y en ese hueco otra respuesta puede haber cerrado la ruta. Sin
+// esta comprobacion, la llamada saldria contra una ruta que Roblox acaba de
+// cerrar: exactamente la peticion que no puede salir.
+async function callOnce(bucket, fn) {
+    await acquireRouteSlot(bucket);
     try {
-        return await fn();
+        await esperarMarcapasos(bucket);
+
+        if (bucket.cooldownUntil > Date.now()) {
+            bucket.metrics.shed++;
+            throw new UpstreamRateLimitedError(
+                'Roblox esta limitando las consultas ahora mismo, reintenta en unos segundos',
+                retryAfterSecondsFrom(bucket.cooldownUntil)
+            );
+        }
+
+        await acquire();
+        try {
+            return await fn();
+        } finally {
+            release();
+        }
     } finally {
-        release();
+        releaseRouteSlot(bucket);
     }
 }
 
@@ -461,11 +606,9 @@ async function run(routeKey, fn, { notFoundCode = 'not_found', notFoundWhen = nu
         for (let attempt = 0; ; attempt++) {
             await waitForCooldown(bucket, endpoint);
 
-            await esperarMarcapasos(bucket);
-
             bucket.metrics.calls++;
             try {
-                const response = await callOnce(fn);
+                const response = await callOnce(bucket, fn);
                 observeRateLimitHeaders(bucket, response, endpoint);
                 bucket.metrics.ok++;
                 onSuccess(bucket);
@@ -588,6 +731,13 @@ function getThrottleState(routeKey) {
         // Separacion vigente del marcapasos. No implica `throttled`: la ruta
         // sigue atendiendo, solo que a un ritmo mas espaciado.
         spacingMs: Math.round(bucket.spacingMs),
+        // Instante ABSOLUTO en el que la ruta vuelve a estar disponible. Es lo
+        // que un trabajo persiste como resumeAt para poder estacionarse de
+        // forma durable y reanudar despues de un reinicio.
+        resumeAt: Math.max(bucket.cooldownUntil, bucket.circuitOpenUntil) || null,
+        inFlight: bucket.inFlight,
+        maxInFlight: bucket.maxInFlight,
+        quota: { ...bucket.quota },
         // Motivo, para poder decir en el log POR QUE se corto.
         reason: circuitOpen ? 'circuit_open' : cooldownRemainingMs > 0 ? 'cooldown' : null,
     };
@@ -619,7 +769,7 @@ function reset() {
 }
 
 module.exports = {
-    run, getMetrics, getThrottleState, reset,
+    run, getMetrics, getThrottleState, imponerCooldown, reset,
     __buckets: buckets,
     // Puros; exportados SOLO para los tests. Deciden que sale en el log cuando
     // Roblox nos frena, asi que merecen pruebas propias en vez de ejercitarse

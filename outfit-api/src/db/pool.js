@@ -184,14 +184,23 @@ async function query(text, params = [], op = null) {
         // Se registra el SQLSTATE, la operacion y el mensaje; NUNCA los
         // parametros ni el SQL: los primeros pueden llevar datos de usuario y,
         // en otras consultas, secretos.
+        // La etiqueta 'repositorio.operacion' se parte en dos campos para
+        // poder agregar por repositorio ("¿falla la rotacion o los trabajos?")
+        // y filtrar por operacion ("¿solo writeStats?") sin cortar cadenas.
+        const [repository, operation] = String(op ?? 'sin-etiquetar.sin-etiquetar').split('.');
         logger.error('Consulta a Postgres fallida', {
+            repository,
+            operation: operation ?? null,
             op: op ?? 'sin-etiquetar',
+            sqlState: err?.code ?? null,
             code: err?.code ?? null,
             // Correlacion con la busqueda que la provoco, cuando la hay: sin
             // esto, un fallo de base durante una busqueda no se puede cruzar
-            // con el `searchId` que el plugin tiene delante.
+            // con el `searchId` que el plugin tiene delante ni con el grupo
+            // cuya rotacion podria haberse quedado sin guardar.
             requestId: requestContext.requestId(),
             searchId: requestContext.searchId(),
+            groupId: requestContext.groupId(),
             detail: err?.message,
         });
         throw err;

@@ -3,8 +3,8 @@
 const express = require('express');
 const router = express.Router();
 const logger = require('../../observability/logger');
-const pluginSearch = require('../../services/pluginSearchService');
 const jobs = require('../../services/pluginSearch/jobs');
+const { arrancar } = require('../../services/pluginSearch/runner');
 const { parsePluginSearchBody, parseSearchId, ValidationError } = require('../../validation/params');
 const { NotFoundError } = require('../../roblox/errors');
 const { ColaLlenaError, EsperaAgotadaError } = require('../../services/pluginSearch/groupQueue');
@@ -141,45 +141,9 @@ router.get('/outfits/search/:searchId', async (req, res) => {
     return res.json(jobs.presentar(trabajo));
 });
 
-// Motor comun de los dos modos. NUNCA rechaza en modo asincrono: un fallo se
-// registra en el trabajo y el plugin lo ve como `failed`, en vez de convertirse
-// en una promesa rechazada sin dueño.
-async function arrancar(trabajo, peticion, { relanzar = false } = {}) {
-    jobs.marcarEnCurso(trabajo.searchId);
-
-    try {
-        const resultado = await pluginSearch.searchOutfits(peticion, {
-            requestId: trabajo.requestId,
-            // El searchId viaja al contexto de correlacion, no solo al log
-            // final: en modo asincrono la peticion HTTP termina en
-            // milisegundos y la busqueda sigue minutos, asi que todo lo que se
-            // registre despues (un 429 del avatar, un fallo de Postgres) solo
-            // se puede atar a lo que el usuario tiene delante por este id.
-            searchId: trabajo.searchId,
-            onProgress: progreso => jobs.actualizarProgreso(trabajo.searchId, progreso),
-            onEncolado: posicion => jobs.marcarEnCola(trabajo.searchId, posicion),
-        });
-
-        jobs.terminar(trabajo.searchId, resultado);
-        return resultado;
-    } catch (err) {
-        jobs.fallar(trabajo.searchId, err);
-
-        // En sincrono el error sube al manejador central, que es el unico sitio
-        // donde un error se traduce a HTTP (404 de grupo inexistente, 503 de
-        // Roblox limitando, 429/503 de cola). En asincrono ya se respondio 202,
-        // asi que lo unico que queda es dejarlo registrado y que el GET lo
-        // cuente como `failed` con su codigo.
-        if (relanzar) throw err;
-
-        logger.warn('Busqueda asincrona del plugin fallida', {
-            requestId: trabajo.requestId,
-            searchId: trabajo.searchId,
-            code: err?.code ?? null,
-            detail: err?.message,
-        });
-        return null;
-    }
-}
+// El motor comun de los dos modos (y de la reanudacion tras un reinicio)
+// vive en services/pluginSearch/runner.js: una busqueda adoptada de una
+// instancia caida no tiene peticion HTTP detras, asi que el motor no puede
+// vivir en la ruta.
 
 module.exports = router;

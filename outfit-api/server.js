@@ -34,7 +34,7 @@ ensureSchema().then(async () => {
     // Va DESPUES del esquema (las tablas tienen que existir) y sin bloquear el
     // arranque: si falla, se registra y el servicio sigue sirviendo.
     const recuperacion = await jobs.recuperarAlArrancar();
-    if (recuperacion.expirados > 0 || recuperacion.borrados > 0) {
+    if (recuperacion.adoptados > 0 || recuperacion.expirados > 0 || recuperacion.borrados > 0) {
         logger.info('Trabajos de busqueda recuperados al arrancar', recuperacion);
     }
 }).catch(err => {

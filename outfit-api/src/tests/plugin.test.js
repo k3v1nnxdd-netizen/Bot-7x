@@ -1620,6 +1620,7 @@ module.exports = async function run() {
         'candidatesExamined', 'memberPagesFetched', 'emptySegments',
         'rotationCycle', 'rotationWraps', 'rotationCursorResets',
         'avatarRequests', 'avatarsFetched', 'avatarRateLimited',
+        'avatarDeferred', 'deferredResumed', 'avatarCacheHits',
         'desiredCandidateBudget', 'hardCandidateLimit',
         'effectiveHardCandidatesPerResult', 'memberPageLimit',
         'timeBudgetMs', 'candidatesPerResultEstimate',

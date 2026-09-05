@@ -45,6 +45,16 @@ function filaAJob(fila) {
         outfits: fila.result?.outfits ?? [],
         stats: fila.result?.stats ?? null,
         error: fila.error_code ? { code: fila.error_code } : null,
+
+        // Park / resume. `params` es lo que hace reanudable a un trabajo;
+        // `checkpoint` es desde donde.
+        params: fila.params ?? null,
+        phase: fila.phase ?? 'working',
+        resumeAt: fila.resume_at?.getTime?.() ?? null,
+        rateLimitedRoute: fila.rate_limited_route ?? null,
+        checkpoint: fila.checkpoint ?? null,
+        instanceId: fila.instance_id ?? null,
+
         createdAt: fila.created_at?.getTime?.() ?? null,
         startedAt: fila.started_at?.getTime?.() ?? null,
         finishedAt: fila.completed_at?.getTime?.() ?? null,
@@ -59,10 +69,15 @@ async function crear(trabajo) {
     try {
         await db.query(
             `INSERT INTO plugin_search_jobs
-                (search_id, group_id, status, requested, instance_id, heartbeat_at)
-             VALUES ($1, $2, $3, $4, $5, NOW())
+                (search_id, group_id, status, requested, instance_id, heartbeat_at, params, phase)
+             VALUES ($1, $2, $3, $4, $5, NOW(), $6, 'working')
              ON CONFLICT (search_id) DO NOTHING`,
-            [trabajo.searchId, String(trabajo.groupId), trabajo.status, trabajo.target, INSTANCIA],
+            [
+                trabajo.searchId, String(trabajo.groupId), trabajo.status, trabajo.target, INSTANCIA,
+                // La peticion entera: sin ella un trabajo que muera a medias
+                // no se puede reanudar en otra instancia.
+                trabajo.params ? JSON.stringify(trabajo.params) : null,
+            ],
             'jobs.create'
         );
     } catch (err) {
@@ -76,20 +91,37 @@ async function crear(trabajo) {
 
 // Volcado de estado + latido. `updated_at` y `heartbeat_at` van juntos: mientras
 // haya volcados, el trabajo esta vivo.
+//
+// ── FENCING POR INSTANCIA ────────────────────────────────────────────────────
+// El UPDATE solo toca la fila si el trabajo SIGUE SIENDO DE ESTE PROCESO. Si
+// otra instancia lo adopto (porque nuestro latido se quedo viejo: una pausa de
+// GC, una red partida, un despliegue a medias), esta escritura no hace nada y
+// devuelve `false` — y quien llama tiene que PARAR, porque a partir de ese
+// momento hay otro proceso avanzando la misma busqueda. Dos dueños escribiendo
+// el mismo checkpoint es la unica forma de corromperlo; esta valla es lo que
+// lo impide.
+//
+// Devuelve true si la fila sigue siendo nuestra (o si no hay base, o si la
+// base tuvo un bache: ahi no se puede afirmar lo contrario y parar una
+// busqueda por eso seria peor).
 async function actualizar(trabajo) {
-    if (!disponible()) return;
+    if (!disponible()) return true;
     try {
-        await db.query(
+        const { rowCount } = await db.query(
             `UPDATE plugin_search_jobs
                 SET status = $2,
                     found = $3,
                     candidates_examined = $4,
                     progress = $5,
                     started_at = COALESCE(started_at, $6),
+                    phase = $8,
+                    resume_at = $9,
+                    rate_limited_route = $10,
+                    checkpoint = COALESCE($11, checkpoint),
                     updated_at = NOW(),
-                    heartbeat_at = NOW(),
-                    instance_id = $7
-              WHERE search_id = $1`,
+                    heartbeat_at = NOW()
+              WHERE search_id = $1
+                AND instance_id = $7`,
             [
                 trabajo.searchId, trabajo.status,
                 trabajo.progress?.found ?? 0,
@@ -97,13 +129,21 @@ async function actualizar(trabajo) {
                 trabajo.progress ? JSON.stringify(trabajo.progress) : null,
                 trabajo.startedAt ? new Date(trabajo.startedAt) : null,
                 INSTANCIA,
+                trabajo.phase ?? 'working',
+                trabajo.resumeAt ? new Date(trabajo.resumeAt) : null,
+                trabajo.rateLimitedRoute ?? null,
+                // COALESCE: si este volcado no trae checkpoint, se conserva el
+                // ultimo. Solo se manda cuando cambio (ver jobs.js).
+                trabajo.checkpointPendiente ? JSON.stringify(trabajo.checkpointPendiente) : null,
             ],
             'jobs.snapshot'
         );
+        return rowCount > 0;
     } catch (err) {
         logger.debug('No se pudo volcar el progreso del trabajo', {
             searchId: trabajo.searchId, detail: err?.message,
         });
+        return true;
     }
 }
 
@@ -121,11 +161,15 @@ async function terminar(trabajo) {
                     progress = $6,
                     result = $7,
                     error_code = $8,
+                    phase = 'working',
+                    resume_at = NULL,
+                    rate_limited_route = NULL,
                     updated_at = NOW(),
                     heartbeat_at = NOW(),
                     completed_at = NOW(),
                     expires_at = NOW() + ($9::bigint * INTERVAL '1 millisecond')
-              WHERE search_id = $1`,
+              WHERE search_id = $1
+                AND instance_id = $10`,
             [
                 trabajo.searchId, trabajo.status,
                 trabajo.outfits?.length ?? 0,
@@ -135,6 +179,7 @@ async function terminar(trabajo) {
                 JSON.stringify({ outfits: trabajo.outfits ?? [], stats: trabajo.stats ?? null }),
                 trabajo.error?.code ?? null,
                 config.pluginJobs.retentionMs,
+                INSTANCIA,
             ],
             'jobs.finish'
         );
@@ -158,6 +203,59 @@ async function leer(searchId) {
     }
 }
 
+// ── Arranque: ADOPTAR lo reanudable, expirar solo lo que no lo es ────────────
+//
+// Un trabajo que estaba estacionado esperando a Roblox cuando su proceso murio
+// NO es un huerfano que haya que dar por perdido: tiene su peticion y su
+// checkpoint en la fila, y otra instancia puede seguir exactamente donde se
+// quedo. Eso es lo que hace esta consulta, y lo hace ATOMICAMENTE: el UPDATE
+// solo cambia de dueño las filas cuyo latido esta viejo, y devuelve las que
+// cambio. Si dos replicas arrancan a la vez, cada fila la adopta UNA sola.
+//
+// Se limita a un puñado por pasada: adoptar significa arrancar una busqueda,
+// y una instancia recien levantada no deberia arrancar cincuenta a la vez.
+async function adoptarHuerfanos(limite = 8) {
+    if (!disponible()) return [];
+    try {
+        const { rows } = await db.query(
+            `UPDATE plugin_search_jobs
+                SET instance_id = $1,
+                    heartbeat_at = NOW(),
+                    updated_at = NOW()
+              WHERE search_id IN (
+                    SELECT search_id
+                      FROM plugin_search_jobs
+                     WHERE status IN ('queued', 'running')
+                       AND params IS NOT NULL
+                       AND (heartbeat_at IS NULL
+                            OR heartbeat_at < NOW() - (
+                                CASE WHEN status = 'queued' THEN $3::bigint ELSE $2::bigint END
+                                * INTERVAL '1 millisecond'))
+                     ORDER BY created_at
+                     LIMIT $4
+                     FOR UPDATE SKIP LOCKED)
+              RETURNING *`,
+            [
+                INSTANCIA,
+                config.pluginJobs.heartbeatTimeoutMs,
+                config.pluginJobs.queuedTimeoutMs,
+                limite,
+            ],
+            'jobs.adopt'
+        );
+        if (rows.length > 0) {
+            logger.info('Trabajos de busqueda adoptados de una instancia caida', {
+                trabajos: rows.length,
+                searchIds: rows.map(r => r.search_id).join(','),
+            });
+        }
+        return rows.map(filaAJob);
+    } catch (err) {
+        logger.warn('No se pudieron adoptar los trabajos huerfanos', { code: err?.code ?? null, detail: err?.message });
+        return [];
+    }
+}
+
 // ── Arranque: nada puede quedarse 'running' para siempre ─────────────────────
 //
 // Un proceso que muere deja sus trabajos en curso escritos como 'running'. Sin
@@ -165,6 +263,9 @@ async function leer(searchId) {
 // llegar nunca. Se comprueba por LATIDO y no por instancia: una replica viva
 // sigue latiendo, asi que solo caen los que de verdad estan huerfanos — lo que
 // hace este barrido seguro tambien con varias replicas arrancando a la vez.
+//
+// SOLO LOS NO REANUDABLES (sin `params`: filas anteriores a park/resume). Los
+// que tienen peticion se ADOPTAN (ver adoptarHuerfanos), no se expiran.
 //
 // DOS PLAZOS, y no uno, porque son dos situaciones distintas. Un trabajo
 // 'running' late en cada segmento: si deja de latir un par de minutos, esta
@@ -183,6 +284,7 @@ async function expirarHuerfanos() {
                     updated_at = NOW(),
                     expires_at = NOW() + ($1::bigint * INTERVAL '1 millisecond')
               WHERE status IN ('queued', 'running')
+                AND params IS NULL
                 AND (heartbeat_at IS NULL
                      OR heartbeat_at < NOW() - (
                          CASE WHEN status = 'queued' THEN $3::bigint ELSE $2::bigint END
@@ -223,6 +325,6 @@ async function limpiarVencidos() {
 }
 
 module.exports = {
-    disponible, crear, actualizar, terminar, leer, expirarHuerfanos, limpiarVencidos,
+    disponible, crear, actualizar, terminar, leer, adoptarHuerfanos, expirarHuerfanos, limpiarVencidos,
     __instancia: INSTANCIA,
 };

@@ -45,7 +45,27 @@ function crearEstimador({ target, previas = null, ahora = () => Date.now() } = {
     let examinadosPrevios = 0;
     let ultimoInstante = empezado;
 
+    // Tiempo que la busqueda ha pasado ESTACIONADA esperando a Roblox. Se
+    // descuenta de todo lo que mide velocidad: un candidato no "tarda" 25 s
+    // porque entre el y el siguiente hubiera una pausa.
+    let pausadoMs = 0;
+
     return {
+        // Se llama cuando termina una pausa, con lo que duro. Desplaza el
+        // ultimo instante medido para que la siguiente observacion no cargue
+        // la pausa al coste por candidato.
+        pausar(ms) {
+            if (!Number.isFinite(ms) || ms <= 0) return;
+            pausadoMs += ms;
+            ultimoInstante += ms;
+        },
+
+        // Reanudacion desde un checkpoint: lo ya pausado antes del reinicio
+        // sigue contando como pausado.
+        restaurar({ pausadoMs: previo = 0 } = {}) {
+            if (Number.isFinite(previo) && previo > 0) pausadoMs += previo;
+        },
+
         // Se llama cuando cambia el progreso. `examinados` y `encontrados` son
         // acumulados, no incrementos.
         observar({ examinados, encontrados }) {
@@ -66,9 +86,39 @@ function crearEstimador({ target, previas = null, ahora = () => Date.now() } = {
 
         // La foto que se devuelve al plugin. Todo numero que salga de aqui es
         // finito y no negativo, o es null; nunca NaN ni Infinity.
-        progreso({ examinados, encontrados }) {
-            const elapsedMs = Math.max(0, ahora() - empezado);
+        //
+        // `parqueo` es la pausa EN CURSO, si la hay: { route, resumeAt,
+        // retryAfterMs }. Con ella la foto lleva `phase: 'rateLimitWait'` y la
+        // ETA suma el cooldown que queda ANTES de la estimacion de trabajo, en
+        // vez de fingir que se sigue examinando gente.
+        progreso({ examinados, encontrados, parqueo = null }) {
+            const instante = ahora();
+            const elapsedMs = Math.max(0, instante - empezado);
             const faltan = Math.max(0, target - encontrados);
+
+            const enPausa = Boolean(parqueo);
+            const cooldownRestanteMs = enPausa
+                ? Math.max(0, Math.round((parqueo.resumeAt ?? instante) - instante))
+                : 0;
+
+            // Lo que el plugin necesita para decir "esperando a Roblox" en vez
+            // de dejar una barra congelada sin explicacion. Aditivo: un cliente
+            // que no lo conozca lo ignora sin romperse.
+            const fase = enPausa
+                ? {
+                    phase: 'rateLimitWait',
+                    rateLimitedRoute: parqueo.route ?? null,
+                    resumeAt: parqueo.resumeAt ? new Date(parqueo.resumeAt).toISOString() : null,
+                    retryAfterMs: Number.isFinite(parqueo.retryAfterMs) ? Math.max(0, Math.round(parqueo.retryAfterMs)) : null,
+                    cooldownRemainingMs: cooldownRestanteMs,
+                }
+                : {
+                    phase: 'working',
+                    rateLimitedRoute: null,
+                    resumeAt: null,
+                    retryAfterMs: null,
+                    cooldownRemainingMs: 0,
+                };
 
             // La ultima ola puede aceptar un par de mas antes de que se
             // compruebe la parada, y esos sobrantes se recortan al devolver los
@@ -82,6 +132,11 @@ function crearEstimador({ target, previas = null, ahora = () => Date.now() } = {
                 found: mostrados,
                 candidatesExamined: examinados,
                 elapsedMs,
+                // Tiempo de TRABAJO, sin las pausas. Es el que se compara con
+                // el presupuesto de trabajo.
+                workingMs: Math.max(0, elapsedMs - pausadoMs),
+                pausedMs: Math.max(0, Math.round(pausadoMs)),
+                ...fase,
                 // Progreso de RESULTADOS, que es lo unico honesto que se puede
                 // pintar en una barra: los candidatos examinados no dicen nada
                 // sobre cuanto queda, porque no se sabe cuantos haran falta.
@@ -94,11 +149,17 @@ function crearEstimador({ target, previas = null, ahora = () => Date.now() } = {
                 return { ...base, estimatedRemainingMs: 0, etaConfidence: 'done' };
             }
 
-            // Sin muestra suficiente NI historial del grupo: no se estima.
+            // Sin muestra suficiente NI historial del grupo: no se estima el
+            // trabajo. En pausa, lo unico honesto que se puede prometer es el
+            // cooldown que queda — eso si se sabe con exactitud.
             const muestraSuficiente = examinados >= config.pluginEta.minSamples;
             const hayHistorial = previas?.searchesCompleted > 0;
             if (!muestraSuficiente && !hayHistorial) {
-                return { ...base, estimatedRemainingMs: null, etaConfidence: 'calculating' };
+                return {
+                    ...base,
+                    estimatedRemainingMs: enPausa ? cooldownRestanteMs : null,
+                    etaConfidence: enPausa ? 'low' : 'calculating',
+                };
             }
 
             // Una tasa de aceptacion de 0 significa "de momento no ha valido
@@ -106,17 +167,23 @@ function crearEstimador({ target, previas = null, ahora = () => Date.now() } = {
             // justo lo que no se quiere: se dice que no se sabe.
             if (!Number.isFinite(tasaAceptacion) || tasaAceptacion <= 0
                 || !Number.isFinite(msPorCandidato) || msPorCandidato <= 0) {
-                return { ...base, estimatedRemainingMs: null, etaConfidence: 'unknown' };
+                return {
+                    ...base,
+                    estimatedRemainingMs: enPausa ? cooldownRestanteMs : null,
+                    etaConfidence: enPausa ? 'low' : 'unknown',
+                };
             }
 
             const candidatosQueFaltan = faltan / tasaAceptacion;
-            const estimado = candidatosQueFaltan * msPorCandidato;
+            // En pausa: lo que queda de cooldown + lo que costara el trabajo
+            // que falta. Nunca se recalcula como si se estuviera procesando.
+            const estimado = cooldownRestanteMs + candidatosQueFaltan * msPorCandidato;
 
             return {
                 ...base,
                 estimatedRemainingMs: Math.min(
                     Math.max(0, Math.round(estimado)),
-                    config.pluginEta.maxEstimateMs
+                    config.pluginEta.maxEstimateMs + cooldownRestanteMs
                 ),
                 // `low` cuando la cifra se apoya sobre todo en el historial del
                 // grupo y no en lo medido ahora. El plugin puede pintarla mas
@@ -128,9 +195,12 @@ function crearEstimador({ target, previas = null, ahora = () => Date.now() } = {
         // Lo que esta busqueda le enseña a la comunidad para la proxima.
         muestraFinal({ examinados, encontrados }) {
             const elapsedMs = Math.max(1, ahora() - empezado);
+            // La latencia que se enseña al grupo es de TRABAJO: una comunidad
+            // no es "lenta" porque Roblox nos hiciera esperar un rato.
+            const trabajadoMs = Math.max(1, elapsedMs - pausadoMs);
             return {
                 acceptanceRate: examinados > 0 ? encontrados / examinados : 0,
-                candidateLatencyMs: examinados > 0 ? elapsedMs / examinados : elapsedMs,
+                candidateLatencyMs: examinados > 0 ? trabajadoMs / examinados : trabajadoMs,
                 candidatesPerResult: encontrados > 0 ? examinados / encontrados : examinados,
                 durationMs: elapsedMs,
                 candidatesExamined: examinados,

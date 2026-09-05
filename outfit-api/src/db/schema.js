@@ -140,6 +140,26 @@ const DDL = [
             // barridos completos en cuanto la tabla crezca.
             "CREATE INDEX IF NOT EXISTS plugin_search_jobs_expires_idx ON plugin_search_jobs (expires_at)",
             "CREATE INDEX IF NOT EXISTS plugin_search_jobs_status_idx ON plugin_search_jobs (status, heartbeat_at)",
+
+            // ── Park / resume durable ────────────────────────────────────────
+            // Lo que hace que un trabajo estacionado por un cooldown de Roblox
+            // SOBREVIVA a un reinicio de la instancia y lo reanude otra, en vez
+            // de morir como huerfano y obligar al plugin a empezar de cero.
+            //
+            //   params      la peticion original (amount, precios, politica):
+            //               sin ella no hay nada que reanudar.
+            //   phase       'working' | 'rateLimitWait'.
+            //   resume_at   cuando reabre la ruta que nos freno.
+            //   rate_limited_route  cual fue ('userAvatar' | 'catalogDetails').
+            //   checkpoint  outfits encontrados, candidatos pendientes,
+            //               contadores y relojes: la foto exacta para seguir
+            //               donde se quedo. Sin datos de jugador mas alla de
+            //               userId/username de los outfits ya devueltos.
+            'ALTER TABLE plugin_search_jobs ADD COLUMN IF NOT EXISTS params JSONB',
+            "ALTER TABLE plugin_search_jobs ADD COLUMN IF NOT EXISTS phase TEXT NOT NULL DEFAULT 'working'",
+            'ALTER TABLE plugin_search_jobs ADD COLUMN IF NOT EXISTS resume_at TIMESTAMPTZ',
+            'ALTER TABLE plugin_search_jobs ADD COLUMN IF NOT EXISTS rate_limited_route TEXT',
+            'ALTER TABLE plugin_search_jobs ADD COLUMN IF NOT EXISTS checkpoint JSONB',
         ],
     },
     {

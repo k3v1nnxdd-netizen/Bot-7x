@@ -32,6 +32,12 @@ process.env.UPSTREAM_RETRY_MAX_MS = '10'; // el COMPORTAMIENTO, no la duracion r
 // la pausa suben este presupuesto ELLOS, con cooldowns de milisegundos.
 process.env.PLUGIN_SEARCH_RATE_LIMIT_WAIT_BUDGET_MS = '0';
 
+// El limitador ABSORBE en linea los cooldowns cortos (hasta 2 s en produccion:
+// duerme y reintenta sin devolver el control). Para poder ejercitar el camino de
+// estacionar/reanudar con cooldowns de milisegundos, ese techo se baja aqui: un
+// cooldown de 300 ms tiene que llegar a la busqueda como lo haria uno de 25 s.
+process.env.UPSTREAM_INLINE_WAIT_CEILING_MS = '100';
+
 const fs = require('fs');
 const path = require('path');
 

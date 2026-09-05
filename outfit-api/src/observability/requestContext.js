@@ -57,4 +57,11 @@ function searchId() {
     return almacen.getStore()?.searchId ?? null;
 }
 
-module.exports = { ejecutarCon, actual, requestId, searchId };
+// El grupo que recorre la busqueda. Es un identificador de comunidad, no de
+// persona, y es lo que permite que un fallo de Postgres diga "en la rotacion
+// del grupo X" sin que nadie tenga que cruzarlo a mano con el searchId.
+function groupId() {
+    return almacen.getStore()?.groupId ?? null;
+}
+
+module.exports = { ejecutarCon, actual, requestId, searchId, groupId };

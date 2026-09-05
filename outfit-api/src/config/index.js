@@ -195,6 +195,36 @@ const upstream = {
     // rapido para no penalizar una ruta ya recuperada, y lo bastante lento para
     // no volver a la rafaga al primer acierto.
     pacerDecay: Number(process.env.UPSTREAM_PACER_DECAY ?? 0.9),
+
+    // ── Aprendizaje de cabeceras ────────────────────────────────────────────
+    //
+    // Cuando Roblox publica x-ratelimit-limit/-remaining/-reset, la cuota que
+    // queda se REPARTE a lo largo de lo que queda de ventana en vez de gastarse
+    // tan deprisa como la red permita. Es lo unico que evita el burst inicial:
+    // el AIMD reacciona a la presion, y para cuando reacciona una ola entera
+    // puede haberse comido la ventana.
+    //
+    // Solo se activa por debajo de esta fraccion de cuota restante: con media
+    // ventana por delante no hay nada que repartir, y el trafico normal del
+    // juego no paga ninguna separacion.
+    pacerHeaderFraction: Number(process.env.UPSTREAM_PACER_HEADER_FRACTION ?? 0.5),
+
+    // ── Concurrencia efectiva POR RUTA ──────────────────────────────────────
+    //
+    // Cuantas llamadas de una MISMA ruta pueden estar en vuelo a la vez, por
+    // debajo del gate global. Solo las rutas listadas tienen tope propio; el
+    // resto solo esta acotado por el global.
+    //
+    // El avatar va a 2 y no a 3 (el global) por el burst inicial: una ola de
+    // 25 candidatos con tres en vuelo dispara tres peticiones antes de que la
+    // primera respuesta haya enseñado nada de la cuota. Con dos, la primera
+    // respuesta llega — y con ella sus cabeceras — antes de que la tercera
+    // salga. No es una cuota inventada: es cuantas preguntas se hacen antes de
+    // escuchar la primera contestacion.
+    routeConcurrency: {
+        userAvatar: intFromEnv('UPSTREAM_ROUTE_CONCURRENCY_USER_AVATAR', 2),
+        catalogDetails: intFromEnv('UPSTREAM_ROUTE_CONCURRENCY_CATALOG_DETAILS', 2),
+    },
 };
 
 // Tope duro de entradas en memoria. Sin Volume ni disco: si se llena, se
@@ -372,42 +402,60 @@ const pluginSearch = {
         ? null // null = se calcula por `amount`; un valor explicito manda sobre todo
         : intFromEnv('PLUGIN_SEARCH_TIME_BUDGET_MS', 30_000),
 
-    timeBudgetBaseMs: intFromEnv('PLUGIN_SEARCH_TIME_BUDGET_BASE_MS', 20_000),
-    timeBudgetPerResultMs: intFromEnv('PLUGIN_SEARCH_TIME_BUDGET_PER_RESULT_MS', 800),
-    timeBudgetMinMs: intFromEnv('PLUGIN_SEARCH_TIME_BUDGET_MIN_MS', 30_000),
-    timeBudgetMaxMs: intFromEnv('PLUGIN_SEARCH_TIME_BUDGET_MAX_MS', 180_000),
+    // ES UN PRESUPUESTO DE TRABAJO (maxWorking), no de reloj de pared: las
+    // pausas por limite de Roblox no lo consumen. Pero SI lo consume el ritmo
+    // al que Roblox deja preguntar: con la cuota del avatar repartida por el
+    // marcapasos, 300 candidatos a ~1,5 por segundo son mas de tres minutos de
+    // trabajo real. Por eso el suelo son dos minutos y no treinta segundos —
+    // treinta segundos solo alcanzan si Roblox no limita nada, y limita.
+    //
+    //   10 -> 120 s     100 -> 260 s     500 -> 600 s (techo)
+    timeBudgetBaseMs: intFromEnv('PLUGIN_SEARCH_TIME_BUDGET_BASE_MS', 60_000),
+    timeBudgetPerResultMs: intFromEnv('PLUGIN_SEARCH_TIME_BUDGET_PER_RESULT_MS', 2_000),
+    timeBudgetMinMs: intFromEnv('PLUGIN_SEARCH_TIME_BUDGET_MIN_MS', 120_000),
+    timeBudgetMaxMs: intFromEnv('PLUGIN_SEARCH_TIME_BUDGET_MAX_MS', 600_000),
 
     // Techo del presupuesto en modo SINCRONO. Ahi si hay un socket abierto al
     // otro lado, y HttpService de Roblox tiene su propio plazo: prometer tres
     // minutos seria prometer un timeout. El modo asincrono no tiene este techo.
     timeBudgetSyncCeilingMs: intFromEnv('PLUGIN_SEARCH_TIME_BUDGET_SYNC_CEILING_MS', 25_000),
 
-    // ── Esperas por limite de Roblox ─────────────────────────────────────────
+    // ── Pausas por limite de Roblox (park / resume) ──────────────────────────
     //
     // Un cooldown de Roblox es una INSTRUCCION DE ESPERAR, no un "no hay
-    // outfits". Antes se trataba como el final de la busqueda y devolvia 3 de
-    // 10 a los 18 segundos; ahora se espera exactamente lo que Roblox pide y se
-    // continua. Estas tres perillas son lo que impide que esa espera se
-    // convierta en un plugin colgado.
+    // outfits". La busqueda se ESTACIONA (checkpoint persistido, lease del
+    // grupo renovado, cero peticiones) y se reanuda al llegar resumeAt,
+    // exactamente donde se quedo. Puede atravesar varios cooldowns: eso es lo
+    // normal cuando la cuota del avatar es estrecha, no una anomalia.
     //
-    // El presupuesto de espera es INDEPENDIENTE del de trabajo: estar parado no
-    // consume tiempo de buscar, porque si lo consumiera una sola pausa se
-    // llevaria la busqueda por delante — que es justo lo que pasaba.
-    rateLimitWaitBudgetMs: intFromEnv('PLUGIN_SEARCH_RATE_LIMIT_WAIT_BUDGET_MS', 45_000),
+    // El presupuesto de espera es INDEPENDIENTE del de trabajo: estar
+    // estacionado no consume tiempo de buscar. Lo que acota el total es el
+    // reloj de pared (maxWallClock = trabajo + espera), que es la proteccion
+    // EXTREMA para que un trabajo no viva para siempre — no el final normal.
+    //
+    // LOS NUMEROS SALEN DE LO OBSERVADO. Los Retry-After reales del avatar han
+    // rondado los 25-30 s. "Varios cooldowns normales" son cinco o seis de
+    // esos: 180 s de espera acumulada cubre seis pausas de 30 s con margen.
+    rateLimitWaitBudgetMs: intFromEnv('PLUGIN_SEARCH_RATE_LIMIT_WAIT_BUDGET_MS', 180_000),
 
-    // Techo de UNA espera. Si Roblox pide mas que esto de una sentada, no se
-    // espera: se devuelve lo encontrado con el motivo preciso y que el usuario
-    // decida. Nadie mira un plugin parado medio minuto sin moverse.
-    rateLimitSingleWaitMs: intFromEnv('PLUGIN_SEARCH_RATE_LIMIT_SINGLE_WAIT_MS', 20_000),
+    // Techo de UNA pausa. Un Retry-After de 25-30 s tiene que caber de sobra;
+    // uno de dos minutos ya no es un cooldown, es Roblox diciendo que hoy no.
+    rateLimitSingleWaitMs: intFromEnv('PLUGIN_SEARCH_RATE_LIMIT_SINGLE_WAIT_MS', 90_000),
 
-    // Numero de pausas por busqueda. Una busqueda que necesita seis pausas no
-    // esta "yendo lenta": esta peleandose con una cuota que hoy no da, y
-    // reintentar dentro de un rato es mejor que insistir ahora.
-    rateLimitMaxWaits: intFromEnv('PLUGIN_SEARCH_RATE_LIMIT_MAX_WAITS', 5),
+    // Numero de pausas por busqueda. Con pausas de 25-30 s y 180 s de
+    // presupuesto, ocho es un techo que no se toca en una busqueda sana; existe
+    // para que un cooldown de 1 s en bucle no pueda encadenarse cien veces.
+    rateLimitMaxWaits: intFromEnv('PLUGIN_SEARCH_RATE_LIMIT_MAX_WAITS', 8),
 
     // Margen que se añade a lo que pide Roblox. Volver un milisegundo antes de
     // que la ventana se reabra gasta el reintento y renueva el cooldown.
-    rateLimitWaitMarginMs: intFromEnv('PLUGIN_SEARCH_RATE_LIMIT_WAIT_MARGIN_MS', 250),
+    rateLimitWaitMarginMs: intFromEnv('PLUGIN_SEARCH_RATE_LIMIT_WAIT_MARGIN_MS', 500),
+
+    // Cada cuanto late un trabajo ESTACIONADO. Es lo que lo distingue de uno
+    // muerto: refresca el heartbeat del job y renueva el lease del grupo. Bien
+    // por debajo del plazo de latido (heartbeatTimeoutMs) para que una pausa de
+    // 30 s no se confunda nunca con un proceso caido.
+    rateLimitHeartbeatMs: intFromEnv('PLUGIN_SEARCH_RATE_LIMIT_HEARTBEAT_MS', 5_000),
 
     // Candidatos cuyos avatares se piden en paralelo. Por encima del gate
     // global de salida (UPSTREAM_MAX_CONCURRENT) no se gana nada — el limitador
@@ -508,9 +556,14 @@ const pluginQueue = {
     //
     // Esperar no cuesta nada aqui: el trabajo asincrono esta en `queued` y el
     // plugin lo enseña como "esperando turno (2º)" en vez de fingir progreso.
+    //
+    // Se deriva del RELOJ DE PARED maximo (trabajo + pausas por Roblox), no
+    // solo del trabajo: una busqueda estacionada 25 s esperando a Roblox sigue
+    // teniendo el grupo reservado, y quien esta detras tiene que poder esperar
+    // eso tambien.
     waitTimeoutMs: intFromEnv(
         'PLUGIN_QUEUE_WAIT_TIMEOUT_MS',
-        pluginSearch.timeBudgetMaxMs + 30_000
+        pluginSearch.timeBudgetMaxMs + pluginSearch.rateLimitWaitBudgetMs + 30_000
     ),
 
     // Solo para el caso multi-instancia: si el lease del grupo lo tiene OTRO

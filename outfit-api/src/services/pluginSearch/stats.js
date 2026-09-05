@@ -91,6 +91,23 @@ function crearStats() {
         // valor alto con `stoppedBy: completed` avisa de que la siguiente
         // busqueda de ese grupo puede no tener tanta suerte.
         avatarRateLimited: 0,
+
+        // Candidatos que NO se pudieron mirar porque la ruta del avatar estaba
+        // cerrada en ese momento. No son descartes: vuelven a la cola y se
+        // retoman cuando la ruta reabre. Cuenta EVENTOS de diferimiento, asi
+        // que un mismo candidato puede sumar mas de una vez si se difiere en
+        // dos pausas seguidas.
+        avatarDeferred: 0,
+
+        // Avatares servidos desde la cache: cero peticiones a Roblox y sin
+        // necesitar permiso de ruta. Es la cifra que dice cuanto ahorra repetir
+        // una busqueda sobre la misma comunidad.
+        avatarCacheHits: 0,
+
+        // Candidatos pendientes que se RETOMARON tras una pausa (o tras un
+        // reinicio, desde el checkpoint). Cuadra con avatarDeferred: lo que se
+        // difirio y luego se retomo.
+        deferredResumed: 0,
         assetIdsSeen: 0,          // con repeticiones, tal como venian en los avatares
         assetIdsUnique: 0,        // distintos en TODA la busqueda
         assetIdsRequested: 0,     // los que de verdad se mandaron a Roblox
@@ -149,6 +166,22 @@ function crearStats() {
 
         sumar(clave, cuanto = 1) {
             contadores[clave] += cuanto;
+        },
+
+        // Reanudacion desde un checkpoint: los contadores continuan donde se
+        // quedaron, para que las stats finales describan la busqueda ENTERA y
+        // no solo el tramo posterior al reinicio. Solo se restauran claves
+        // conocidas: un checkpoint de otra version no puede colar campos.
+        restaurar(guardados = {}) {
+            for (const clave of Object.keys(contadores)) {
+                const valor = guardados[clave];
+                if (Number.isFinite(valor) && valor >= 0) contadores[clave] = valor;
+            }
+        },
+
+        // Foto de los contadores, para el checkpoint.
+        instantanea() {
+            return { ...contadores };
         },
 
         // Marca de cache para las entidades que pasan por withCache (paginas de
@@ -225,6 +258,9 @@ function crearStats() {
                 avatarRequests: contadores.avatarRequests,
                 avatarsFetched: contadores.avatarsFetched,
                 avatarRateLimited: contadores.avatarRateLimited,
+                avatarDeferred: contadores.avatarDeferred,
+                deferredResumed: contadores.deferredResumed,
+                avatarCacheHits: contadores.avatarCacheHits,
 
                 // Presupuestos con los que corrio. `desiredCandidateBudget` es
                 // la PREVISION final (cuantos candidatos se esperaba necesitar)

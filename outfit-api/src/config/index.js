@@ -326,7 +326,7 @@ const pluginSearch = {
     // sirve. El valor es el minimo ACEPTADO ("mas de 3" = 4). 0 desactiva la
     // regla; la suite lo usa para los mundos de prueba antiguos de un asset
     // por usuario, que prueban precio y rotacion, no esta regla.
-    minAccessories: intFromEnv('PLUGIN_SEARCH_MIN_ACCESSORIES', 4),
+    minAccessories: intFromEnv('PLUGIN_SEARCH_MIN_ACCESSORIES', 3),
 
     // ── Techo ABSOLUTO de paginas de miembros por busqueda ───────────────────
     //
@@ -660,6 +660,40 @@ const indexWorker = {
     // borrar nada y sin un UPDATE masivo: es como se corrige un cambio de
     // criterio sin tirar el trabajo hecho.
     pricingVersion: intFromEnv('INDEX_WORKER_PRICING_VERSION', 1),
+
+    // ── LAS TRES ETAPAS, cada una con su tamaño de tanda ────────────────────
+    //
+    // Son tres trabajos distintos con costes distintos y por eso se miden
+    // aparte. El crawler pagina miembros, que es barato. El resolutor de
+    // avatares gasta UNA llamada por usuario, que es lo caro y escaso. El de
+    // precios agrupa a MUCHOS usuarios en pocos lotes de catalogo, que es donde
+    // esta el ahorro grande: cien usuarios pueden compartir un solo lote.
+    crawlPagesPerCycle: intFromEnv('INDEX_WORKER_CRAWL_PAGES_PER_CYCLE', 1),
+    avatarsPerCycle: intFromEnv('INDEX_WORKER_AVATARS_PER_CYCLE', 25),
+
+    // Cuantos usuarios entran en UNA pasada de valoracion. Cuanto mas alto,
+    // mejor se amortiza cada lote de catalogo: los assets repetidos entre
+    // usuarios se piden una vez para todos.
+    pricingBatchUsers: intFromEnv('INDEX_WORKER_PRICING_BATCH_USERS', 60),
+
+    // TTL de una ficha de catalogo. Es el precio de un asset, que se mueve
+    // menos que un avatar entero pero mas que su existencia.
+    catalogTtlMs: intFromEnv('INDEX_WORKER_CATALOG_TTL_MS', 3 * 24 * 60 * 60_000),
+};
+
+// ── SERVIR DESDE EL INDICE (fase 3) ─────────────────────────────────────────
+//
+// Interruptor separado del worker A PROPOSITO: llenar el indice y servir desde
+// el indice son dos decisiones distintas, y la segunda solo tiene sentido
+// cuando la primera lleva tiempo funcionando.
+//
+// Con esto en true, POST /plugin/outfits/search NO LLAMA A ROBLOX. Ni al
+// avatar, ni al catalogo, ni como respaldo si el indice se queda corto: si
+// Postgres no puede responder, la respuesta es un 503 honesto y no una busqueda
+// en vivo que tardaria una hora. Ese respaldo automatico es exactamente el
+// fallo que toda esta arquitectura existe para eliminar.
+const indexServe = {
+    enabled: process.env.INDEX_SERVE_ENABLED === 'true',
 };
 
 const pluginJobs = {
@@ -873,5 +907,6 @@ module.exports = {
     pluginJobs,
     pluginEta,
     indexWorker,
+    indexServe,
     serviceName: 'outfit-api',
 };

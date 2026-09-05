@@ -3,6 +3,7 @@
 const logger = require('../observability/logger');
 const { ValidationError } = require('../validation/params');
 const { ColaLlenaError, EsperaAgotadaError } = require('../services/pluginSearch/groupQueue');
+const { IndiceNoDisponibleError } = require('../services/pluginSearch/indexQuery');
 const {
     NotFoundError, UpstreamRateLimitedError, CircuitOpenError, UpstreamError,
 } = require('../roblox/errors');
@@ -68,6 +69,20 @@ function errorHandler(err, req, res, next) {
         return send(res, 503, err.code,
             'Otra busqueda esta recorriendo ese grupo y se agoto la espera de turno',
             { retryAfterSeconds: 10 });
+    }
+
+    // El indice de outfits no pudo responder (Postgres caido, transaccion
+    // fallida). 503 y no 500 porque el servicio no esta roto: no puede servir
+    // AHORA, y reintentar mas tarde tiene sentido.
+    //
+    // Y lo que NO ocurre aqui importa mas que el codigo: con el indice sirviendo,
+    // un fallo NUNCA cae en una busqueda en vivo contra Roblox. Ese respaldo
+    // automatico es justo el fallo que la arquitectura del indice elimina.
+    if (err instanceof IndiceNoDisponibleError) {
+        res.set("Retry-After", "15");
+        return send(res, 503, err.code,
+            "El indice de outfits no esta disponible ahora mismo",
+            { retryAfterSeconds: 15 });
     }
 
     if (err instanceof NotFoundError) {

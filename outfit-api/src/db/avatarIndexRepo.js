@@ -8,38 +8,59 @@ const logger = require('../observability/logger');
 // Guarda lo que hoy cuesta una llamada a Roblox por miembro: que lleva puesto
 // alguien y cuanto vale. Una fila por USUARIO, no por grupo.
 //
-// Dos reglas gobiernan todo lo que hay aqui, y las dos existen porque el
-// enemigo de este indice no es la falta de datos sino los datos falsos:
+// LAS DOS MITADES SE ESCRIBEN POR SEPARADO, y esa separacion es el diseño:
 //
-//   1. UN 429 NO ES UN DATO. Roblox frenandonos no dice nada sobre el avatar de
-//      nadie. Ninguna funcion de este modulo se llama cuando Roblox limita, y
-//      ninguna degrada una fila por un fallo de red: el worker simplemente no
-//      escribe. Lo que ya estaba sigue estando.
-//   2. UN TTL VENCIDO NO BORRA. Vencer solo cambia el ORDEN en que el worker
-//      refresca (ver `pendientes`). Una fila vieja se sigue sirviendo; lo unico
-//      que se pierde con el tiempo es la certeza sobre el precio, y esa se
-//      recupera refrescando, no tirando la fila.
+//   `upsertAvatar`       lo que dijo la ruta del avatar. Una llamada por usuario.
+//   `upsertValoraciones` lo que dijo el catalogo. UNA pasada para MUCHOS
+//                        usuarios, porque comparten assets.
+//
+// Escribirlas juntas obligaria a pedir catalogo usuario a usuario, que es
+// exactamente lo caro. Separadas, cien usuarios caben en unos pocos lotes.
+//
+// Tres reglas gobiernan todo lo que hay aqui:
+//
+//   1. UN 429 NO ES UN DATO. Roblox frenandonos no dice nada del avatar de
+//      nadie. Ninguna funcion de aqui se llama en ese caso.
+//   2. UN TTL VENCIDO NO BORRA. Vencer solo cambia el ORDEN de refresco.
+//   3. UN ERROR TEMPORAL NO ES UN VEREDICTO. `unpriceable` significa "Roblox
+//      contesto y estos assets no tienen precio", nunca "no pudimos preguntar".
 
 const OP = {
-    upsert: 'avatarIndex.upsert',
+    upsertAvatar: 'avatarIndex.upsertAvatar',
+    upsertPrecio: 'avatarIndex.upsertPricing',
     leer: 'avatarIndex.read',
-    pendientes: 'avatarIndex.pending',
+    pendientesAvatar: 'avatarIndex.pendingAvatar',
+    pendientesPrecio: 'avatarIndex.pendingPricing',
     cobertura: 'avatarIndex.coverage',
     error: 'avatarIndex.error',
 };
 
-// Estados posibles de una fila. NO existe 'too_few_accessories': el minimo de
-// accesorios es configurable y se aplica AL CONSULTAR, sobre la columna
-// `accessories`. Guardarlo como estado obligaria a reindexar la comunidad
-// entera por cambiar una variable de entorno.
+// Estados de una fila. NO existe 'too_few_accessories': el minimo de accesorios
+// es CONFIGURABLE y se aplica al consultar, sobre la columna `accessories`.
+// Guardarlo como estado obligaria a reindexar la comunidad entera por cambiar
+// una variable de entorno — y bajarlo de 4 a 3, como se acaba de hacer, habria
+// dejado fuera para siempre a usuarios que ahora si valen.
 const ESTADO = {
+    // Avatar conocido Y valorado. Es el UNICO estado servible.
     VALIDO: 'valid',
+    // Avatar conocido, todavia sin valorar. Aqui caen los que esperan turno de
+    // catalogo y los que no llegan al minimo de accesorios (a esos no se les
+    // gasta ni un lote). Si el minimo baja, entran solos en la cola de precios.
+    SOLO_AVATAR: 'avatar_only',
+    // Roblox contesto: no lleva nada puesto.
     AVATAR_VACIO: 'empty_avatar',
+    // Roblox contesto 404: el usuario no existe.
     NO_EXISTE: 'not_found',
+    // Roblox contesto y sus assets NO tienen precio averiguable. Es un
+    // veredicto, no un fallo: un timeout o un 429 JAMAS dejan este estado.
     SIN_PRECIO: 'unpriceable',
 };
 
 const ESTADOS = new Set(Object.values(ESTADO));
+
+// Estados que pueden llegar a valorarse. Un borrado o un avatar vacio no: no
+// tienen assets, asi que la cola de precios no debe mirarlos nunca.
+const VALORABLES = [ESTADO.VALIDO, ESTADO.SOLO_AVATAR, ESTADO.SIN_PRECIO];
 
 function disponible() {
     return db.isConfigured();
@@ -71,41 +92,25 @@ function filaARegistro(fila) {
     };
 }
 
-// Escribe (o reescribe) lo que se sabe de un usuario. IDEMPOTENTE: llamarla dos
-// veces con los mismos datos deja exactamente la misma fila, y por eso el worker
-// puede reintentar un tramo entero tras un reinicio sin pensarselo.
+// ── ESCRITURA 1: lo que dijo la ruta del avatar ─────────────────────────────
 //
-// `valoracion` es null cuando el usuario no llego a valorarse (avatar vacio,
-// borrado). En ese caso las columnas de precio se dejan como estaban en vez de
-// ponerlas a NULL: si ayer sabiamos cuanto valia y hoy Roblox no nos deja
-// mirarlo, lo de ayer sigue siendo mejor que nada.
-async function upsert({
+// Escribe SOLO los hechos del avatar. Nunca toca las columnas de precio: la
+// valoracion la escribe la otra pasada, y pisarla aqui tiraria un precio bueno
+// cada vez que alguien se cambia de gorro.
+async function upsertAvatar({
     userId, username = null, state,
     assetIds = [], assetTypeIds = [], accessories = 0, playerAvatarType = null,
-    valoracion = null, pricingVersion = 1,
 }) {
     if (!disponible()) return false;
     if (!ESTADOS.has(state)) throw new Error(`Estado desconocido para el indice: ${state}`);
-
-    const conPrecio = valoracion !== null;
 
     try {
         await db.query(
             `INSERT INTO roblox_user_avatar (
                  user_id, username, state,
                  asset_ids, asset_type_ids, accessories, player_avatar_type,
-                 avatar_fetched_at,
-                 total_price, price_complete, priced_items, unpriced_items,
-                 limited_items, off_sale_items, bundled_items, priced_at,
-                 pricing_version, consecutive_errors, last_error, updated_at
-             ) VALUES (
-                 $1, $2, $3,
-                 $4::jsonb, $5::jsonb, $6, $7,
-                 NOW(),
-                 $8, $9, $10, $11,
-                 $12, $13, $14, CASE WHEN $15 THEN NOW() ELSE NULL END,
-                 $16, 0, NULL, NOW()
-             )
+                 avatar_fetched_at, consecutive_errors, last_error, updated_at
+             ) VALUES ($1, $2, $3, $4::jsonb, $5::jsonb, $6, $7, NOW(), 0, NULL, NOW())
              ON CONFLICT (user_id) DO UPDATE SET
                  username           = COALESCE(EXCLUDED.username, roblox_user_avatar.username),
                  state              = EXCLUDED.state,
@@ -114,17 +119,6 @@ async function upsert({
                  accessories        = EXCLUDED.accessories,
                  player_avatar_type = EXCLUDED.player_avatar_type,
                  avatar_fetched_at  = NOW(),
-                 -- El precio SOLO se pisa cuando hay valoracion nueva. Sin ella
-                 -- se conserva la anterior: un dato viejo vale mas que un NULL.
-                 total_price    = CASE WHEN $15 THEN EXCLUDED.total_price    ELSE roblox_user_avatar.total_price END,
-                 price_complete = CASE WHEN $15 THEN EXCLUDED.price_complete ELSE roblox_user_avatar.price_complete END,
-                 priced_items   = CASE WHEN $15 THEN EXCLUDED.priced_items   ELSE roblox_user_avatar.priced_items END,
-                 unpriced_items = CASE WHEN $15 THEN EXCLUDED.unpriced_items ELSE roblox_user_avatar.unpriced_items END,
-                 limited_items  = CASE WHEN $15 THEN EXCLUDED.limited_items  ELSE roblox_user_avatar.limited_items END,
-                 off_sale_items = CASE WHEN $15 THEN EXCLUDED.off_sale_items ELSE roblox_user_avatar.off_sale_items END,
-                 bundled_items  = CASE WHEN $15 THEN EXCLUDED.bundled_items  ELSE roblox_user_avatar.bundled_items END,
-                 priced_at      = CASE WHEN $15 THEN NOW() ELSE roblox_user_avatar.priced_at END,
-                 pricing_version    = EXCLUDED.pricing_version,
                  consecutive_errors = 0,
                  last_error         = NULL,
                  updated_at         = NOW()`,
@@ -133,39 +127,91 @@ async function upsert({
                 JSON.stringify(assetIds.map(String)),
                 JSON.stringify(assetTypeIds.map(Number)),
                 accessories, playerAvatarType,
-                conPrecio ? valoracion.totalPrice : null,
-                conPrecio ? valoracion.priceComplete : null,
-                conPrecio ? valoracion.pricedItems : null,
-                conPrecio ? valoracion.unpricedItems : null,
-                conPrecio ? valoracion.limitedItems : null,
-                conPrecio ? valoracion.offSaleItems : null,
-                conPrecio ? valoracion.bundledItems : null,
-                conPrecio,
-                pricingVersion,
             ],
-            OP.upsert
+            OP.upsertAvatar
         );
         return true;
     } catch (err) {
-        logger.warn('No se pudo escribir en el indice de avatares', {
-            operation: OP.upsert, userId: String(userId), sqlState: err?.code ?? null,
+        logger.warn('No se pudo escribir el avatar en el indice', {
+            operation: OP.upsertAvatar, userId: String(userId), sqlState: err?.code ?? null,
         });
         return false;
     }
 }
 
-// Deja constancia de un fallo SIN tocar los datos. Es la unica escritura que
-// ocurre cuando algo va mal, y no cambia ni el estado ni el avatar ni el
-// precio: solo cuenta. Nunca se llama para un 429 — un limite de Roblox no es
-// un fallo del usuario y no merece ni este contador.
+// ── ESCRITURA 2: lo que dijo el catalogo, para MUCHOS usuarios de una vez ───
+//
+// `valoraciones` es una lista de { userId, state, valoracion|null }. Se escribe
+// en una sola sentencia porque viene de una sola pasada de catalogo: cien
+// usuarios valorados con los mismos pocos lotes.
+//
+// Con `valoracion` null (el usuario no llego a valorarse) se cambia el estado
+// pero NO se borra el precio anterior: un dato viejo vale mas que un NULL.
+async function upsertValoraciones(valoraciones, { pricingVersion = 1 } = {}) {
+    if (!disponible() || valoraciones.length === 0) return 0;
+
+    const ids = valoraciones.map(v => String(v.userId));
+    const estados = valoraciones.map(v => v.state);
+    const con = valoraciones.map(v => v.valoracion !== null && v.valoracion !== undefined);
+    const campo = extraer => valoraciones.map(v => (v.valoracion ? extraer(v.valoracion) ?? null : null));
+
+    for (const estado of estados) {
+        if (!ESTADOS.has(estado)) throw new Error(`Estado desconocido para el indice: ${estado}`);
+    }
+
+    try {
+        const { rowCount } = await db.query(
+            `UPDATE roblox_user_avatar a SET
+                 state          = entrada.state,
+                 total_price    = CASE WHEN entrada.con THEN entrada.total_price    ELSE a.total_price END,
+                 price_complete = CASE WHEN entrada.con THEN entrada.price_complete ELSE a.price_complete END,
+                 priced_items   = CASE WHEN entrada.con THEN entrada.priced_items   ELSE a.priced_items END,
+                 unpriced_items = CASE WHEN entrada.con THEN entrada.unpriced_items ELSE a.unpriced_items END,
+                 limited_items  = CASE WHEN entrada.con THEN entrada.limited_items  ELSE a.limited_items END,
+                 off_sale_items = CASE WHEN entrada.con THEN entrada.off_sale_items ELSE a.off_sale_items END,
+                 bundled_items  = CASE WHEN entrada.con THEN entrada.bundled_items  ELSE a.bundled_items END,
+                 priced_at      = CASE WHEN entrada.con THEN NOW() ELSE a.priced_at END,
+                 pricing_version = $11,
+                 consecutive_errors = 0,
+                 last_error     = NULL,
+                 updated_at     = NOW()
+             FROM UNNEST(
+                 $1::text[], $2::text[], $3::boolean[],
+                 $4::bigint[], $5::boolean[], $6::integer[], $7::integer[],
+                 $8::integer[], $9::integer[], $10::integer[]
+             ) AS entrada(
+                 user_id, state, con,
+                 total_price, price_complete, priced_items, unpriced_items,
+                 limited_items, off_sale_items, bundled_items
+             )
+             WHERE a.user_id = entrada.user_id`,
+            [
+                ids, estados, con,
+                campo(v => v.totalPrice), campo(v => v.priceComplete),
+                campo(v => v.pricedItems), campo(v => v.unpricedItems),
+                campo(v => v.limitedItems), campo(v => v.offSaleItems), campo(v => v.bundledItems),
+                pricingVersion,
+            ],
+            OP.upsertPrecio
+        );
+        return rowCount ?? 0;
+    } catch (err) {
+        logger.warn('No se pudieron escribir las valoraciones en el indice', {
+            operation: OP.upsertPrecio, usuarios: valoraciones.length, sqlState: err?.code ?? null,
+        });
+        return 0;
+    }
+}
+
+// Deja constancia de un fallo SIN tocar los datos. No cambia estado, ni avatar,
+// ni precio: solo cuenta. Nunca se llama para un 429.
 async function anotarError(userId, detalle) {
     if (!disponible()) return false;
     try {
         await db.query(
             `UPDATE roblox_user_avatar
                 SET consecutive_errors = consecutive_errors + 1,
-                    last_error = $2,
-                    updated_at = NOW()
+                    last_error = $2, updated_at = NOW()
               WHERE user_id = $1`,
             [String(userId), String(detalle ?? '').slice(0, 200)],
             OP.error
@@ -180,8 +226,7 @@ async function leer(userId) {
     if (!disponible()) return null;
     const { rows } = await db.query(
         'SELECT * FROM roblox_user_avatar WHERE user_id = $1',
-        [String(userId)],
-        OP.leer
+        [String(userId)], OP.leer
     );
     return filaARegistro(rows[0]);
 }
@@ -190,77 +235,112 @@ async function leerVarios(userIds) {
     if (!disponible() || userIds.length === 0) return new Map();
     const { rows } = await db.query(
         'SELECT * FROM roblox_user_avatar WHERE user_id = ANY($1::text[])',
-        [userIds.map(String)],
-        OP.leer
+        [userIds.map(String)], OP.leer
     );
-    return new Map(rows.map(fila => [String(fila.user_id), filaARegistro(fila)]));
+    return new Map(rows.map(f => [String(f.user_id), filaARegistro(f)]));
 }
 
-// A QUIEN LE TOCA. Devuelve miembros del grupo que necesitan trabajo, en orden
-// de necesidad:
+// ── COLA 1: AVATARES ────────────────────────────────────────────────────────
 //
-//   1. los que no tienen fila         (el indice no sabe nada de ellos)
-//   2. los de version de precio vieja (cambio la logica: van por delante)
-//   3. los de avatar vencido          (se pudo cambiar de ropa)
-//   4. los de precio vencido          (el mercado se movio)
+// El orden ES la politica de prioridades, y es deliberado:
 //
-// Vencer NO es un estado: es una posicion en esta cola. La fila sigue intacta y
-// se sigue pudiendo servir mientras espera su turno.
-async function pendientes(groupId, { limite = 25, ttlAvatarMs, ttlPrecioMs, pricingVersion = 1 } = {}) {
+//   0. NUNCA INDEXADO   ampliar cobertura va primero. Un usuario del que no se
+//                       sabe nada no puede salir en ninguna busqueda; uno con
+//                       datos viejos si.
+//   1. AVATAR VENCIDO   refrescar lo que pudo cambiar.
+//
+// La falta de precio NO entra aqui: eso es trabajo de la otra cola, y meterlo
+// gastaria una llamada de avatar para arreglar algo que solo necesita catalogo.
+async function pendientesDeAvatar(groupId, { limite = 25, ttlAvatarMs } = {}) {
     if (!disponible()) return [];
 
     const { rows } = await db.query(
         `SELECT m.user_id, m.username,
-                a.user_id IS NULL AS nuevo,
-                CASE
-                    WHEN a.user_id IS NULL THEN 0
-                    WHEN a.pricing_version < $5 THEN 1
-                    WHEN a.avatar_fetched_at < NOW() - ($3::double precision * INTERVAL '1 millisecond') THEN 2
-                    ELSE 3
-                END AS urgencia
+                (a.user_id IS NULL) AS nuevo,
+                CASE WHEN a.user_id IS NULL THEN 0 ELSE 1 END AS urgencia
            FROM plugin_group_member m
            LEFT JOIN roblox_user_avatar a ON a.user_id = m.user_id
           WHERE m.group_id = $1
             AND m.left_at IS NULL
             AND (
                 a.user_id IS NULL
-                OR a.pricing_version < $5
                 OR a.avatar_fetched_at < NOW() - ($3::double precision * INTERVAL '1 millisecond')
-                -- La falta de precio SOLO es motivo de refresco para quien
-                -- puede tenerlo. Un usuario borrado o sin avatar nunca tendra
-                -- fecha de valoracion, y sin esta condicion la cola lo elegiria
-                -- en TODOS los ciclos para siempre: el worker se pasaria la
-                -- vida volviendo a preguntar por los mismos usuarios que ya
-                -- sabe que no existen. Su avatar se reintenta igual, pero por
-                -- el reloj del avatar, que ese si vence.
-                OR (a.state = 'valid' AND (
-                    a.priced_at IS NULL
-                    OR a.priced_at < NOW() - ($4::double precision * INTERVAL '1 millisecond')))
             )
           ORDER BY urgencia ASC, a.avatar_fetched_at ASC NULLS FIRST, m.user_id ASC
           LIMIT $2`,
-        [String(groupId), limite, ttlAvatarMs, ttlPrecioMs, pricingVersion],
-        OP.pendientes
+        [String(groupId), limite, ttlAvatarMs],
+        OP.pendientesAvatar
     );
 
-    return rows.map(fila => ({
-        userId: String(fila.user_id),
-        username: fila.username ?? null,
-        nuevo: fila.nuevo === true,
-        urgencia: Number(fila.urgencia),
+    return rows.map(f => ({
+        userId: String(f.user_id), username: f.username ?? null,
+        nuevo: f.nuevo === true, urgencia: Number(f.urgencia),
     }));
 }
 
-// COBERTURA Y FRESCURA de un grupo, en una consulta. Es la metrica que decide
-// si un grupo esta listo para servirse desde el indice (fase 3) y la que se
-// publica en /v1/metrics.
-async function cobertura(groupId, { ttlAvatarMs, ttlPrecioMs } = {}) {
+// ── COLA 2: PRECIOS ─────────────────────────────────────────────────────────
+//
+// Quien tiene avatar y le falta valoracion. Devuelve TAMBIEN sus assetIds,
+// porque quien llama va a unirlos todos y deduplicarlos antes de pedir nada:
+// ese es el paso donde cien usuarios se convierten en unos pocos lotes.
+//
+// EL MINIMO DE ACCESORIOS SE APLICA AQUI, y es lo que impide gastar catalogo en
+// alguien que no puede salir en un resultado. Como el minimo llega por
+// parametro desde la config, bajarlo mete solos en la cola a los que antes
+// quedaban fuera, sin reindexar ni tocar una fila.
+async function pendientesDePrecio(groupId, {
+    limite = 60, ttlPrecioMs, pricingVersion = 1, minAccessories = 0,
+} = {}) {
+    if (!disponible()) return [];
+
+    const { rows } = await db.query(
+        `SELECT a.user_id, a.username, a.asset_ids, a.accessories, a.state,
+                CASE
+                    WHEN a.priced_at IS NULL THEN 0
+                    WHEN a.pricing_version < $4 THEN 1
+                    ELSE 2
+                END AS urgencia
+           FROM plugin_group_member m
+           JOIN roblox_user_avatar a ON a.user_id = m.user_id
+          WHERE m.group_id = $1
+            AND m.left_at IS NULL
+            AND a.state = ANY($5::text[])
+            AND a.accessories >= $6
+            AND jsonb_array_length(a.asset_ids) > 0
+            AND (
+                a.priced_at IS NULL
+                OR a.pricing_version < $4
+                OR a.priced_at < NOW() - ($3::double precision * INTERVAL '1 millisecond')
+            )
+          ORDER BY urgencia ASC, a.priced_at ASC NULLS FIRST, a.user_id ASC
+          LIMIT $2`,
+        [String(groupId), limite, ttlPrecioMs, pricingVersion, VALORABLES, minAccessories],
+        OP.pendientesPrecio
+    );
+
+    return rows.map(f => ({
+        userId: String(f.user_id),
+        username: f.username ?? null,
+        assetIds: Array.isArray(f.asset_ids) ? f.asset_ids.map(String) : [],
+        accessories: Number(f.accessories ?? 0),
+        state: f.state,
+        urgencia: Number(f.urgencia),
+    }));
+}
+
+// COBERTURA Y FRESCURA. `eligible` cuenta los que de verdad podrian salir en un
+// resultado: validos, con precio y con accesorios suficientes. Es el numero que
+// decide si un grupo esta listo para servirse desde el indice, y el que el
+// plugin enseña mientras la comunidad se indexa.
+async function cobertura(groupId, { ttlAvatarMs, ttlPrecioMs, minAccessories = 0 } = {}) {
     if (!disponible()) return null;
 
     const { rows } = await db.query(
         `SELECT COUNT(*)::int AS miembros,
                 COUNT(a.user_id)::int AS indexados,
                 COUNT(*) FILTER (WHERE a.state = 'valid')::int AS validos,
+                COUNT(*) FILTER (WHERE a.state = 'valid' AND a.accessories >= $4)::int AS elegibles,
+                COUNT(*) FILTER (WHERE a.accessories < $4 AND a.user_id IS NOT NULL)::int AS bajoMinimo,
                 COUNT(*) FILTER (
                     WHERE a.state = 'valid'
                       AND a.avatar_fetched_at >= NOW() - ($2::double precision * INTERVAL '1 millisecond')
@@ -270,30 +350,36 @@ async function cobertura(groupId, { ttlAvatarMs, ttlPrecioMs } = {}) {
            FROM plugin_group_member m
            LEFT JOIN roblox_user_avatar a ON a.user_id = m.user_id
           WHERE m.group_id = $1 AND m.left_at IS NULL`,
-        [String(groupId), ttlAvatarMs, ttlPrecioMs],
+        [String(groupId), ttlAvatarMs, ttlPrecioMs, minAccessories],
         OP.cobertura
     );
 
-    const fila = rows[0] ?? {};
-    const miembros = Number(fila.miembros ?? 0);
+    const f = rows[0] ?? {};
+    const miembros = Number(f.miembros ?? 0);
+    const indexados = Number(f.indexados ?? 0);
     return {
         groupId: String(groupId),
         members: miembros,
-        indexed: Number(fila.indexados ?? 0),
-        valid: Number(fila.validos ?? 0),
-        fresh: Number(fila.frescos ?? 0),
-        coverage: miembros > 0 ? Number((Number(fila.indexados ?? 0) / miembros).toFixed(4)) : 0,
-        freshness: miembros > 0 ? Number((Number(fila.frescos ?? 0) / miembros).toFixed(4)) : 0,
+        indexed: indexados,
+        valid: Number(f.validos ?? 0),
+        eligible: Number(f.elegibles ?? 0),
+        belowMinAccessories: Number(f.bajominimo ?? f.bajoMinimo ?? 0),
+        fresh: Number(f.frescos ?? 0),
+        coverage: miembros > 0 ? Number((indexados / miembros).toFixed(4)) : 0,
+        freshness: miembros > 0 ? Number((Number(f.frescos ?? 0) / miembros).toFixed(4)) : 0,
     };
 }
 
 module.exports = {
     ESTADO,
+    VALORABLES,
     disponible,
-    upsert,
+    upsertAvatar,
+    upsertValoraciones,
     anotarError,
     leer,
     leerVarios,
-    pendientes,
+    pendientesDeAvatar,
+    pendientesDePrecio,
     cobertura,
 };

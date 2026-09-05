@@ -6,6 +6,8 @@ const jobRepo = require('../db/pluginJobRepo');
 const avatarRepo = require('../db/avatarIndexRepo');
 const memberRepo = require('../db/groupMemberRepo');
 const crawlRepo = require('../db/indexCrawlRepo');
+const catalogoRepo = require('../db/assetCatalogRepo');
+const pool = require('../db/pool');
 const { ewma } = require('../services/pluginSearch/eta');
 
 // Doble de Postgres EN MEMORIA con la misma semantica que las tres tablas del
@@ -38,6 +40,12 @@ function crearBaseFalsa() {
     const avatares = new Map();
     const miembros = new Map();
     const recorridos = new Map();
+    const catalogo = new Map();     // assetId -> ficha persistida
+
+    // Filas de pertenencia BLOQUEADAS por una transaccion en curso. Es lo que
+    // simula `FOR UPDATE OF m SKIP LOCKED`: dos busquedas simultaneas del mismo
+    // grupo no pueden llevarse al mismo usuario.
+    const bloqueadas = new Set();
     let disponible = true;
     let fallarAdquirir = false;
 
@@ -341,15 +349,15 @@ function crearBaseFalsa() {
             memberRepo.disponible = () => disponible;
             crawlRepo.disponible = () => disponible;
 
-            avatarRepo.upsert = async ({ userId, username = null, state, assetIds = [],
-                assetTypeIds = [], accessories = 0, playerAvatarType = null,
-                valoracion = null, pricingVersion = 1 }) => {
+            // ESCRITURA 1: solo los hechos del avatar. Nunca toca el precio.
+            avatarRepo.upsertAvatar = async ({ userId, username = null, state, assetIds = [],
+                assetTypeIds = [], accessories = 0, playerAvatarType = null }) => {
                 if (!disponible) return false;
                 const id = String(userId);
                 const previa = avatares.get(id);
                 const ahora = Date.now();
-                const conPrecio = valoracion !== null;
                 avatares.set(id, {
+                    ...(previa ?? {}),
                     userId: id,
                     username: username ?? previa?.username ?? null,
                     state,
@@ -358,22 +366,49 @@ function crearBaseFalsa() {
                     accessories,
                     playerAvatarType,
                     avatarFetchedAt: ahora,
-                    // El precio SOLO se pisa con valoracion nueva: un dato
-                    // viejo vale mas que un NULL.
-                    totalPrice: conPrecio ? valoracion.totalPrice : (previa?.totalPrice ?? null),
-                    priceComplete: conPrecio ? valoracion.priceComplete : (previa?.priceComplete ?? null),
-                    pricedItems: conPrecio ? valoracion.pricedItems : (previa?.pricedItems ?? null),
-                    unpricedItems: conPrecio ? valoracion.unpricedItems : (previa?.unpricedItems ?? null),
-                    limitedItems: conPrecio ? valoracion.limitedItems : (previa?.limitedItems ?? null),
-                    offSaleItems: conPrecio ? valoracion.offSaleItems : (previa?.offSaleItems ?? null),
-                    bundledItems: conPrecio ? valoracion.bundledItems : (previa?.bundledItems ?? null),
-                    pricedAt: conPrecio ? ahora : (previa?.pricedAt ?? null),
-                    pricingVersion,
+                    totalPrice: previa?.totalPrice ?? null,
+                    priceComplete: previa?.priceComplete ?? null,
+                    pricedItems: previa?.pricedItems ?? null,
+                    unpricedItems: previa?.unpricedItems ?? null,
+                    limitedItems: previa?.limitedItems ?? null,
+                    offSaleItems: previa?.offSaleItems ?? null,
+                    bundledItems: previa?.bundledItems ?? null,
+                    pricedAt: previa?.pricedAt ?? null,
+                    pricingVersion: previa?.pricingVersion ?? 1,
                     consecutiveErrors: 0,
                     lastError: null,
                     updatedAt: ahora,
                 });
                 return true;
+            };
+
+            // ESCRITURA 2: la valoracion, para MUCHOS usuarios de una vez. Con
+            // valoracion nula cambia el estado pero conserva el precio bueno.
+            avatarRepo.upsertValoraciones = async (valoraciones, { pricingVersion = 1 } = {}) => {
+                if (!disponible) return 0;
+                let n = 0;
+                const ahora = Date.now();
+                for (const v of valoraciones) {
+                    const fila = avatares.get(String(v.userId));
+                    if (!fila) continue;
+                    fila.state = v.state;
+                    if (v.valoracion) {
+                        fila.totalPrice = v.valoracion.totalPrice;
+                        fila.priceComplete = v.valoracion.priceComplete;
+                        fila.pricedItems = v.valoracion.pricedItems;
+                        fila.unpricedItems = v.valoracion.unpricedItems;
+                        fila.limitedItems = v.valoracion.limitedItems;
+                        fila.offSaleItems = v.valoracion.offSaleItems;
+                        fila.bundledItems = v.valoracion.bundledItems;
+                        fila.pricedAt = ahora;
+                    }
+                    fila.pricingVersion = pricingVersion;
+                    fila.consecutiveErrors = 0;
+                    fila.lastError = null;
+                    fila.updatedAt = ahora;
+                    n++;
+                }
+                return n;
             };
 
             avatarRepo.anotarError = async (userId, detalle) => {
@@ -396,8 +431,9 @@ function crearBaseFalsa() {
                 return salida;
             };
 
-            avatarRepo.pendientes = async (groupId, { limite = 25, ttlAvatarMs,
-                ttlPrecioMs, pricingVersion = 1 } = {}) => {
+            // COLA 1: avatares. Primero los que NO se han mirado nunca
+            // (ampliar cobertura), despues los vencidos.
+            avatarRepo.pendientesDeAvatar = async (groupId, { limite = 25, ttlAvatarMs } = {}) => {
                 const ahora = Date.now();
                 const candidatos = [];
                 for (const fila of miembros.values()) {
@@ -405,12 +441,7 @@ function crearBaseFalsa() {
                     const avatar = avatares.get(fila.userId);
                     let urgencia = null;
                     if (!avatar) urgencia = 0;
-                    else if (avatar.pricingVersion < pricingVersion) urgencia = 1;
-                    else if (avatar.avatarFetchedAt < ahora - ttlAvatarMs) urgencia = 2;
-                    // Igual que la sentencia real: la falta de precio solo
-                    // cuenta para quien puede tenerlo.
-                    else if (avatar.state === 'valid'
-                        && (avatar.pricedAt === null || avatar.pricedAt < ahora - ttlPrecioMs)) urgencia = 3;
+                    else if (avatar.avatarFetchedAt < ahora - ttlAvatarMs) urgencia = 1;
                     if (urgencia === null) continue;
                     candidatos.push({
                         userId: fila.userId, username: fila.username, nuevo: !avatar, urgencia,
@@ -423,27 +454,104 @@ function crearBaseFalsa() {
                     ({ userId, username, nuevo, urgencia }));
             };
 
-            avatarRepo.cobertura = async (groupId, { ttlAvatarMs, ttlPrecioMs } = {}) => {
+            // COLA 2: precios. Devuelve tambien los assetIds, que es lo que
+            // quien llama va a unir y deduplicar. El minimo de accesorios se
+            // aplica AQUI: a quien no llega no se le gasta catalogo.
+            avatarRepo.pendientesDePrecio = async (groupId, { limite = 60, ttlPrecioMs,
+                pricingVersion = 1, minAccessories = 0 } = {}) => {
                 const ahora = Date.now();
-                let total = 0, indexados = 0, validos = 0, frescos = 0;
+                const valorables = new Set(avatarRepo.VALORABLES);
+                const candidatos = [];
+                for (const fila of miembros.values()) {
+                    if (fila.groupId !== String(groupId) || fila.leftAt) continue;
+                    const avatar = avatares.get(fila.userId);
+                    if (!avatar || !valorables.has(avatar.state)) continue;
+                    if (avatar.accessories < minAccessories) continue;
+                    if (!avatar.assetIds || avatar.assetIds.length === 0) continue;
+                    let urgencia = null;
+                    if (avatar.pricedAt === null || avatar.pricedAt === undefined) urgencia = 0;
+                    else if (avatar.pricingVersion < pricingVersion) urgencia = 1;
+                    else if (avatar.pricedAt < ahora - ttlPrecioMs) urgencia = 2;
+                    if (urgencia === null) continue;
+                    candidatos.push({
+                        userId: avatar.userId, username: avatar.username,
+                        assetIds: [...avatar.assetIds], accessories: avatar.accessories,
+                        state: avatar.state, urgencia, edad: avatar.pricedAt ?? 0,
+                    });
+                }
+                candidatos.sort((a, b) => a.urgencia - b.urgencia || a.edad - b.edad
+                    || Number(a.userId) - Number(b.userId));
+                return candidatos.slice(0, limite).map(({ edad, ...resto }) => resto);
+            };
+
+            avatarRepo.cobertura = async (groupId, { ttlAvatarMs, ttlPrecioMs, minAccessories = 0 } = {}) => {
+                const ahora = Date.now();
+                let total = 0, indexados = 0, validos = 0, elegibles = 0, bajoMinimo = 0, frescos = 0;
                 for (const fila of miembros.values()) {
                     if (fila.groupId !== String(groupId) || fila.leftAt) continue;
                     total++;
                     const avatar = avatares.get(fila.userId);
                     if (!avatar) continue;
                     indexados++;
+                    if (avatar.accessories < minAccessories) bajoMinimo++;
                     if (avatar.state !== 'valid') continue;
                     validos++;
+                    if (avatar.accessories >= minAccessories) elegibles++;
                     if (avatar.avatarFetchedAt >= ahora - ttlAvatarMs
                         && avatar.pricedAt !== null && avatar.pricedAt >= ahora - ttlPrecioMs) frescos++;
                 }
                 return {
                     groupId: String(groupId), members: total, indexed: indexados,
-                    valid: validos, fresh: frescos,
+                    valid: validos, eligible: elegibles, belowMinAccessories: bajoMinimo, fresh: frescos,
                     coverage: total > 0 ? Number((indexados / total).toFixed(4)) : 0,
                     freshness: total > 0 ? Number((frescos / total).toFixed(4)) : 0,
                 };
             };
+
+            // ── CATALOGO PERSISTENTE ────────────────────────────────────
+            catalogoRepo.disponible = () => disponible;
+
+            catalogoRepo.leerFrescos = async (assetIds, { ttlMs }) => {
+                const pedidos = [...new Set(assetIds.map(String))];
+                if (!disponible) return { fichas: new Map(), faltan: pedidos, aciertos: 0 };
+                const ahora = Date.now();
+                const fichas = new Map();
+                for (const id of pedidos) {
+                    const fila = catalogo.get(id);
+                    if (fila && fila.fetchedAt >= ahora - ttlMs) fichas.set(id, { ...fila });
+                }
+                return {
+                    fichas,
+                    faltan: pedidos.filter(id => !fichas.has(id)),
+                    aciertos: fichas.size,
+                };
+            };
+
+            catalogoRepo.guardar = async (fichas, { faltantes = [] } = {}) => {
+                if (!disponible) return 0;
+                const ahora = Date.now();
+                let n = 0;
+                for (const [id, ficha] of fichas) {
+                    const previa = catalogo.get(String(id));
+                    catalogo.set(String(id), {
+                        ...ficha,
+                        // El bundle es estructural: si ya se sabia y no viene, se conserva.
+                        bundleId: ficha.bundleId ?? previa?.bundleId ?? null,
+                        bundlePrice: ficha.bundlePrice ?? previa?.bundlePrice ?? null,
+                        bundleAvailable: ficha.bundleAvailable ?? previa?.bundleAvailable ?? null,
+                        missing: false,
+                        fetchedAt: ahora,
+                    });
+                    n++;
+                }
+                for (const id of faltantes) {
+                    catalogo.set(String(id), { missing: true, available: false, fetchedAt: ahora });
+                    n++;
+                }
+                return n;
+            };
+
+            catalogoRepo.contar = async () => ({ fichas: catalogo.size });
 
             // ── PERTENENCIA ─────────────────────────────────────────────
             memberRepo.registrarPagina = async (groupId, lista) => {
@@ -499,6 +607,7 @@ function crearBaseFalsa() {
                 groupId: String(groupId), sortOrder: 'Asc', cursor: null,
                 intraPageOffset: 0, cycle: 1, priority: 0, demands: 0, lastDemandAt: null,
                 membersSeen: 0, usersIndexed: 0, lastRunAt: null, lastFullPassAt: null,
+                cycleStartedAt: null,
                 lastError: null, leaseOwner: null, leaseExpiresAt: null, enabled: true,
             });
 
@@ -550,6 +659,12 @@ function crearBaseFalsa() {
                 fila.membersSeen += avance.membersSeen ?? 0;
                 fila.usersIndexed += avance.usersIndexed ?? 0;
                 fila.lastRunAt = Date.now();
+                // La MARCA DE AGUA de la vuelta. Sin persistirla, el crawler la
+                // pierde entre ciclos y no puede saber desde cuando lleva sin
+                // ver a alguien: nadie se marcaria nunca como baja.
+                if (avance.cycleStartedAt !== undefined && avance.cycleStartedAt !== null) {
+                    fila.cycleStartedAt = avance.cycleStartedAt;
+                }
                 if (avance.vueltaCompleta) fila.lastFullPassAt = Date.now();
                 fila.priority = Math.max(0, fila.priority - (avance.prioridadConsumida ?? 0));
                 fila.leaseExpiresAt = Date.now() + (avance.leaseMs ?? 60_000);
@@ -583,6 +698,91 @@ function crearBaseFalsa() {
                 .slice(0, limite)
                 .map(f => ({ ...f }));
 
+            // ── LA TRANSACCION QUE SIRVE DESDE EL INDICE ────────────────
+            //
+            // Reproduce lo que importa de `FOR UPDATE OF m SKIP LOCKED`: las
+            // filas que una transaccion en curso tiene cogidas NO las ve otra.
+            // Sin eso, dos busquedas simultaneas del mismo grupo devolverian a
+            // la misma gente y el test de concurrencia no probaria nada.
+            pool.isConfigured = () => disponible;
+            pool.withTransaction = async fn => {
+                if (!disponible) throw Object.assign(new Error('sin base'), { code: 'DB_NOT_CONFIGURED' });
+                const mias = new Set();
+                const q = async (texto, params = []) => {
+                    const sql = String(texto);
+
+                    if (sql.includes('FROM plugin_group_member m') && sql.includes('FOR UPDATE OF m')) {
+                        const [groupId, minAcc, minPrice, maxPrice, requiereCompleto, limite] = params;
+                        const elegidas = [...miembros.values()]
+                            .filter(m => m.groupId === String(groupId) && !m.leftAt)
+                            .filter(m => !bloqueadas.has(`${m.groupId}|${m.userId}`))
+                            .map(m => ({ m, a: avatares.get(m.userId) }))
+                            .filter(({ a }) => a && a.state === 'valid' && a.accessories >= minAcc)
+                            .filter(({ a }) => a.totalPrice !== null && a.totalPrice !== undefined)
+                            .filter(({ a }) => a.totalPrice >= (minPrice ?? 0))
+                            .filter(({ a }) => maxPrice === null || maxPrice === undefined || a.totalPrice <= maxPrice)
+                            .filter(({ a }) => requiereCompleto !== true || a.priceComplete === true)
+                            .sort((x, y) => (x.m.lastDeliveredAt ?? -1) - (y.m.lastDeliveredAt ?? -1)
+                                || Number(x.m.userId) - Number(y.m.userId))
+                            .slice(0, limite);
+
+                        for (const { m } of elegidas) {
+                            const clave = `${m.groupId}|${m.userId}`;
+                            bloqueadas.add(clave);
+                            mias.add(clave);
+                        }
+
+                        return { rows: elegidas.map(({ m, a }) => ({
+                            user_id: m.userId, username: a.username,
+                            total_price: a.totalPrice, price_complete: a.priceComplete,
+                            priced_items: a.pricedItems, unpriced_items: a.unpricedItems,
+                            limited_items: a.limitedItems, off_sale_items: a.offSaleItems,
+                            bundled_items: a.bundledItems,
+                        })) };
+                    }
+
+                    if (sql.includes('UPDATE plugin_group_member') && sql.includes('last_delivered_at = NOW()')) {
+                        const [groupId, ids] = params;
+                        for (const id of ids) {
+                            const fila = miembros.get(`${groupId}|${id}`);
+                            if (!fila) continue;
+                            fila.lastDeliveredAt = Date.now();
+                            fila.deliveries = (fila.deliveries ?? 0) + 1;
+                        }
+                        return { rows: [], rowCount: ids.length };
+                    }
+
+                    if (sql.includes('INSERT INTO plugin_index_crawl')) {
+                        const [groupId, faltan] = params;
+                        await crawlRepo.registrarDemanda(groupId, { faltan });
+                        return { rows: [], rowCount: 1 };
+                    }
+
+                    if (sql.includes('COUNT(*) FILTER') && sql.includes('elegibles')) {
+                        const [groupId, minAcc] = params;
+                        let total = 0, indexados = 0, elegibles = 0;
+                        for (const fila of miembros.values()) {
+                            if (fila.groupId !== String(groupId) || fila.leftAt) continue;
+                            total++;
+                            const avatar = avatares.get(fila.userId);
+                            if (!avatar) continue;
+                            indexados++;
+                            if (avatar.state === 'valid' && avatar.accessories >= minAcc) elegibles++;
+                        }
+                        return { rows: [{ miembros: total, indexados, elegibles }] };
+                    }
+
+                    return { rows: [], rowCount: 0 };
+                };
+
+                try {
+                    return await fn(q);
+                } finally {
+                    // COMMIT o ROLLBACK: en los dos casos se sueltan las filas.
+                    for (const clave of mias) bloqueadas.delete(clave);
+                }
+            };
+
             repo.registrarBusqueda = async (groupId, muestra) => {
                 if (!disponible) return;
                 const clave = String(groupId);
@@ -598,10 +798,11 @@ function crearBaseFalsa() {
             };
         },
 
-        // Las tres tablas del indice, para poder afirmar sobre ellas.
+        // Las tablas del indice, para poder afirmar sobre ellas.
         avatares,
         miembros,
         recorridos,
+        catalogo,
 
         // Envejece una fila del indice: su avatar (y opcionalmente su precio)
         // pasan a estar mas viejos que el TTL. Es como se prueba el refresco
@@ -668,6 +869,8 @@ function crearBaseFalsa() {
             avatares.clear();
             miembros.clear();
             recorridos.clear();
+            catalogo.clear();
+            bloqueadas.clear();
             disponible = true;
             fallarAdquirir = false;
             latidosQueFallan = 0;

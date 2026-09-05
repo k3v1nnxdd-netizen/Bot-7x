@@ -248,6 +248,58 @@ const DDL = [
         ],
     },
     {
+        // ── CATALOGO PERSISTENTE ────────────────────────────────────────
+        //
+        // La ficha de cada asset: precio, disponibilidad y a que bundle
+        // pertenece. Vive en Postgres y no solo en la cache de memoria, y esa
+        // es toda la diferencia entre un redeploy barato y uno caro.
+        //
+        // ANTES: Railway reiniciaba, la cache se vaciaba, y el siguiente
+        // recorrido volvia a pedirle a Roblox miles de assets que ya conociamos
+        // — assets cuyo precio no habia cambiado en dias. Ahora se pregunta
+        // primero aqui y solo se pide lo que falta o lo que vencio.
+        //
+        // ES COMPARTIDA POR TODOS LOS USUARIOS, y de ahi viene el ahorro
+        // grande: una comunidad entera lleva mas o menos los mismos gorros. Cien
+        // usuarios con seis assets cada uno no son seiscientas fichas, son las
+        // pocas docenas distintas que de verdad hay.
+        nombre: 'roblox_asset_catalog',
+        sql: `
+            CREATE TABLE IF NOT EXISTS roblox_asset_catalog (
+                asset_id TEXT PRIMARY KEY,
+
+                -- Lo que decide 'clasificar' en pricing.js, tal cual. No se
+                -- reinterpreta nada al guardar: se guarda lo que dijo Roblox y
+                -- el valorador de siempre decide que significa.
+                available BOOLEAN,
+                asset_type_id INTEGER,
+                is_limited BOOLEAN,
+                off_sale BOOLEAN,
+                price BIGINT,
+                lowest_price BIGINT,
+                lowest_resale_price BIGINT,
+
+                -- El bundle al que pertenece, si lo necesita para tener precio,
+                -- y el precio de ese bundle. Es un dato ESTRUCTURAL: un asset no
+                -- cambia de bundle una vez publicado.
+                bundle_id TEXT,
+                bundle_price BIGINT,
+                bundle_available BOOLEAN,
+
+                -- Roblox contesto pero el asset no existe (borrado, moderado).
+                -- Es un dato REAL y se guarda: preguntar otra vez daria lo mismo.
+                missing BOOLEAN NOT NULL DEFAULT FALSE,
+
+                fetched_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        `,
+        columnas: [
+            // La cola de refresco de fichas: las mas viejas primero.
+            'CREATE INDEX IF NOT EXISTS roblox_asset_catalog_edad_idx ON roblox_asset_catalog (fetched_at)',
+        ],
+    },
+    {
         // ── PERTENENCIA A LA COMUNIDAD, Y ROTACION DE ENTREGA ───────────
         //
         // Quien esta en que grupo. Un usuario que se va SE MARCA, no se borra:
@@ -330,6 +382,12 @@ const DDL = [
             // lleva mas tiempo sin tocarse.
             'CREATE INDEX IF NOT EXISTS plugin_index_crawl_cola_idx '
                 + 'ON plugin_index_crawl (priority DESC, last_run_at NULLS FIRST) WHERE enabled',
+
+            // MARCA DE AGUA DE LA VUELTA. Cuando empezo el recorrido actual:
+            // al cerrarlo, quien no se haya visto desde ese instante es que se
+            // fue del grupo. Sin esto no hay forma de distinguir "ya no esta"
+            // de "aun no he llegado a el".
+            'ALTER TABLE plugin_index_crawl ADD COLUMN IF NOT EXISTS cycle_started_at TIMESTAMPTZ',
         ],
     },
     {

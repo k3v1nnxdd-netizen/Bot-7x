@@ -50,6 +50,7 @@ function filaAEstado(fila) {
         usersIndexed: Number(fila.users_indexed ?? 0),
         lastRunAt: fila.last_run_at ? new Date(fila.last_run_at).getTime() : null,
         lastFullPassAt: fila.last_full_pass_at ? new Date(fila.last_full_pass_at).getTime() : null,
+        cycleStartedAt: fila.cycle_started_at ? new Date(fila.cycle_started_at).getTime() : null,
         lastError: fila.last_error ?? null,
         leaseOwner: fila.lease_owner ?? null,
         leaseExpiresAt: fila.lease_expires_at ? new Date(fila.lease_expires_at).getTime() : null,
@@ -154,6 +155,8 @@ async function guardarCursor(groupId, instancia, avance) {
                 users_indexed     = users_indexed + $7,
                 last_run_at       = NOW(),
                 last_full_pass_at = CASE WHEN $8 THEN NOW() ELSE last_full_pass_at END,
+                cycle_started_at  = CASE WHEN $11::bigint IS NULL THEN cycle_started_at
+                                         ELSE to_timestamp($11::bigint / 1000.0) END,
                 -- La demanda se consume con el trabajo hecho, no de golpe: un
                 -- grupo muy pedido sigue teniendo prioridad en la vuelta
                 -- siguiente hasta que de verdad se ha recorrido.
@@ -170,6 +173,7 @@ async function guardarCursor(groupId, instancia, avance) {
             avance.vueltaCompleta === true,
             avance.prioridadConsumida ?? 0,
             avance.leaseMs ?? 60_000,
+            avance.cycleStartedAt ?? null,
         ],
         OP.guardar
     );

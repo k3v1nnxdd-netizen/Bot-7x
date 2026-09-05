@@ -1,6 +1,8 @@
 'use strict';
 
 const express = require('express');
+const indexQuery = require('../../services/pluginSearch/indexQuery');
+const config = require('../../config');
 const router = express.Router();
 const logger = require('../../observability/logger');
 const jobs = require('../../services/pluginSearch/jobs');
@@ -81,6 +83,53 @@ router.post('/outfits/search', async (req, res) => {
             });
         }
         throw err;
+    }
+
+    // ── SERVIR DESDE EL INDICE ───────────────────────────────────────────────
+    //
+    // Con INDEX_SERVE_ENABLED=true esto es TODO: una transaccion contra
+    // Postgres y la respuesta, en milisegundos. NO se llama a Roblox por
+    // ninguna via, ni siquiera cuando el indice se queda corto — ese respaldo
+    // automatico era justo lo que convertia "faltan seis outfits" en una espera
+    // de una hora.
+    //
+    // La respuesta es TERMINAL y no lleva searchId: no hay nada que sondear. El
+    // plugin lo reconoce por la ausencia de searchId y rehabilita el boton en
+    // el acto.
+    if (config.indexServe.enabled) {
+        const desdeElIndice = await indexQuery.servir({
+            groupId: peticion.groupId,
+            amount: peticion.amount,
+            minPrice: peticion.minPrice,
+            maxPrice: peticion.maxPrice,
+            requireCompletePrice: peticion.requireCompletePrice,
+        });
+
+        const encontrados = desdeElIndice.outfits.length;
+        const completo = encontrados >= peticion.amount;
+
+        logger.info('Busqueda del plugin servida desde el indice', {
+            requestId: req.requestId,
+            groupId: String(peticion.groupId),
+            requested: peticion.amount,
+            found: encontrados,
+            members: desdeElIndice.coverage.members,
+            indexed: desdeElIndice.coverage.indexed,
+            tookMs: desdeElIndice.tookMs,
+            robloxCalls: 0,
+        });
+
+        return res.json({
+            success: true,
+            status: completo ? 'completed' : 'partial',
+            requested: peticion.amount,
+            found: encontrados,
+            outfits: desdeElIndice.outfits,
+            // El plugin lo usa para decir "indexando comunidad" en vez de
+            // "no hay outfits": son dos cosas muy distintas para quien mira.
+            indexWarming: !completo,
+            coverage: desdeElIndice.coverage,
+        });
     }
 
     // Se ESPERA a que el trabajo exista en la base antes de arrancarlo. Era

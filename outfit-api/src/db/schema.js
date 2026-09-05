@@ -181,6 +181,158 @@ const DDL = [
         // NO HAY NI UN DATO DE JUGADOR AQUI: cuatro medias y un contador. Lo
         // que se aprende es como se comporta la BUSQUEDA sobre ese grupo, no
         // quien esta en el.
+        // ── INDICE DE AVATARES RESUELTOS ────────────────────────────────
+        //
+        // El trabajo caro de una busqueda, guardado: que lleva puesto cada
+        // usuario y cuanto vale. Una fila POR USUARIO y no por grupo, porque
+        // el avatar de alguien es el mismo este en la comunidad que este: un
+        // usuario en tres grupos se resuelve UNA vez.
+        //
+        // NO SE GUARDA EL VEREDICTO, SE GUARDAN LOS HECHOS. `accessories` es
+        // el numero de accesorios reales, no un "tiene pocos": el minimo es
+        // configurable (config.pluginSearch.minAccessories) y puede cambiar
+        // entre dos despliegues. Guardar el veredicto obligaria a reindexar la
+        // comunidad entera por cambiar un numero en el entorno.
+        nombre: 'roblox_user_avatar',
+        sql: `
+            CREATE TABLE IF NOT EXISTS roblox_user_avatar (
+                user_id TEXT PRIMARY KEY,
+                username TEXT,
+
+                -- valid | empty_avatar | not_found | unpriceable
+                -- 'valid' significa "tiene avatar y tiene precio". La regla de
+                -- accesorios NO vive aqui: se aplica al consultar.
+                state TEXT NOT NULL,
+
+                -- El avatar aplanado por normalizeAvatarAssets del cliente, en
+                -- dos arrays paralelos: mismo indice, mismo asset.
+                asset_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
+                asset_type_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
+                accessories INTEGER NOT NULL DEFAULT 0,
+                player_avatar_type TEXT,
+
+                -- RELOJ 1: cuando se miro el avatar. El usuario se cambia de ropa.
+                avatar_fetched_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+                -- La valoracion, con los MISMOS campos que hoy recibe el
+                -- plugin. El calculo no cambia: es pricing.valorar, guardado.
+                total_price BIGINT,
+                price_complete BOOLEAN,
+                priced_items INTEGER,
+                unpriced_items INTEGER,
+                limited_items INTEGER,
+                off_sale_items INTEGER,
+                bundled_items INTEGER,
+
+                -- RELOJ 2: cuando se valoro. El mercado se mueve solo.
+                priced_at TIMESTAMPTZ,
+
+                -- Version de la LOGICA de precio y de la lista de tipos de
+                -- accesorio. Subirla manda las filas viejas al principio de la
+                -- cola de refresco sin borrar ni un dato.
+                pricing_version INTEGER NOT NULL DEFAULT 1,
+
+                consecutive_errors INTEGER NOT NULL DEFAULT 0,
+                last_error TEXT,
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        `,
+        columnas: [
+            // La consulta que servira el POST en la fase 3: filtra por estado y
+            // precio. Parcial, para que el indice solo pese lo servible.
+            "CREATE INDEX IF NOT EXISTS roblox_user_avatar_servible_idx "
+                + "ON roblox_user_avatar (state, total_price) WHERE state = 'valid'",
+            // Las dos colas de refresco del worker, una por reloj.
+            'CREATE INDEX IF NOT EXISTS roblox_user_avatar_avatar_edad_idx ON roblox_user_avatar (avatar_fetched_at)',
+            'CREATE INDEX IF NOT EXISTS roblox_user_avatar_precio_edad_idx ON roblox_user_avatar (priced_at)',
+        ],
+    },
+    {
+        // ── PERTENENCIA A LA COMUNIDAD, Y ROTACION DE ENTREGA ───────────
+        //
+        // Quien esta en que grupo. Un usuario que se va SE MARCA, no se borra:
+        // borrarlo tiraria el trabajo de haberlo resuelto, y volver a entrar en
+        // un grupo es de lo mas normal.
+        nombre: 'plugin_group_member',
+        sql: `
+            CREATE TABLE IF NOT EXISTS plugin_group_member (
+                group_id TEXT NOT NULL,
+                user_id TEXT NOT NULL,
+                username TEXT,
+
+                discovered_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+                -- RELOJ 3: la ultima vez que Roblox lo devolvio como miembro.
+                last_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                left_at TIMESTAMPTZ,
+
+                -- La ROTACION DE ENTREGA de la fase 3: NULL va primero (nunca
+                -- entregado). Aqui todavia no se escribe: el POST no lee el
+                -- indice hasta esa fase.
+                last_delivered_at TIMESTAMPTZ,
+                deliveries INTEGER NOT NULL DEFAULT 0,
+
+                PRIMARY KEY (group_id, user_id)
+            )
+        `,
+        columnas: [
+            // El orden de entrega, y el recorrido del worker por un grupo.
+            'CREATE INDEX IF NOT EXISTS plugin_group_member_entrega_idx '
+                + 'ON plugin_group_member (group_id, last_delivered_at NULLS FIRST) WHERE left_at IS NULL',
+        ],
+    },
+    {
+        // ── EL RECORRIDO DEL WORKER ─────────────────────────────────────
+        //
+        // Cursor PROPIO, separado del de las busquedas (plugin_group_rotation):
+        // el worker y una busqueda recorren la misma comunidad a ritmos
+        // distintos y por motivos distintos. Compartir cursor haria que cada
+        // uno le robara avance al otro.
+        //
+        // Esta tabla ES la cola de refresco. Una cola aparte seria otro sitio
+        // donde perder trabajo en un reinicio; aqui el estado ya es durable y
+        // ordenar por (priority, last_run_at) da exactamente lo mismo.
+        nombre: 'plugin_index_crawl',
+        sql: `
+            CREATE TABLE IF NOT EXISTS plugin_index_crawl (
+                group_id TEXT PRIMARY KEY,
+
+                -- Mismo trato que la rotacion de busqueda: cursores OPACOS de
+                -- Roblox mas cuantos de esa pagina se consumieron.
+                sort_order TEXT NOT NULL DEFAULT 'Asc',
+                current_cursor TEXT,
+                intra_page_offset INTEGER NOT NULL DEFAULT 0,
+                cycle INTEGER NOT NULL DEFAULT 1,
+
+                -- DEMANDA. La sube una busqueda que se quedo corta. Es lo que
+                -- hace que el worker indexe lo que se busca y no la whitelist
+                -- entera por orden alfabetico.
+                priority INTEGER NOT NULL DEFAULT 0,
+                demands INTEGER NOT NULL DEFAULT 0,
+                last_demand_at TIMESTAMPTZ,
+
+                members_seen BIGINT NOT NULL DEFAULT 0,
+                users_indexed BIGINT NOT NULL DEFAULT 0,
+                last_run_at TIMESTAMPTZ,
+                last_full_pass_at TIMESTAMPTZ,
+                last_error TEXT,
+
+                -- Lease: solo una instancia recorre un grupo a la vez. Misma
+                -- semantica que el de la rotacion, y por la misma razon.
+                lease_owner TEXT,
+                lease_expires_at TIMESTAMPTZ,
+
+                enabled BOOLEAN NOT NULL DEFAULT TRUE
+            )
+        `,
+        columnas: [
+            // Como elige el worker: primero lo mas pedido, y a igualdad lo que
+            // lleva mas tiempo sin tocarse.
+            'CREATE INDEX IF NOT EXISTS plugin_index_crawl_cola_idx '
+                + 'ON plugin_index_crawl (priority DESC, last_run_at NULLS FIRST) WHERE enabled',
+        ],
+    },
+    {
         nombre: 'plugin_group_stats',
         sql: `
             CREATE TABLE IF NOT EXISTS plugin_group_stats (

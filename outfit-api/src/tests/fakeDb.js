@@ -3,6 +3,9 @@
 const config = require('../config');
 const repo = require('../db/pluginRotationRepo');
 const jobRepo = require('../db/pluginJobRepo');
+const avatarRepo = require('../db/avatarIndexRepo');
+const memberRepo = require('../db/groupMemberRepo');
+const crawlRepo = require('../db/indexCrawlRepo');
 const { ewma } = require('../services/pluginSearch/eta');
 
 // Doble de Postgres EN MEMORIA con la misma semantica que las tres tablas del
@@ -27,6 +30,14 @@ function crearBaseFalsa() {
     const rotaciones = new Map();
     const estadisticas = new Map();
     const trabajosPersistidos = new Map();
+
+    // ── Las tres tablas del indice de avatares ──────────────────────────────
+    // avatares: user_id -> fila de roblox_user_avatar
+    // miembros: "grupo|usuario" -> fila de plugin_group_member
+    // recorridos: group_id -> fila de plugin_index_crawl (cursor + lease)
+    const avatares = new Map();
+    const miembros = new Map();
+    const recorridos = new Map();
     let disponible = true;
     let fallarAdquirir = false;
 
@@ -319,6 +330,259 @@ function crearBaseFalsa() {
 
             repo.leerStats = async groupId => estadisticas.get(String(groupId)) ?? null;
 
+            // ── INDICE DE AVATARES ──────────────────────────────────────
+            //
+            // Misma semantica que las sentencias reales: el upsert conserva el
+            // precio cuando no hay valoracion nueva, el lease valla el cursor,
+            // y `pendientes` ordena por necesidad. Sin esto los tests del
+            // worker probarian un doble mas amable que Postgres.
+
+            avatarRepo.disponible = () => disponible;
+            memberRepo.disponible = () => disponible;
+            crawlRepo.disponible = () => disponible;
+
+            avatarRepo.upsert = async ({ userId, username = null, state, assetIds = [],
+                assetTypeIds = [], accessories = 0, playerAvatarType = null,
+                valoracion = null, pricingVersion = 1 }) => {
+                if (!disponible) return false;
+                const id = String(userId);
+                const previa = avatares.get(id);
+                const ahora = Date.now();
+                const conPrecio = valoracion !== null;
+                avatares.set(id, {
+                    userId: id,
+                    username: username ?? previa?.username ?? null,
+                    state,
+                    assetIds: assetIds.map(String),
+                    assetTypeIds: assetTypeIds.map(Number),
+                    accessories,
+                    playerAvatarType,
+                    avatarFetchedAt: ahora,
+                    // El precio SOLO se pisa con valoracion nueva: un dato
+                    // viejo vale mas que un NULL.
+                    totalPrice: conPrecio ? valoracion.totalPrice : (previa?.totalPrice ?? null),
+                    priceComplete: conPrecio ? valoracion.priceComplete : (previa?.priceComplete ?? null),
+                    pricedItems: conPrecio ? valoracion.pricedItems : (previa?.pricedItems ?? null),
+                    unpricedItems: conPrecio ? valoracion.unpricedItems : (previa?.unpricedItems ?? null),
+                    limitedItems: conPrecio ? valoracion.limitedItems : (previa?.limitedItems ?? null),
+                    offSaleItems: conPrecio ? valoracion.offSaleItems : (previa?.offSaleItems ?? null),
+                    bundledItems: conPrecio ? valoracion.bundledItems : (previa?.bundledItems ?? null),
+                    pricedAt: conPrecio ? ahora : (previa?.pricedAt ?? null),
+                    pricingVersion,
+                    consecutiveErrors: 0,
+                    lastError: null,
+                    updatedAt: ahora,
+                });
+                return true;
+            };
+
+            avatarRepo.anotarError = async (userId, detalle) => {
+                const fila = avatares.get(String(userId));
+                if (!fila) return false;
+                fila.consecutiveErrors++;
+                fila.lastError = String(detalle ?? '').slice(0, 200);
+                fila.updatedAt = Date.now();
+                return true;
+            };
+
+            avatarRepo.leer = async userId => avatares.get(String(userId)) ?? null;
+
+            avatarRepo.leerVarios = async userIds => {
+                const salida = new Map();
+                for (const id of userIds) {
+                    const fila = avatares.get(String(id));
+                    if (fila) salida.set(String(id), fila);
+                }
+                return salida;
+            };
+
+            avatarRepo.pendientes = async (groupId, { limite = 25, ttlAvatarMs,
+                ttlPrecioMs, pricingVersion = 1 } = {}) => {
+                const ahora = Date.now();
+                const candidatos = [];
+                for (const fila of miembros.values()) {
+                    if (fila.groupId !== String(groupId) || fila.leftAt) continue;
+                    const avatar = avatares.get(fila.userId);
+                    let urgencia = null;
+                    if (!avatar) urgencia = 0;
+                    else if (avatar.pricingVersion < pricingVersion) urgencia = 1;
+                    else if (avatar.avatarFetchedAt < ahora - ttlAvatarMs) urgencia = 2;
+                    // Igual que la sentencia real: la falta de precio solo
+                    // cuenta para quien puede tenerlo.
+                    else if (avatar.state === 'valid'
+                        && (avatar.pricedAt === null || avatar.pricedAt < ahora - ttlPrecioMs)) urgencia = 3;
+                    if (urgencia === null) continue;
+                    candidatos.push({
+                        userId: fila.userId, username: fila.username, nuevo: !avatar, urgencia,
+                        edad: avatar?.avatarFetchedAt ?? 0,
+                    });
+                }
+                candidatos.sort((a, b) => a.urgencia - b.urgencia || a.edad - b.edad
+                    || Number(a.userId) - Number(b.userId));
+                return candidatos.slice(0, limite).map(({ userId, username, nuevo, urgencia }) =>
+                    ({ userId, username, nuevo, urgencia }));
+            };
+
+            avatarRepo.cobertura = async (groupId, { ttlAvatarMs, ttlPrecioMs } = {}) => {
+                const ahora = Date.now();
+                let total = 0, indexados = 0, validos = 0, frescos = 0;
+                for (const fila of miembros.values()) {
+                    if (fila.groupId !== String(groupId) || fila.leftAt) continue;
+                    total++;
+                    const avatar = avatares.get(fila.userId);
+                    if (!avatar) continue;
+                    indexados++;
+                    if (avatar.state !== 'valid') continue;
+                    validos++;
+                    if (avatar.avatarFetchedAt >= ahora - ttlAvatarMs
+                        && avatar.pricedAt !== null && avatar.pricedAt >= ahora - ttlPrecioMs) frescos++;
+                }
+                return {
+                    groupId: String(groupId), members: total, indexed: indexados,
+                    valid: validos, fresh: frescos,
+                    coverage: total > 0 ? Number((indexados / total).toFixed(4)) : 0,
+                    freshness: total > 0 ? Number((frescos / total).toFixed(4)) : 0,
+                };
+            };
+
+            // ── PERTENENCIA ─────────────────────────────────────────────
+            memberRepo.registrarPagina = async (groupId, lista) => {
+                if (!disponible) return 0;
+                for (const m of lista) {
+                    const clave = `${groupId}|${m.userId}`;
+                    const previa = miembros.get(clave);
+                    miembros.set(clave, {
+                        groupId: String(groupId), userId: String(m.userId),
+                        username: m.username ?? previa?.username ?? null,
+                        discoveredAt: previa?.discoveredAt ?? Date.now(),
+                        lastSeenAt: Date.now(),
+                        leftAt: null,
+                        lastDeliveredAt: previa?.lastDeliveredAt ?? null,
+                        deliveries: previa?.deliveries ?? 0,
+                    });
+                }
+                return lista.length;
+            };
+
+            memberRepo.marcarBajas = async (groupId, desde) => {
+                let n = 0;
+                for (const fila of miembros.values()) {
+                    if (fila.groupId !== String(groupId) || fila.leftAt) continue;
+                    if (fila.lastSeenAt < desde) { fila.leftAt = Date.now(); n++; }
+                }
+                return n;
+            };
+
+            memberRepo.contar = async groupId => {
+                let activos = 0, bajas = 0;
+                for (const fila of miembros.values()) {
+                    if (fila.groupId !== String(groupId)) continue;
+                    if (fila.leftAt) bajas++; else activos++;
+                }
+                return { miembros: activos, bajas };
+            };
+
+            memberRepo.marcarEntregados = async (groupId, userIds) => {
+                let n = 0;
+                for (const id of userIds) {
+                    const fila = miembros.get(`${groupId}|${id}`);
+                    if (!fila) continue;
+                    fila.lastDeliveredAt = Date.now();
+                    fila.deliveries++;
+                    n++;
+                }
+                return n;
+            };
+
+            // ── RECORRIDO DEL WORKER ────────────────────────────────────
+            const nuevoRecorrido = groupId => ({
+                groupId: String(groupId), sortOrder: 'Asc', cursor: null,
+                intraPageOffset: 0, cycle: 1, priority: 0, demands: 0, lastDemandAt: null,
+                membersSeen: 0, usersIndexed: 0, lastRunAt: null, lastFullPassAt: null,
+                lastError: null, leaseOwner: null, leaseExpiresAt: null, enabled: true,
+            });
+
+            crawlRepo.asegurar = async groupId => {
+                const clave = String(groupId);
+                if (!recorridos.has(clave)) recorridos.set(clave, nuevoRecorrido(clave));
+                return recorridos.get(clave);
+            };
+
+            crawlRepo.registrarDemanda = async (groupId, { faltan = 1, peso = 1 } = {}) => {
+                if (!disponible) return false;
+                const clave = String(groupId);
+                if (!recorridos.has(clave)) recorridos.set(clave, nuevoRecorrido(clave));
+                const fila = recorridos.get(clave);
+                fila.priority = Math.min(fila.priority + Math.max(1, Math.round(faltan * peso)), 10000);
+                fila.demands++;
+                fila.lastDemandAt = Date.now();
+                return true;
+            };
+
+            crawlRepo.tomar = async (instancia, { leaseMs, refrescarCadaMs = null } = {}) => {
+                if (!disponible) return null;
+                const ahora = Date.now();
+                const elegibles = [...recorridos.values()].filter(fila => {
+                    if (!fila.enabled) return false;
+                    if (fila.leaseOwner && fila.leaseExpiresAt > ahora) return false;
+                    if (fila.priority > 0) return true;
+                    if (fila.lastRunAt === null) return true;
+                    if (refrescarCadaMs === null) return false;
+                    return fila.lastFullPassAt === null || fila.lastFullPassAt < ahora - refrescarCadaMs;
+                });
+                elegibles.sort((a, b) => b.priority - a.priority
+                    || (a.lastRunAt ?? 0) - (b.lastRunAt ?? 0));
+                const fila = elegibles[0];
+                if (!fila) return null;
+                fila.leaseOwner = instancia;
+                fila.leaseExpiresAt = ahora + leaseMs;
+                fila.lastRunAt = ahora;
+                return { ...fila };
+            };
+
+            crawlRepo.guardarCursor = async (groupId, instancia, avance) => {
+                const fila = recorridos.get(String(groupId));
+                // EL VALLADO: si el lease ya no es nuestro, no se escribe.
+                if (!fila || fila.leaseOwner !== instancia) return false;
+                fila.cursor = avance.cursor ?? null;
+                fila.intraPageOffset = avance.intraPageOffset ?? 0;
+                fila.cycle = avance.cycle ?? fila.cycle;
+                fila.membersSeen += avance.membersSeen ?? 0;
+                fila.usersIndexed += avance.usersIndexed ?? 0;
+                fila.lastRunAt = Date.now();
+                if (avance.vueltaCompleta) fila.lastFullPassAt = Date.now();
+                fila.priority = Math.max(0, fila.priority - (avance.prioridadConsumida ?? 0));
+                fila.leaseExpiresAt = Date.now() + (avance.leaseMs ?? 60_000);
+                return true;
+            };
+
+            crawlRepo.renovar = async (groupId, instancia, leaseMs) => {
+                const fila = recorridos.get(String(groupId));
+                if (!fila || fila.leaseOwner !== instancia) return false;
+                fila.leaseExpiresAt = Date.now() + leaseMs;
+                return true;
+            };
+
+            crawlRepo.soltar = async (groupId, instancia, { error = null } = {}) => {
+                const fila = recorridos.get(String(groupId));
+                if (!fila || fila.leaseOwner !== instancia) return false;
+                fila.leaseOwner = null;
+                fila.leaseExpiresAt = null;
+                fila.lastError = error ? String(error).slice(0, 200) : null;
+                return true;
+            };
+
+            crawlRepo.leer = async groupId => {
+                const fila = recorridos.get(String(groupId));
+                return fila ? { ...fila } : null;
+            };
+
+            crawlRepo.listar = async ({ limite = 10 } = {}) => [...recorridos.values()]
+                .filter(f => f.enabled)
+                .sort((a, b) => b.priority - a.priority || (b.lastRunAt ?? 0) - (a.lastRunAt ?? 0))
+                .slice(0, limite)
+                .map(f => ({ ...f }));
+
             repo.registrarBusqueda = async (groupId, muestra) => {
                 if (!disponible) return;
                 const clave = String(groupId);
@@ -332,6 +596,39 @@ function crearBaseFalsa() {
                     searchesCompleted: (previo?.searchesCompleted ?? 0) + 1,
                 });
             };
+        },
+
+        // Las tres tablas del indice, para poder afirmar sobre ellas.
+        avatares,
+        miembros,
+        recorridos,
+
+        // Envejece una fila del indice: su avatar (y opcionalmente su precio)
+        // pasan a estar mas viejos que el TTL. Es como se prueba el refresco
+        // sin esperar catorce dias.
+        envejecerAvatar(userId, { avatarMs = 0, precioMs = 0 } = {}) {
+            const fila = avatares.get(String(userId));
+            if (!fila) return null;
+            if (avatarMs) fila.avatarFetchedAt -= avatarMs;
+            if (precioMs && fila.pricedAt !== null) fila.pricedAt -= precioMs;
+            return fila;
+        },
+
+        // Simula que OTRA instancia tiene cogido el recorrido de un grupo.
+        otroWorkerToma(groupId, instancia, { duracionMs = 60_000 } = {}) {
+            const clave = String(groupId);
+            if (!recorridos.has(clave)) {
+                recorridos.set(clave, {
+                    groupId: clave, sortOrder: 'Asc', cursor: null, intraPageOffset: 0,
+                    cycle: 1, priority: 0, demands: 0, lastDemandAt: null, membersSeen: 0,
+                    usersIndexed: 0, lastRunAt: null, lastFullPassAt: null, lastError: null,
+                    leaseOwner: null, leaseExpiresAt: null, enabled: true,
+                });
+            }
+            const fila = recorridos.get(clave);
+            fila.leaseOwner = instancia;
+            fila.leaseExpiresAt = Date.now() + duracionMs;
+            return fila;
         },
 
         otraInstanciaToma(groupId, { duracionMs = config.pluginRotation.leaseMs } = {}) {
@@ -368,6 +665,9 @@ function crearBaseFalsa() {
             rotaciones.clear();
             estadisticas.clear();
             trabajosPersistidos.clear();
+            avatares.clear();
+            miembros.clear();
+            recorridos.clear();
             disponible = true;
             fallarAdquirir = false;
             latidosQueFallan = 0;

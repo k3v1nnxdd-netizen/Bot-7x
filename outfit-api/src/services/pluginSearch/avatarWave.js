@@ -220,4 +220,7 @@ async function traerOla(miembros, stats, limite) {
     return { resultados, pendientes };
 }
 
-module.exports = { traerOla, RUTA_AVATAR, __juzgar: juzgar };
+// `avatarCacheKey` se exporta para que el worker del indice llene EXACTAMENTE
+// la misma clave de cache que lee una busqueda: si cada uno usara la suya, el
+// trabajo del worker no le ahorraria ni una llamada a nadie.
+module.exports = { traerOla, RUTA_AVATAR, avatarCacheKey, __juzgar: juzgar };

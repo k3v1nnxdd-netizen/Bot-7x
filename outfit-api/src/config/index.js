@@ -613,6 +613,55 @@ const pluginQueue = {
     foreignLeaseGraceMs: intFromEnv('PLUGIN_QUEUE_FOREIGN_LEASE_GRACE_MS', 250),
 };
 
+// ── WORKER DEL INDICE DE AVATARES (fase 1) ───────────────────────────────────
+//
+// El worker llena el indice en segundo plano. En la fase 1 NADIE LO LEE: el
+// POST del plugin sigue funcionando exactamente igual que antes, y el indice
+// solo se escribe. Por eso puede arrancar apagado y encenderse cuando se quiera
+// medir, sin que nada dependa de el.
+const indexWorker = {
+    // El interruptor de la fase. Apagado (el DEFECTO) = el servicio es bit a
+    // bit el de antes: ni un ciclo, ni una llamada, ni una escritura. Se
+    // enciende con INDEX_WORKER_ENABLED=true y se apaga borrando la variable,
+    // que es todo el plan de vuelta atras de la fase 1.
+    enabled: process.env.INDEX_WORKER_ENABLED === 'true',
+
+    // Cada cuanto corre UN ciclo. No se encadenan ciclos sin pausa a proposito:
+    // el objetivo es un goteo que no compita con las busquedas, no llenar el
+    // indice cuanto antes. Con 5 s y 10 usuarios por ciclo son ~2 usuarios por
+    // segundo como techo teorico, y bastante menos en la practica porque el
+    // marcapasos del limitador manda por encima de esto.
+    tickMs: intFromEnv('INDEX_WORKER_TICK_MS', 5_000),
+    usersPerCycle: intFromEnv('INDEX_WORKER_USERS_PER_CYCLE', 10),
+
+    // Lease del grupo que se esta recorriendo. Corto a proposito: si una
+    // instancia muere a mitad de ciclo, otra puede seguir ese grupo en menos de
+    // un minuto en vez de esperar a que caduque media hora.
+    leaseMs: intFromEnv('INDEX_WORKER_LEASE_MS', 60_000),
+
+    // ── LOS DOS RELOJES DEL INDICE ──────────────────────────────────────────
+    // Vencer NO borra ni invalida: solo coloca esa fila por delante en la cola
+    // de refresco (ver avatarIndexRepo.pendientes). Una fila vencida se sigue
+    // pudiendo servir; lo unico que se pierde es la certeza, y esa se recupera
+    // refrescando, no tirando el dato.
+    //
+    // El avatar aguanta mas que el precio porque la gente se cambia de ropa
+    // menos a menudo de lo que se mueve el mercado.
+    avatarTtlMs: intFromEnv('INDEX_WORKER_AVATAR_TTL_MS', 14 * 24 * 60 * 60_000),
+    priceTtlMs: intFromEnv('INDEX_WORKER_PRICE_TTL_MS', 3 * 24 * 60 * 60_000),
+
+    // Cada cuanto vuelve a recorrerse un grupo SIN demanda. Es lo que impide
+    // que el worker se lance sobre la whitelist entera: sin demanda y sin este
+    // plazo cumplido, un grupo no entra en la cola.
+    fullPassEveryMs: intFromEnv('INDEX_WORKER_FULL_PASS_EVERY_MS', 7 * 24 * 60 * 60_000),
+
+    // Version de la LOGICA de valoracion y de la lista de tipos de accesorio.
+    // Subirla manda las filas viejas al principio de la cola de refresco sin
+    // borrar nada y sin un UPDATE masivo: es como se corrige un cambio de
+    // criterio sin tirar el trabajo hecho.
+    pricingVersion: intFromEnv('INDEX_WORKER_PRICING_VERSION', 1),
+};
+
 const pluginJobs = {
     // Cuanto se conserva un trabajo terminado para que el plugin recoja su
     // resultado. Corto a proposito: son resultados de una busqueda, no un
@@ -823,5 +872,6 @@ module.exports = {
     pluginQueue,
     pluginJobs,
     pluginEta,
+    indexWorker,
     serviceName: 'outfit-api',
 };

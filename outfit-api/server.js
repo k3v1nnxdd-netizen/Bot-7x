@@ -5,6 +5,7 @@ const logger = require('./src/observability/logger');
 const { createApp } = require('./src/app');
 const db = require('./src/db/pool');
 const { ensureSchema } = require('./src/db/schema');
+const indexWorker = require('./src/services/indexWorker/worker');
 const jobs = require('./src/services/pluginSearch/jobs');
 
 const app = createApp();
@@ -40,6 +41,11 @@ ensureSchema().then(async () => {
 }).catch(err => {
     logger.warn('No se pudo recuperar el estado de los trabajos al arrancar', { detail: err?.message });
 });
+
+// Worker del indice de avatares. En la fase 1 SOLO ESCRIBE: ninguna respuesta
+// depende de el, asi que arranca detras de todo lo demas y apagarlo (borrando
+// INDEX_WORKER_ENABLED) devuelve el servicio exactamente a como estaba.
+indexWorker.arrancar();
 
 // Recolector de trabajos vencidos. `unref` para que no impida apagar el
 // proceso: es mantenimiento, no trabajo pendiente.

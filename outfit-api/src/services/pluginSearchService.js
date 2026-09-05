@@ -5,6 +5,7 @@ const logger = require('../observability/logger');
 const requestContext = require('../observability/requestContext');
 const rateLimiter = require('../roblox/rateLimiter');
 const repo = require('../db/pluginRotationRepo');
+const crawlRepo = require('../db/indexCrawlRepo');
 const { abrirRotacion } = require('./pluginSearch/rotation');
 const { traerOla, RUTA_AVATAR } = require('./pluginSearch/avatarWave');
 const { crearIndiceDeCatalogo } = require('./pluginSearch/catalogIndex');
@@ -537,6 +538,19 @@ async function ejecutarBusqueda(
         await repo.registrarBusqueda(groupId, estimador.muestraFinal({
             examinados, encontrados: encontrados.length,
         }));
+    }
+
+    // DEMANDA DE INDEXADO. Una busqueda que no junto lo que le pidieron es la
+    // señal de que esa comunidad necesita mas indice, y es lo que hace que el
+    // worker vaya donde se busca en vez de recorrer la whitelist entera.
+    //
+    // No cambia nada de lo que se devuelve. Va detras del resultado, se traga
+    // sus propios fallos y no puede alterar el contrato del POST: en la fase 1
+    // nadie lee todavia el indice, asi que esto es solo una nota para el worker.
+    if (encontrados.length < amount) {
+        try {
+            await crawlRepo.registrarDemanda(groupId, { faltan: amount - encontrados.length });
+        } catch { /* la demanda es una pista, no un requisito */ }
     }
 
     // UNA linea por busqueda, agregada. Nunca una por candidato.

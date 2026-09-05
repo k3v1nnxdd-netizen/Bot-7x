@@ -78,6 +78,44 @@ const BODY_PART_TYPES = new Set([27, 28, 29, 30, 31]);
 // solo gastaria cuota.
 const BUNDLE_BACKED_TYPES = new Set([...BODY_PART_TYPES, 78, 79]);
 
+// ACCESORIOS REALES, para la regla "un outfit candidato lleva mas de tres
+// accesorios". Es lo que decide, con la respuesta del avatar en la mano y
+// ANTES de gastar una sola llamada de catalogo, si un candidato merece que se
+// le ponga precio.
+//
+// Entran: sombreros (8), los siete accesorios clasicos (41-47), la ropa por
+// capas (64-72: camisetas, camisas, pantalones, chaquetas, sueteres, shorts,
+// zapatos, faldas) y cejas/pestañas (76-77). Todos son "*Accessory" en el
+// enum de Roblox: piezas 3D que se llevan puestas.
+//
+// NO entran, y la lista importa tanto como la de arriba: ropa clasica (2, 11,
+// 12: son texturas, no accesorios), cabeza y cara (17, 18), partes del cuerpo
+// (27-31), gear (19), animaciones y emotes (48-61), humor (78) y cabezas
+// dinamicas (79). Un tipo desconocido tampoco cuenta: no se adivina.
+const ACCESSORY_TYPES = new Set([
+    8,
+    41, 42, 43, 44, 45, 46, 47,
+    64, 65, 66, 67, 68, 69, 70, 71, 72,
+    76, 77,
+]);
+
+function isAccessory(id) {
+    return ACCESSORY_TYPES.has(Number(id));
+}
+
+// Cuenta accesorios DISTINTOS entre los assets de un avatar. Se cuenta por id
+// de asset, no por entrada: un avatar puede repetir un asset (capas) y contarlo
+// dos veces inflaria el recuento igual que inflaria el precio.
+function countAccessories(assets) {
+    const vistos = new Set();
+    for (const asset of assets ?? []) {
+        if (!asset || asset.id == null) continue;
+        if (!isAccessory(asset.assetTypeId)) continue;
+        vistos.add(String(asset.id));
+    }
+    return vistos.size;
+}
+
 function assetTypeName(id) {
     return ASSET_TYPES[id] ?? null;
 }
@@ -99,8 +137,11 @@ module.exports = {
     ASSET_TYPES,
     BODY_PART_TYPES,
     BUNDLE_BACKED_TYPES,
+    ACCESSORY_TYPES,
     assetTypeName,
     describeAssetType,
     isBundleBacked,
     isBodyPart,
+    isAccessory,
+    countAccessories,
 };

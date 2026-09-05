@@ -58,6 +58,10 @@ const PARADAS_POR_LIMITE = Object.freeze({
 const CASILLA_POR_MOTIVO = Object.freeze({
     avatarError: 'rejectedAvatarError',
     emptyAvatar: 'rejectedEmptyAvatar',
+    // Menos de los accesorios minimos. Se decide con la respuesta del avatar
+    // en la mano y ANTES de tocar el catalogo: es el descarte mas barato que
+    // existe y el que mas cuota ahorra.
+    tooFewAccessories: 'rejectedTooFewAccessories',
     catalogError: 'rejectedCatalogError',
     unknownPrice: 'rejectedUnknownPrice',
     incompletePrice: 'rejectedIncompletePrice',
@@ -108,6 +112,16 @@ function crearStats() {
         // reinicio, desde el checkpoint). Cuadra con avatarDeferred: lo que se
         // difirio y luego se retomo.
         deferredResumed: 0,
+
+        // Intentos que el propio limitador rechazo ANTES de enviar (cooldown,
+        // breaker, cola). No son peticiones: nunca salieron. Es la cifra que
+        // dice cuantas veces la puerta por peticion evito un envio inutil.
+        avatarShed: 0,
+
+        // Assets que un candidato necesitaba y que YA estaban resueltos — por
+        // esta misma busqueda o por la cache compartida — y por tanto no se
+        // pidieron. Es la reutilizacion real del catalogo.
+        catalogAssetsReused: 0,
         assetIdsSeen: 0,          // con repeticiones, tal como venian en los avatares
         assetIdsUnique: 0,        // distintos en TODA la busqueda
         assetIdsRequested: 0,     // los que de verdad se mandaron a Roblox
@@ -130,6 +144,7 @@ function crearStats() {
         accepted: 0,
         rejectedAvatarError: 0,
         rejectedEmptyAvatar: 0,
+        rejectedTooFewAccessories: 0,
         rejectedCatalogError: 0,
         rejectedUnknownPrice: 0,
         rejectedIncompletePrice: 0,
@@ -148,6 +163,7 @@ function crearStats() {
     };
 
     let parada = PARADA.SIN_CANDIDATOS;
+    let ultimaMarca = null;
 
     // Donde empezo y donde acabo el recorrido de la comunidad. No es adorno:
     // es lo que permite comprobar desde el log que dos busquedas seguidas del
@@ -189,8 +205,13 @@ function crearStats() {
         // cientos de claves y empujar una marca por cada una convertiria la
         // linea de log de la peticion en un churro ilegible.
         marcarCache(estado) {
+            ultimaMarca = estado;
             if (estado === 'hit' || estado === 'negative-hit') contadores.cacheHits++;
             else contadores.cacheMisses++;
+        },
+
+        ultimaMarcaDeCache() {
+            return ultimaMarca;
         },
 
         // Un candidato rechazado, en su casilla y solo en esa.
@@ -236,6 +257,7 @@ function crearStats() {
         // y por que termino.
         publicar() {
             const rechazados = contadores.rejectedAvatarError + contadores.rejectedEmptyAvatar
+                + contadores.rejectedTooFewAccessories
                 + contadores.rejectedCatalogError + contadores.rejectedUnknownPrice
                 + contadores.rejectedIncompletePrice
                 + contadores.rejectedMinPrice + contadores.rejectedMaxPrice;
@@ -260,7 +282,16 @@ function crearStats() {
                 avatarRateLimited: contadores.avatarRateLimited,
                 avatarDeferred: contadores.avatarDeferred,
                 deferredResumed: contadores.deferredResumed,
+                avatarShed: contadores.avatarShed,
                 avatarCacheHits: contadores.avatarCacheHits,
+                catalogAssetsReused: contadores.catalogAssetsReused,
+
+                // Llamadas que de verdad SALIERON por cada ruta, contadas por el
+                // limitador: incluyen los reintentos que el propio limitador
+                // hace tras esperar un Retry-After corto, que la busqueda no
+                // ve. Es el numero exacto de lo que Roblox recibio.
+                avatarRouteCalls: presupuestos?.avatarRouteCalls ?? null,
+                catalogRouteCalls: presupuestos?.catalogRouteCalls ?? null,
 
                 // Presupuestos con los que corrio. `desiredCandidateBudget` es
                 // la PREVISION final (cuantos candidatos se esperaba necesitar)
@@ -304,6 +335,9 @@ function crearStats() {
                 accepted: contadores.accepted,
                 rejectedAvatarError: contadores.rejectedAvatarError,
                 rejectedEmptyAvatar: contadores.rejectedEmptyAvatar,
+                // Descartados por llevar menos accesorios de los minimos, con
+                // la respuesta del avatar en la mano y SIN gastar catalogo.
+                rejectedTooFewAccessories: contadores.rejectedTooFewAccessories,
                 rejectedCatalogError: contadores.rejectedCatalogError,
                 rejectedUnknownPrice: contadores.rejectedUnknownPrice,
                 rejectedIncompletePrice: contadores.rejectedIncompletePrice,

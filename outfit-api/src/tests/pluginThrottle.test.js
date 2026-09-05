@@ -195,19 +195,36 @@ module.exports = async function run() {
         limitador.reset();
     });
 
-    test('el numero de pausas por busqueda esta acotado', async () => {
+    test('MUCHAS pausas seguidas no terminan nada: lo unico que acota es el presupuesto de reloj', async () => {
+        // Habia un contador de pausas (ocho), y fue la causa directa de un
+        // 2 de 10 en produccion: pausas cortas encadenadas por 429 sin cabecera
+        // lo agotaban en veinte segundos. Una pausa individual, por muchas que
+        // haya, no es motivo para terminar una busqueda asincrona.
         limitador.reset();
         const puerta = puertaDePrueba({ presupuesto: 10 * 60_000 });
 
-        // Pausas cortisimas, muchas veces: lo que corta es el CONTADOR.
-        for (let i = 0; i < config.pluginSearch.rateLimitMaxWaits; i++) {
+        for (let i = 0; i < 30; i++) {
             bucket().cooldownUntil = Date.now() + 5;
-            assert.strictEqual(await puerta.abrir(ruta), VEREDICTO.ESPERADO, `pausa ${i + 1}`);
+            assert.strictEqual(await puerta.abrir(ruta), VEREDICTO.ESPERADO, `pausa ${i + 1} deberia caber`);
         }
+        assert.strictEqual(puerta.esperas, 30);
+        limitador.reset();
+    });
 
-        bucket().cooldownUntil = Date.now() + 5;
-        assert.strictEqual(await puerta.abrir(ruta), VEREDICTO.AGOTADO,
-            'la puerta paso de su tope de pausas');
+    test('el breaker ABIERTO cuenta como "cuanto falta": la puerta espera lo que dure, no su margen', async () => {
+        // getThrottleState decia cooldownRemainingMs = 0 con el breaker abierto
+        // (solo miraba el cooldown de Roblox). La puerta estacionaba entonces
+        // su margen de 500 ms, volvia, seguia cerrado, y asi hasta agotarse.
+        limitador.reset();
+        bucket().circuitOpenUntil = Date.now() + 150;
+        const estado = limitador.getThrottleState(ruta);
+        assert.strictEqual(estado.throttled, true);
+        assert.ok(estado.cooldownRemainingMs >= 100, `con el breaker abierto quedaban ${estado.cooldownRemainingMs} ms`);
+
+        const puerta = puertaDePrueba({ presupuesto: 10_000 });
+        const t0 = Date.now();
+        assert.strictEqual(await puerta.abrir(ruta), VEREDICTO.ESPERADO);
+        assert.ok(Date.now() - t0 >= 140, 'la puerta no espero a que el breaker cerrara');
         limitador.reset();
     });
 

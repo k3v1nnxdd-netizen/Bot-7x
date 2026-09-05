@@ -225,6 +225,19 @@ const upstream = {
         userAvatar: intFromEnv('UPSTREAM_ROUTE_CONCURRENCY_USER_AVATAR', 2),
         catalogDetails: intFromEnv('UPSTREAM_ROUTE_CONCURRENCY_CATALOG_DETAILS', 2),
     },
+
+    // ── 429 SIN cabecera de espera ──────────────────────────────────────────
+    //
+    // Cuando Roblox devuelve 429 sin Retry-After ni x-ratelimit-reset, no dice
+    // cuanto esperar. La respuesta conservadora es esperar BASTANTE y doblar
+    // con cada 429 seguido (5 s, 10 s, 20 s, 40 s, hasta el techo), no adivinar
+    // por lo bajo. Antes aqui habia un backoff de 150-3000 ms con reintentos en
+    // linea: tres sondeos contra una ruta recien cerrada, cada uno gastando
+    // cuota y renovando el limite, y una busqueda entera agotaba sus pausas en
+    // veinte segundos. No es una cuota inventada: es cuanto se espera cuando
+    // Roblox no dice nada.
+    rateLimitFallbackBaseMs: intFromEnv('UPSTREAM_RATE_LIMIT_FALLBACK_BASE_MS', 5_000),
+    rateLimitFallbackMaxMs: intFromEnv('UPSTREAM_RATE_LIMIT_FALLBACK_MAX_MS', 60_000),
 };
 
 // Tope duro de entradas en memoria. Sin Volume ni disco: si se llena, se
@@ -300,6 +313,21 @@ const maxCatalogBatchSize = intFromEnv('MAX_CATALOG_BATCH_SIZE', 120);
 // un grupo con un 3% de aceptacion moria en 60 candidatos con 2 resultados: el
 // SUELO del presupuesto (60) era tambien su TECHO.
 const pluginSearch = {
+    // ── Accesorios minimos de un candidato ───────────────────────────────────
+    //
+    // Un outfit candidato lleva MAS DE TRES accesorios reales (sombreros,
+    // accesorios clasicos, ropa por capas, cejas/pestañas; ver
+    // catalog/assetTypes.ACCESSORY_TYPES). Partes del cuerpo, cabezas, caras,
+    // ropa clasica, gear, animaciones, emotes y humores NO cuentan.
+    //
+    // Se decide con la respuesta del avatar en la mano, ANTES de tocar el
+    // catalogo: un avatar de dos accesorios no va a ser un outfit, y ponerle
+    // precio gastaria la cuota del catalogo en alguien que ya sabemos que no
+    // sirve. El valor es el minimo ACEPTADO ("mas de 3" = 4). 0 desactiva la
+    // regla; la suite lo usa para los mundos de prueba antiguos de un asset
+    // por usuario, que prueban precio y rotacion, no esta regla.
+    minAccessories: intFromEnv('PLUGIN_SEARCH_MIN_ACCESSORIES', 4),
+
     // ── Techo ABSOLUTO de paginas de miembros por busqueda ───────────────────
     //
     // No es el limite normal: el normal sale del techo de candidatos (una
@@ -404,16 +432,18 @@ const pluginSearch = {
 
     // ES UN PRESUPUESTO DE TRABAJO (maxWorking), no de reloj de pared: las
     // pausas por limite de Roblox no lo consumen. Pero SI lo consume el ritmo
-    // al que Roblox deja preguntar: con la cuota del avatar repartida por el
-    // marcapasos, 300 candidatos a ~1,5 por segundo son mas de tres minutos de
-    // trabajo real. Por eso el suelo son dos minutos y no treinta segundos —
-    // treinta segundos solo alcanzan si Roblox no limita nada, y limita.
+    // al que Roblox deja preguntar: con la cuota del avatar repartida al ritmo
+    // sostenible por el marcapasos (del orden de una llamada por segundo), 300
+    // candidatos son cinco minutos de trabajo real. Y ESTO ES UNA PROTECCION
+    // EXTREMA, no el terminador normal: una busqueda de 10 tiene que poder
+    // recorrer cientos de candidatos malos al ritmo que Roblox deje sin que
+    // este reloj se cruce en medio.
     //
-    //   10 -> 120 s     100 -> 260 s     500 -> 600 s (techo)
-    timeBudgetBaseMs: intFromEnv('PLUGIN_SEARCH_TIME_BUDGET_BASE_MS', 60_000),
-    timeBudgetPerResultMs: intFromEnv('PLUGIN_SEARCH_TIME_BUDGET_PER_RESULT_MS', 2_000),
-    timeBudgetMinMs: intFromEnv('PLUGIN_SEARCH_TIME_BUDGET_MIN_MS', 120_000),
-    timeBudgetMaxMs: intFromEnv('PLUGIN_SEARCH_TIME_BUDGET_MAX_MS', 600_000),
+    //   10 -> 10 min     100 -> 55 min     500 -> 60 min (techo)
+    timeBudgetBaseMs: intFromEnv('PLUGIN_SEARCH_TIME_BUDGET_BASE_MS', 5 * 60_000),
+    timeBudgetPerResultMs: intFromEnv('PLUGIN_SEARCH_TIME_BUDGET_PER_RESULT_MS', 30_000),
+    timeBudgetMinMs: intFromEnv('PLUGIN_SEARCH_TIME_BUDGET_MIN_MS', 10 * 60_000),
+    timeBudgetMaxMs: intFromEnv('PLUGIN_SEARCH_TIME_BUDGET_MAX_MS', 60 * 60_000),
 
     // Techo del presupuesto en modo SINCRONO. Ahi si hay un socket abierto al
     // otro lado, y HttpService de Roblox tiene su propio plazo: prometer tres
@@ -433,19 +463,22 @@ const pluginSearch = {
     // reloj de pared (maxWallClock = trabajo + espera), que es la proteccion
     // EXTREMA para que un trabajo no viva para siempre — no el final normal.
     //
-    // LOS NUMEROS SALEN DE LO OBSERVADO. Los Retry-After reales del avatar han
-    // rondado los 25-30 s. "Varios cooldowns normales" son cinco o seis de
-    // esos: 180 s de espera acumulada cubre seis pausas de 30 s con margen.
-    rateLimitWaitBudgetMs: intFromEnv('PLUGIN_SEARCH_RATE_LIMIT_WAIT_BUDGET_MS', 180_000),
+    // PROTECCION EXTREMA, no terminador normal. Los Retry-After reales del
+    // avatar han rondado los 25-30 s, y sin cabecera el limitador espera 5-60 s
+    // escalonados. Quince minutos de espera acumulada son del orden de treinta
+    // cooldowns normales: una busqueda de 10 que necesite eso no esta
+    // "peleando con la cuota", esta en una situacion que merece el partial.
+    rateLimitWaitBudgetMs: intFromEnv('PLUGIN_SEARCH_RATE_LIMIT_WAIT_BUDGET_MS', 15 * 60_000),
 
-    // Techo de UNA pausa. Un Retry-After de 25-30 s tiene que caber de sobra;
-    // uno de dos minutos ya no es un cooldown, es Roblox diciendo que hoy no.
-    rateLimitSingleWaitMs: intFromEnv('PLUGIN_SEARCH_RATE_LIMIT_SINGLE_WAIT_MS', 90_000),
+    // Techo de UNA pausa. Solo protege de una cabecera absurda: un Retry-After
+    // de cinco minutos ya no es un cooldown, es Roblox diciendo que hoy no.
+    rateLimitSingleWaitMs: intFromEnv('PLUGIN_SEARCH_RATE_LIMIT_SINGLE_WAIT_MS', 5 * 60_000),
 
-    // Numero de pausas por busqueda. Con pausas de 25-30 s y 180 s de
-    // presupuesto, ocho es un techo que no se toca en una busqueda sana; existe
-    // para que un cooldown de 1 s en bucle no pueda encadenarse cien veces.
-    rateLimitMaxWaits: intFromEnv('PLUGIN_SEARCH_RATE_LIMIT_MAX_WAITS', 8),
+    // NO hay contador de pausas. Habia uno (ocho), y era la causa directa del
+    // ultimo 2 de 10: pausas de un segundo encadenadas por 429 sin cabecera lo
+    // agotaban en veinte segundos. Lo que acota el total es el reloj de pared;
+    // una pausa individual, por corta o larga que sea, no es motivo para
+    // terminar nada.
 
     // Margen que se añade a lo que pide Roblox. Volver un milisegundo antes de
     // que la ventana se reabra gasta el reintento y renueva el cooldown.

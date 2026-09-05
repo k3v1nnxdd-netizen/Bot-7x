@@ -291,6 +291,15 @@ async function ejecutarBusqueda(
     const indice = crearIndiceDeCatalogo(stats, { puerta });
     const bundles = crearIndiceDeBundles(stats);
 
+    // Llamadas REALES que salieron por las dos rutas, contadas por el propio
+    // limitador. `avatarRequests` cuenta lo que pidio la busqueda; esto cuenta
+    // ademas lo que el limitador reintento por su cuenta tras esperar un
+    // Retry-After corto. Es el numero exacto de lo que Roblox recibio de este
+    // proceso durante la busqueda (proceso entero: con dos busquedas a la vez
+    // en la misma instancia, se reparte entre las dos).
+    const llamadasDeRuta = ruta => rateLimiter.getMetrics().byRoute[ruta]?.calls ?? 0;
+    const llamadasAlEmpezar = { userAvatar: llamadasDeRuta('userAvatar'), catalogDetails: llamadasDeRuta('catalogDetails') };
+
     const estadoDeParada = () => ({
         encontrados: encontrados.length, amount, examinados, techoCandidatos,
         trabajadoMs: trabajadoMs(), relojRestante: relojRestante(),
@@ -464,6 +473,8 @@ async function ejecutarBusqueda(
         tiempoMs,
         relojDeParedMs,
         costePorResultado: Math.round(coste * 100) / 100,
+        avatarRouteCalls: Math.max(0, llamadasDeRuta('userAvatar') - llamadasAlEmpezar.userAvatar),
+        catalogRouteCalls: Math.max(0, llamadasDeRuta('catalogDetails') - llamadasAlEmpezar.catalogDetails),
     });
 
     const publicas = stats.publicar();

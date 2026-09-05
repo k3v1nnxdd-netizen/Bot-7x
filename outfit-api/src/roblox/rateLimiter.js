@@ -34,6 +34,7 @@ const {
     circuitFailureThreshold, circuitBaseCooldownMs, circuitMaxCooldownMs,
     pacerBaseMs, pacerMaxMs, pacerMinMs, pacerDecay,
     pacerHeaderFraction, routeConcurrency,
+    rateLimitFallbackBaseMs, rateLimitFallbackMaxMs,
 } = config.upstream;
 
 function sleep(ms) {
@@ -101,8 +102,14 @@ function makeBucket(name) {
 
         // ── Cuota APRENDIDA de las cabeceras de Roblox ─────────────────────
         // Lo ultimo que Roblox dijo de esta ruta. null hasta que lo diga: no
-        // se inventa ninguna cuota que Roblox no haya publicado.
-        quota: { limit: null, remaining: null, resetAt: null },
+        // se inventa ninguna cuota que Roblox no haya publicado. `windowMs` es
+        // la duracion de la ventana, estimada como el mayor 'reset' visto: al
+        // principio de una ventana fresca, reset == ventana entera.
+        quota: { limit: null, remaining: null, resetAt: null, windowMs: null },
+
+        // 429 seguidos sin ninguna respuesta buena entre medias. Es lo que
+        // escala el cooldown cuando Roblox NO dice cuanto esperar.
+        consecutiveLimits: 0,
 
         metrics: {
             calls: 0, ok: 0, notFound: 0,
@@ -311,34 +318,58 @@ function aprenderCuota(bucket, headers, remaining) {
     const reset = Number(headers['x-ratelimit-reset']);
     const ahora = Date.now();
 
+    const resetValido = Number.isFinite(reset) && reset > 0 && reset <= 3600;
     bucket.quota = {
         limit: Number.isFinite(limit) && limit > 0 ? limit : bucket.quota.limit,
         remaining,
-        resetAt: Number.isFinite(reset) && reset > 0 && reset <= 3600 ? ahora + reset * 1000 : bucket.quota.resetAt,
+        resetAt: resetValido ? ahora + reset * 1000 : bucket.quota.resetAt,
+        windowMs: resetValido ? Math.max(bucket.quota.windowMs ?? 0, reset * 1000) : bucket.quota.windowMs,
     };
 
-    const { limit: cuota, resetAt } = bucket.quota;
-    if (!cuota || !resetAt || remaining <= 0) return;
+    const { limit: cuota, resetAt, windowMs } = bucket.quota;
+    if (!cuota) return;
 
-    const fraccion = remaining / cuota;
-    if (fraccion > pacerHeaderFraction) return;
+    // ── DOS RITMOS, y se aplica el mas lento ─────────────────────────────────
+    //
+    //   SOSTENIBLE  ventana / cuota. Es el ritmo al que la cuota entera dura
+    //               la ventana entera. Se aplica desde que se conoce, SIEMPRE,
+    //               como suelo: es la forma de no gastar la ventana de golpe
+    //               ni siquiera la primera vez. Conservador a proposito.
+    //
+    //   DE REPARTO  ventana restante / cuota restante, solo cuando ya se gasto
+    //               mas de la mitad. Cubre el caso en que la ventana empezo
+    //               con una rafaga (otra instancia, el juego) y el sostenible
+    //               ya no basta para llegar al reset sin chocar.
+    const sostenible = windowMs ? windowMs / cuota : 0;
 
-    const ventanaRestanteMs = Math.max(0, resetAt - ahora);
-    const reparto = ventanaRestanteMs / remaining;
-    const objetivo = Math.min(pacerMaxMs, Math.max(pacerMinMs, reparto));
+    let reparto = 0;
+    if (resetAt && remaining > 0 && remaining / cuota <= pacerHeaderFraction) {
+        reparto = Math.max(0, resetAt - ahora) / remaining;
+    }
+
+    const objetivo = Math.min(pacerMaxMs, Math.max(sostenible, reparto));
+    if (objetivo < pacerMinMs) return;
 
     // Solo se aprieta, nunca se afloja desde aqui: aflojar es cosa del AIMD,
-    // que lo hace despacio y con evidencia de llamadas buenas.
+    // que lo hace despacio y con evidencia de llamadas buenas — y nunca por
+    // debajo del sostenible mientras la cuota se conozca (ver aflojar).
     if (objetivo > bucket.spacingMs) {
         const previo = bucket.spacingMs;
         bucket.spacingMs = objetivo;
         if (previo === 0) {
-            logger.info('Marcapasos de Roblox activado por cabeceras: repartiendo la cuota restante', {
+            logger.info('Marcapasos de Roblox activado por cabeceras', {
                 route: bucket.name, spacingMs: Math.round(objetivo), remaining, limit: cuota,
-                windowRemainingMs: Math.round(ventanaRestanteMs),
+                windowMs: windowMs ?? null, sustainableMs: Math.round(sostenible), spreadMs: Math.round(reparto),
             });
         }
     }
+}
+
+// Ritmo sostenible aprendido, o 0 si Roblox no ha publicado cuota y ventana.
+function sueloSostenible(bucket) {
+    const { limit, windowMs } = bucket.quota;
+    if (!limit || !windowMs) return 0;
+    return Math.min(pacerMaxMs, windowMs / limit);
 }
 
 // Impone un cooldown desde FUERA del limitador. Existe para un unico caso: un
@@ -414,8 +445,11 @@ function apretarMarcapasos(bucket) {
 
 function aflojarMarcapasos(bucket) {
     if (bucket.spacingMs <= 0) return;
-    const relajado = bucket.spacingMs * pacerDecay;
-    // Por debajo del suelo no merece la pena mantener temporizadores vivos: se
+    // Nunca por debajo del ritmo sostenible que Roblox publico: relajar mas
+    // que eso es volver a la rafaga que agoto la ventana la primera vez.
+    const suelo = sueloSostenible(bucket);
+    const relajado = Math.max(suelo, bucket.spacingMs * pacerDecay);
+    // Por debajo del minimo no merece la pena mantener temporizadores vivos: se
     // apaga del todo y la ruta vuelve a ir a pelo.
     bucket.spacingMs = relajado < pacerMinMs ? 0 : relajado;
     if (bucket.spacingMs === 0) {
@@ -443,6 +477,7 @@ async function esperarMarcapasos(bucket) {
 // ── Circuit breaker ──────────────────────────────────────────────────────────
 
 function onSuccess(bucket) {
+    bucket.consecutiveLimits = 0;
     aflojarMarcapasos(bucket);
     if (bucket.circuitOpenUntil !== 0 || bucket.circuitCooldownMs !== circuitBaseCooldownMs) {
         logger.info('Circuito de Roblox cerrado tras respuesta correcta', { route: bucket.name });
@@ -570,6 +605,12 @@ async function callOnce(bucket, fn) {
 
         await acquire();
         try {
+            // `calls` se cuenta AQUI, en el punto exacto en que la peticion
+            // sale, y no al entrar en run(): entre la entrada y este punto hay
+            // tres puertas (slot de ruta, marcapasos, recomprobacion del
+            // cooldown) que pueden rechazarla sin que Roblox la vea. Contarla
+            // antes inflaria el numero con intentos que nunca salieron.
+            bucket.metrics.calls++;
             return await fn();
         } finally {
             release();
@@ -606,7 +647,6 @@ async function run(routeKey, fn, { notFoundCode = 'not_found', notFoundWhen = nu
         for (let attempt = 0; ; attempt++) {
             await waitForCooldown(bucket, endpoint);
 
-            bucket.metrics.calls++;
             try {
                 const response = await callOnce(bucket, fn);
                 observeRateLimitHeaders(bucket, response, endpoint);
@@ -635,11 +675,41 @@ async function run(routeKey, fn, { notFoundCode = 'not_found', notFoundWhen = nu
                 // ── 429: condicion normal, la pauta la marca Roblox ──
                 if (status === 429) {
                     bucket.metrics.rateLimited++;
+                    bucket.consecutiveLimits++;
                     // Llegamos tarde a la señal preventiva: a partir de ahora,
-                    // separacion obligatoria en esta ruta.
+                    // separacion obligatoria en esta ruta, y nunca por debajo
+                    // del ritmo sostenible si Roblox lo publico.
                     apretarMarcapasos(bucket);
+                    bucket.spacingMs = Math.max(bucket.spacingMs, sueloSostenible(bucket));
+
+                    // Lo que se aprende de las cabeceras del propio 429 tambien
+                    // cuenta: suelen traer limit / reset aunque remaining sea 0.
+                    if (err.response?.headers) {
+                        const rem = Number(err.response.headers['x-ratelimit-remaining']);
+                        if (Number.isFinite(rem)) aprenderCuota(bucket, err.response.headers, rem);
+                    }
+
+                    // ── CUANTO ESPERAR ──────────────────────────────────────
+                    //
+                    // Con cabecera, lo que Roblox diga, exactamente.
+                    //
+                    // SIN cabecera, un cooldown CONSERVADOR que se dobla con
+                    // cada 429 seguido: 5 s, 10 s, 20 s, 40 s, hasta el techo.
+                    // Antes aqui habia un backoff de 150-3000 ms con reintento
+                    // en linea, y eso era un SONDEO: volver a llamar medio
+                    // segundo despues de que Roblox dijera que no, tres veces,
+                    // para descubrir que seguia diciendo que no. Cada sondeo
+                    // gastaba cuota, renovaba el limite y, como cada uno
+                    // acababa en una pausa de un segundo, agotaba el contador
+                    // de pausas de una busqueda en veinte segundos. Roblox no
+                    // dijo cuanto esperar: la respuesta honesta es esperar
+                    // bastante y esperar mas si insiste, no adivinar por lo bajo.
                     const headerWait = parseWaitMs(err.response?.headers);
-                    const waitMs = headerWait ?? backoffMs(attempt);
+                    const escalon = Math.min(
+                        rateLimitFallbackMaxMs,
+                        rateLimitFallbackBaseMs * 2 ** Math.max(0, bucket.consecutiveLimits - 1)
+                    );
+                    const waitMs = headerWait ?? escalon;
                     bucket.cooldownUntil = Math.max(bucket.cooldownUntil, Date.now() + waitMs);
 
                     logger.warn('Roblox respondio 429', {
@@ -720,8 +790,12 @@ function getThrottleState(routeKey) {
     if (!bucket) throw new Error(`routeKey desconocido: ${routeKey}`);
 
     const now = Date.now();
-    const cooldownRemainingMs = Math.max(0, bucket.cooldownUntil - now);
     const circuitOpen = bucket.circuitOpenUntil > now;
+    // Lo que falta para poder llamar, venga el freno del cooldown de Roblox o
+    // del breaker nuestro. Antes solo contaba el primero, y con el breaker
+    // abierto quien preguntaba veia "0 ms" — estacionaba solo su margen,
+    // volvia, seguia cerrado, y asi hasta agotar sus pausas.
+    const cooldownRemainingMs = Math.max(0, Math.max(bucket.cooldownUntil, bucket.circuitOpenUntil) - now);
 
     return {
         // `true` = una llamada nueva o se hace esperar o se rechaza de plano.

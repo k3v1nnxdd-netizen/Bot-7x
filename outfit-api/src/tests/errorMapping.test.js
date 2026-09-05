@@ -1,6 +1,7 @@
 'use strict';
 
 const { createSuite, axiosError, networkError, timeoutError, captureStdout } = require('./harness');
+const config = require('../config');
 const rateLimiter = require('../roblox/rateLimiter');
 const { errorHandler } = require('../api/errorHandler');
 const { ValidationError } = require('../validation/params');
@@ -74,15 +75,56 @@ module.exports = async function run() {
         assert.strictEqual(calls, 1);
     });
 
-    test('429 sin cabeceras -> backoff y reintentos antes de rendirse', async () => {
+    test('429 sin cabeceras -> cooldown CONSERVADOR y ningun reintento en linea', async () => {
+        // Roblox no dijo cuanto esperar. Antes se adivinaba por lo bajo
+        // (backoff de 150-3000 ms) y se reintentaba en linea: tres SONDEOS
+        // contra una ruta recien cerrada, cada uno gastando cuota. Ahora se
+        // espera bastante — y mas si insiste — y NO se vuelve a llamar.
         rateLimiter.reset();
         let calls = 0;
         await assert.rejects(
             () => rateLimiter.run('outfitList', async () => { calls++; throw axiosError(429); }),
             err => err instanceof UpstreamRateLimitedError
         );
-        assert.strictEqual(calls, 3, 'intento inicial + 2 reintentos');
-        assert.ok(rateLimiter.__buckets.outfitList.metrics.retries >= 2);
+        assert.strictEqual(calls, 1, 'un 429 sin cabecera no puede provocar reintentos en linea');
+        assert.strictEqual(rateLimiter.__buckets.outfitList.metrics.retries, 0);
+
+        const restante = rateLimiter.getThrottleState('outfitList').cooldownRemainingMs;
+        assert.ok(restante >= config.upstream.rateLimitFallbackBaseMs - 20,
+            `el cooldown sin cabecera fue de solo ${restante} ms`);
+    });
+
+    test('429 sin cabeceras seguidos -> el cooldown se DOBLA, hasta su techo', async () => {
+        rateLimiter.reset();
+        const bucket = rateLimiter.__buckets.outfitList;
+        const observados = [];
+
+        for (let i = 0; i < 5; i++) {
+            bucket.cooldownUntil = 0; // se libera a mano: lo que se mide es el escalon
+            await assert.rejects(() => rateLimiter.run('outfitList', async () => { throw axiosError(429); }));
+            observados.push(bucket.cooldownUntil - Date.now());
+        }
+
+        for (let i = 1; i < observados.length; i++) {
+            assert.ok(observados[i] >= observados[i - 1] - 20,
+                `el cooldown bajo de ${observados[i - 1]} a ${observados[i]} ms con un 429 mas`);
+        }
+        assert.ok(observados[1] >= observados[0] * 1.8 - 20, 'el segundo 429 seguido no doblo la espera');
+        assert.ok(observados.at(-1) <= config.upstream.rateLimitFallbackMaxMs + 20, 'el cooldown supero su techo');
+    });
+
+    test('una respuesta correcta reinicia la escalada de 429 sin cabecera', async () => {
+        rateLimiter.reset();
+        const bucket = rateLimiter.__buckets.outfitList;
+        for (let i = 0; i < 3; i++) {
+            bucket.cooldownUntil = 0;
+            await assert.rejects(() => rateLimiter.run('outfitList', async () => { throw axiosError(429); }));
+        }
+        bucket.cooldownUntil = 0;
+        await rateLimiter.run('outfitList', async () => ({ status: 200, headers: {}, data: {} }));
+        await assert.rejects(() => rateLimiter.run('outfitList', async () => { throw axiosError(429); }));
+        assert.ok(bucket.cooldownUntil - Date.now() <= config.upstream.rateLimitFallbackBaseMs + 20,
+            'tras una respuesta buena la escalada deberia volver al primer escalon');
     });
 
     test('429 pone la ruta en cooldown para TODOS, no solo para quien choco', async () => {

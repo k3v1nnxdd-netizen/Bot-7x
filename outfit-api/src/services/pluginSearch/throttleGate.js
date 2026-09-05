@@ -81,7 +81,7 @@ function crearPuerta(stats, {
     dormirFn = dormir,
 } = {}) {
     const {
-        rateLimitMaxWaits, rateLimitSingleWaitMs, rateLimitWaitMarginMs, rateLimitHeartbeatMs,
+        rateLimitSingleWaitMs, rateLimitWaitMarginMs, rateLimitHeartbeatMs,
     } = config.pluginSearch;
 
     let esperas = 0;
@@ -112,8 +112,12 @@ function crearPuerta(stats, {
             // fallando de forma sostenida. Se respeta igual.
             const pedido = Math.max(0, freno.cooldownRemainingMs) + rateLimitWaitMarginMs;
 
+            // NO hay contador de pausas. Lo hubo, y fue la causa directa de un
+            // 2 de 10 en produccion: pausas cortas encadenadas por 429 sin
+            // cabecera lo agotaban en veinte segundos. Una pausa individual no
+            // es motivo para terminar nada; lo que acota el total es el reloj
+            // de pared, que se comprueba abajo.
             const razones = [];
-            if (esperas >= rateLimitMaxWaits) razones.push('demasiadas pausas');
             if (pedido > rateLimitSingleWaitMs) razones.push('pausa demasiado larga');
 
             const disponible = Math.max(0, presupuestoDeEspera());

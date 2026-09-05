@@ -75,9 +75,12 @@ function crearIndiceDeCatalogo(stats, { puerta = PUERTA_ABIERTA } = {}) {
         // llamadas posible. No lanza: los fallos se anotan y quien llama decide
         // que hacer con los candidatos afectados.
         async asegurar(assetIds) {
-            // 1. Fuera lo que ya sabemos de esta misma busqueda.
-            const desconocidos = [...new Set(assetIds)]
-                .filter(id => !fichas.has(id) && !irresolubles.has(id));
+            // 1. Fuera lo que ya sabemos de esta misma busqueda. Cada uno de
+            //    esos es un asset que un candidato necesitaba y no costo nada:
+            //    reutilizacion pura, y se cuenta como tal.
+            const distintos = [...new Set(assetIds)];
+            const desconocidos = distintos.filter(id => !fichas.has(id) && !irresolubles.has(id));
+            stats.sumar('catalogAssetsReused', distintos.length - desconocidos.length);
 
             if (desconocidos.length === 0) return;
             stats.sumar('assetIdsUnique', desconocidos.length);
@@ -91,6 +94,7 @@ function crearIndiceDeCatalogo(stats, { puerta = PUERTA_ABIERTA } = {}) {
                 if (cacheada !== undefined) {
                     fichas.set(assetId, cacheada);
                     stats.marcarCache('hit');
+                    stats.sumar('catalogAssetsReused');
                 } else {
                     faltantes.push(assetId);
                     stats.marcarCache('miss');

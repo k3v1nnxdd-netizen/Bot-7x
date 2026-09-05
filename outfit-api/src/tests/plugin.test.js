@@ -1620,7 +1620,8 @@ module.exports = async function run() {
         'candidatesExamined', 'memberPagesFetched', 'emptySegments',
         'rotationCycle', 'rotationWraps', 'rotationCursorResets',
         'avatarRequests', 'avatarsFetched', 'avatarRateLimited',
-        'avatarDeferred', 'deferredResumed', 'avatarCacheHits',
+        'avatarDeferred', 'deferredResumed', 'avatarCacheHits', 'avatarShed', 'catalogAssetsReused',
+        'avatarRouteCalls', 'catalogRouteCalls',
         'desiredCandidateBudget', 'hardCandidateLimit',
         'effectiveHardCandidatesPerResult', 'memberPageLimit',
         'timeBudgetMs', 'candidatesPerResultEstimate',
@@ -1628,7 +1629,7 @@ module.exports = async function run() {
         'bundleLookups', 'bundleLookupsSkipped', 'bundleSpecialHits', 'bundleBatches',
         'cacheHits', 'cacheMisses',
         'rateLimitWaits', 'rateLimitWaitedMs', 'workingMs', 'wallClockBudgetMs',
-        'accepted', 'rejectedAvatarError', 'rejectedEmptyAvatar',
+        'accepted', 'rejectedAvatarError', 'rejectedEmptyAvatar', 'rejectedTooFewAccessories',
         'rejectedCatalogError', 'rejectedUnknownPrice', 'rejectedIncompletePrice',
         'rejectedMinPrice', 'rejectedMaxPrice',
         'assetsPriced', 'assetsUnpriced', 'assetsLimited', 'assetsOffSale',
@@ -1653,6 +1654,7 @@ module.exports = async function run() {
     // candidatesExamined tiene que ser exactamente la suma del resto.
     function comprobarInvariante(stats, contexto) {
         const suma = stats.accepted + stats.rejectedAvatarError + stats.rejectedEmptyAvatar
+            + stats.rejectedTooFewAccessories
             + stats.rejectedCatalogError + stats.rejectedUnknownPrice
             + stats.rejectedIncompletePrice
             + stats.rejectedMinPrice + stats.rejectedMaxPrice;

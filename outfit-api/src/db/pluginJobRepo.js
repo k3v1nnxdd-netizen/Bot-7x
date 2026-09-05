@@ -140,8 +140,13 @@ async function actualizar(trabajo) {
         );
         return rowCount > 0;
     } catch (err) {
-        logger.debug('No se pudo volcar el progreso del trabajo', {
-            searchId: trabajo.searchId, detail: err?.message,
+        // warn, no debug: un volcado fallido es un checkpoint que NO es
+        // durable, y si el proceso muere ahora el trabajo no se podra
+        // reanudar desde aqui. Tiene que verse. (La linea de pool.js ya trae
+        // repositorio, operacion y SQLSTATE; esta añade el contexto del job.)
+        logger.warn('No se pudo volcar el progreso del trabajo', {
+            searchId: trabajo.searchId, phase: trabajo.phase ?? 'working',
+            code: err?.code ?? null, detail: err?.message,
         });
         return true;
     }

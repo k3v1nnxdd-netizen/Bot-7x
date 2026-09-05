@@ -38,6 +38,18 @@ process.env.PLUGIN_SEARCH_RATE_LIMIT_WAIT_BUDGET_MS = '0';
 // cooldown de 300 ms tiene que llegar a la busqueda como lo haria uno de 25 s.
 process.env.UPSTREAM_INLINE_WAIT_CEILING_MS = '100';
 
+// La regla de "mas de tres accesorios" se APAGA por defecto en la suite: los
+// mundos de prueba historicos dan UN asset por usuario (asi el precio de cada
+// candidato es predecible desde el test) y prueban precio, lotes y rotacion,
+// no esta regla. Los casos que prueban la regla la encienden ELLOS, con
+// avatares de tipos reales. En produccion el default es 4.
+process.env.PLUGIN_SEARCH_MIN_ACCESSORIES = '0';
+
+// Y el cooldown conservador para 429 sin cabecera se acorta: en produccion
+// son 5-60 s escalonados; aqui basta con que exista y escale.
+process.env.UPSTREAM_RATE_LIMIT_FALLBACK_BASE_MS = '150';
+process.env.UPSTREAM_RATE_LIMIT_FALLBACK_MAX_MS = '1200';
+
 const fs = require('fs');
 const path = require('path');
 

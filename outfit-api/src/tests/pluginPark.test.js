@@ -94,6 +94,14 @@ module.exports = async function run() {
     const base = crearBaseFalsa();
     base.instalar();
 
+    // EL CAMINO ANTIGUO, FIJADO A PROPOSITO. `recuperarAlArrancar` cambia de
+    // comportamiento segun INDEX_SERVE_ENABLED: con el indice sirviendo no
+    // adopta ni reanuda nada, porque nadie espera esos trabajos. Este archivo
+    // prueba justo lo contrario, asi que lo deja explicito en vez de heredar lo
+    // que dejara puesto el archivo anterior.
+    const servirDesdeIndice = config.indexServe.enabled;
+    config.indexServe.enabled = false;
+
     // ── Comunidad de mentira. Uno de cada cinco encaja: 10 resultados son ~50
     // candidatos, o sea varias olas, que es lo que hace falta para que una
     // pausa a mitad tenga sentido. SIEMPRE ascendente, para que "los 10
@@ -611,6 +619,7 @@ module.exports = async function run() {
     config.pluginSearch.rateLimitHeartbeatMs = original.cfg.heartbeat;
     config.pluginSearch.rateLimitWaitMarginMs = original.cfg.margen;
     config.pluginSearch.rateLimitWaitBudgetMs = original.cfg.presupuesto;
+    config.indexServe.enabled = servirDesdeIndice;
     cache.reset();
     ownRateLimit.reset();
     robloxRateLimiter.reset();

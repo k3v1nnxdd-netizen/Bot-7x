@@ -75,6 +75,21 @@ async function marcarBajas(groupId, desde) {
     return rowCount ?? 0;
 }
 
+// Cuantos miembros conocidos se han visto DESDE un instante. Es lo que
+// distingue una vuelta completa de verdad de una que Roblox corto a medias, y
+// por tanto lo que decide si es seguro marcar bajas.
+async function contarVistosDesde(groupId, desde) {
+    if (!disponible()) return 0;
+    const { rows } = await db.query(
+        `SELECT COUNT(DISTINCT user_id)::int AS vistos
+           FROM plugin_group_member
+          WHERE group_id = $1 AND left_at IS NULL AND last_seen_at >= $2`,
+        [String(groupId), new Date(desde)],
+        OP.contar
+    );
+    return Number(rows[0]?.vistos ?? 0);
+}
+
 async function contar(groupId) {
     if (!disponible()) return { miembros: 0, bajas: 0 };
     const { rows } = await db.query(
@@ -106,6 +121,7 @@ module.exports = {
     disponible,
     registrarPagina,
     marcarBajas,
+    contarVistosDesde,
     contar,
     marcarEntregados,
 };

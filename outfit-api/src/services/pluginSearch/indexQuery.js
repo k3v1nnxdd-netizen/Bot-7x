@@ -129,27 +129,49 @@ async function servir({
             }
 
             // ── 4. La foto de la comunidad, para el plugin ──────────────────
+            //
+            // EL DENOMINADOR ES "MIEMBROS CONOCIDOS", y significa exactamente
+            // una cosa: cuantos usuarios DISTINTOS de este grupo tenemos en la
+            // tabla de pertenencia sin marca de baja. Ni paginas recorridas, ni
+            // filas vistas, ni nada acumulado.
+            //
+            // Antes era un COUNT(*) sobre un LEFT JOIN. Con la clave primaria
+            // actual no habia duplicados, pero contaba FILAS DE UN JOIN y no
+            // usuarios, que es una forma fragil de contar lo que el plugin
+            // enseña. Aqui cada numero es su propio COUNT(DISTINCT user_id),
+            // sin join que pueda multiplicarlo.
             const { rows: fotoFilas } = await q(
-                `SELECT COUNT(*)::int AS miembros,
-                        COUNT(a.user_id)::int AS indexados,
-                        COUNT(*) FILTER (WHERE a.state = 'valid' AND a.accessories >= $2)::int AS elegibles
-                   FROM plugin_group_member m
-                   LEFT JOIN roblox_user_avatar a ON a.user_id = m.user_id
-                  WHERE m.group_id = $1 AND m.left_at IS NULL`,
+                `SELECT
+                     (SELECT COUNT(DISTINCT user_id)
+                        FROM plugin_group_member
+                       WHERE group_id = $1 AND left_at IS NULL)::int AS conocidos,
+                     (SELECT COUNT(DISTINCT m.user_id)
+                        FROM plugin_group_member m
+                        JOIN roblox_user_avatar a ON a.user_id = m.user_id
+                       WHERE m.group_id = $1 AND m.left_at IS NULL)::int AS indexados,
+                     (SELECT COUNT(DISTINCT m.user_id)
+                        FROM plugin_group_member m
+                        JOIN roblox_user_avatar a ON a.user_id = m.user_id
+                       WHERE m.group_id = $1 AND m.left_at IS NULL
+                         AND a.state = 'valid' AND a.accessories >= $2)::int AS elegibles`,
                 [String(groupId), minAccesorios]
             );
 
             const foto = fotoFilas[0] ?? {};
-            const miembros = Number(foto.miembros ?? 0);
+            const conocidos = Number(foto.conocidos ?? 0);
             const indexados = Number(foto.indexados ?? 0);
 
             return {
                 outfits,
                 coverage: {
-                    members: miembros,
+                    // `members` se conserva con ese nombre porque es el que lee
+                    // el plugin instalado; `knownMembers` es el nombre honesto
+                    // de lo mismo y el que debe usarse de aqui en adelante.
+                    members: conocidos,
+                    knownMembers: conocidos,
                     indexed: indexados,
                     eligible: Number(foto.elegibles ?? 0),
-                    ratio: miembros > 0 ? Number((indexados / miembros).toFixed(4)) : 0,
+                    ratio: conocidos > 0 ? Number((indexados / conocidos).toFixed(4)) : 0,
                 },
                 tookMs: Date.now() - arranque,
             };

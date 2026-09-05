@@ -517,7 +517,7 @@ function crearBaseFalsa() {
                         && avatar.pricedAt !== null && avatar.pricedAt >= ahora - ttlPrecioMs) frescos++;
                 }
                 return {
-                    groupId: String(groupId), members: total, indexed: indexados,
+                    groupId: String(groupId), members: total, knownMembers: total, indexed: indexados,
                     valid: validos, eligible: elegibles, belowMinAccessories: bajoMinimo, fresh: frescos,
                     coverage: total > 0 ? Number((indexados / total).toFixed(4)) : 0,
                     freshness: total > 0 ? Number((frescos / total).toFixed(4)) : 0,
@@ -597,6 +597,15 @@ function crearBaseFalsa() {
                 return n;
             };
 
+            memberRepo.contarVistosDesde = async (groupId, desde) => {
+                let n = 0;
+                for (const fila of miembros.values()) {
+                    if (fila.groupId !== String(groupId) || fila.leftAt) continue;
+                    if (fila.lastSeenAt >= desde) n++;
+                }
+                return n;
+            };
+
             memberRepo.contar = async groupId => {
                 let activos = 0, bajas = 0;
                 for (const fila of miembros.values()) {
@@ -623,7 +632,7 @@ function crearBaseFalsa() {
                 groupId: String(groupId), sortOrder: 'Asc', cursor: null,
                 intraPageOffset: 0, cycle: 1, priority: 0, demands: 0, lastDemandAt: null,
                 membersSeen: 0, usersIndexed: 0, lastRunAt: null, lastFullPassAt: null,
-                cycleStartedAt: null,
+                cycleStartedAt: null, lapClean: false,
                 lastError: null, leaseOwner: null, leaseExpiresAt: null, enabled: true,
             });
 
@@ -644,7 +653,7 @@ function crearBaseFalsa() {
                 return true;
             };
 
-            crawlRepo.tomar = async (instancia, { leaseMs, refrescarCadaMs = null } = {}) => {
+            crawlRepo.tomar = async (instancia, { leaseMs, refrescarCadaMs = null, revisitarCadaMs = null } = {}) => {
                 if (!disponible) return null;
                 const ahora = Date.now();
                 const elegibles = [...recorridos.values()].filter(fila => {
@@ -652,6 +661,11 @@ function crearBaseFalsa() {
                     if (fila.leaseOwner && fila.leaseExpiresAt > ahora) return false;
                     if (fila.priority > 0) return true;
                     if (fila.lastRunAt === null) return true;
+                    // REVISITA: un grupo ya visto vuelve a la cola solo. Sin
+                    // esto, uno a medio indexar y sin demanda no se miraba en
+                    // dias, y el worker se quedaba sin trabajo teniendo
+                    // cientos de usuarios por indexar.
+                    if (revisitarCadaMs !== null && fila.lastRunAt <= ahora - revisitarCadaMs) return true;
                     if (refrescarCadaMs === null) return false;
                     return fila.lastFullPassAt === null || fila.lastFullPassAt < ahora - refrescarCadaMs;
                 });
@@ -681,6 +695,9 @@ function crearBaseFalsa() {
                 if (avance.cycleStartedAt !== undefined && avance.cycleStartedAt !== null) {
                     fila.cycleStartedAt = avance.cycleStartedAt;
                 }
+                // La EVIDENCIA de vuelta limpia viaja con el cursor: una vuelta
+                // dura muchos ciclos y es lo unico que autoriza marcar bajas.
+                fila.lapClean = avance.lapClean === true;
                 if (avance.vueltaCompleta) fila.lastFullPassAt = Date.now();
                 fila.priority = Math.max(0, fila.priority - (avance.prioridadConsumida ?? 0));
                 fila.leaseExpiresAt = Date.now() + (avance.leaseMs ?? 60_000);
@@ -774,7 +791,7 @@ function crearBaseFalsa() {
                         return { rows: [], rowCount: 1 };
                     }
 
-                    if (sql.includes('COUNT(*) FILTER') && sql.includes('elegibles')) {
+                    if (sql.includes('COUNT(DISTINCT') && sql.includes('conocidos')) {
                         const [groupId, minAcc] = params;
                         let total = 0, indexados = 0, elegibles = 0;
                         for (const fila of miembros.values()) {
@@ -785,7 +802,7 @@ function crearBaseFalsa() {
                             indexados++;
                             if (avatar.state === 'valid' && avatar.accessories >= minAcc) elegibles++;
                         }
-                        return { rows: [{ miembros: total, indexados, elegibles }] };
+                        return { rows: [{ conocidos: total, indexados, elegibles }] };
                     }
 
                     return { rows: [], rowCount: 0 };
@@ -838,7 +855,8 @@ function crearBaseFalsa() {
                 recorridos.set(clave, {
                     groupId: clave, sortOrder: 'Asc', cursor: null, intraPageOffset: 0,
                     cycle: 1, priority: 0, demands: 0, lastDemandAt: null, membersSeen: 0,
-                    usersIndexed: 0, lastRunAt: null, lastFullPassAt: null, lastError: null,
+                    usersIndexed: 0, lastRunAt: null, lastFullPassAt: null, cycleStartedAt: null,
+                    lapClean: false, lastError: null,
                     leaseOwner: null, leaseExpiresAt: null, enabled: true,
                 });
             }

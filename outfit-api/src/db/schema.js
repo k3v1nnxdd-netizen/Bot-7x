@@ -388,6 +388,17 @@ const DDL = [
             // fue del grupo. Sin esto no hay forma de distinguir "ya no esta"
             // de "aun no he llegado a el".
             'ALTER TABLE plugin_index_crawl ADD COLUMN IF NOT EXISTS cycle_started_at TIMESTAMPTZ',
+
+            // ¿LA VUELTA EN CURSO ES LIMPIA? Es la UNICA autorizacion para
+            // marcar bajas. Se pone en TRUE al empezar una vuelta y en FALSE en
+            // cuanto algo la interrumpe: un error, un timeout, un 429, un
+            // cursor invalido o una pagina fallida. Vive en la tabla porque una
+            // vuelta dura muchos ciclos y puede cruzar un redeploy.
+            //
+            // El DEFECTO es FALSE a proposito: una fila que ya existia esta a
+            // mitad de una vuelta cuya limpieza nadie observo, y ante la duda
+            // no se borra la pertenencia de nadie.
+            "ALTER TABLE plugin_index_crawl ADD COLUMN IF NOT EXISTS lap_clean BOOLEAN NOT NULL DEFAULT FALSE",
         ],
     },
     {

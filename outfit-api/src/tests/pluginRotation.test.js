@@ -84,6 +84,14 @@ module.exports = async function run() {
     const base = crearBaseFalsa();
     base.instalar();
 
+    // EL CAMINO ANTIGUO, FIJADO A PROPOSITO. `recuperarAlArrancar` cambia de
+    // comportamiento segun INDEX_SERVE_ENABLED: con el indice sirviendo no
+    // adopta ni reanuda nada, porque nadie espera esos trabajos. Este archivo
+    // prueba justo lo contrario, asi que lo deja explicito en vez de heredar lo
+    // que dejara puesto el archivo anterior.
+    const servirDesdeIndice = config.indexServe.enabled;
+    config.indexServe.enabled = false;
+
     // ── Comunidad de mentira, paginada como Roblox ───────────────────────────
     let mundo = {};
     const llamadas = { members: 0, avatars: 0 };
@@ -1553,6 +1561,7 @@ module.exports = async function run() {
     roblox.getCatalogItemDetails = original.getCatalogItemDetails;
     Object.assign(repo, original.repo);
     Object.assign(jobRepo, original.jobRepo);
+    config.indexServe.enabled = servirDesdeIndice;
     cache.reset();
     ownRateLimit.reset();
     robloxRateLimiter.reset();

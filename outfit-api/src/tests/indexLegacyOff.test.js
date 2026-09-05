@@ -62,6 +62,13 @@ module.exports = async function run() {
     const base = crearBaseFalsa();
     base.instalar();
 
+    // REGISTRO PROPIO, no el global. El registro por defecto lo comparte todo
+    // el proceso y su ejecutor lo pone el runner real al cargarse: cambiarlo
+    // por un espia y no devolverlo dejaba a los archivos siguientes adoptando
+    // trabajos que despues nadie ejecutaba. Aqui se levanta uno aparte, sobre
+    // la misma base, que es justo lo que hace falta para probar la puerta.
+    const registro = jobs.crearRegistro({ instancia: "instancia-legacy-test" });
+
     // ── LA TRAMPA ───────────────────────────────────────────────────────────
     // Cualquier llamada a Roblox durante la recuperacion deja constancia aqui.
     // Un trabajo legacy que arrancara de verdad empezaria pidiendo la primera
@@ -93,14 +100,14 @@ module.exports = async function run() {
     }
 
     function limpiar() {
-        cache.reset(); limitador.reset(); colaDeGrupos.reset(); jobs.reset(); base.limpiar();
+        cache.reset(); limitador.reset(); colaDeGrupos.reset(); jobs.reset(); registro.reset(); base.limpiar();
         llamadas.length = 0;
     }
 
     // Un ejecutor de mentira: si el runner legacy arranca, se nota aqui.
     function ejecutorEspia() {
         const arrancados = [];
-        jobs.registrarEjecutor(trabajo => { arrancados.push(trabajo.searchId); return null; });
+        registro.registrarEjecutor(trabajo => { arrancados.push(trabajo.searchId); return null; });
         return arrancados;
     }
 
@@ -112,12 +119,12 @@ module.exports = async function run() {
         const arrancados = ejecutorEspia();
         sembrarLegacy('s_' + 'aa'.repeat(16));
 
-        const r = await jobs.recuperarAlArrancar();
+        const r = await registro.recuperarAlArrancar();
 
         assert.strictEqual(r.adoptados, 0, 'se adopto un trabajo del sistema antiguo');
         assert.deepStrictEqual(arrancados, [], `el runner legacy arranco: ${arrancados.join(',')}`);
         assert.deepStrictEqual(llamadas, [], `el job legacy llamo a Roblox: ${llamadas.join(', ')}`);
-        assert.strictEqual(jobs.tamano(), 0, 'el trabajo se cargo en memoria pese a no ejecutarse');
+        assert.strictEqual(registro.tamano(), 0, 'el trabajo se cargo en memoria pese a no ejecutarse');
     });
 
     test('el job legacy queda RETIRADO como expirado, no borrado', async () => {
@@ -127,7 +134,7 @@ module.exports = async function run() {
         const id = 's_' + 'bb'.repeat(16);
         sembrarLegacy(id);
 
-        const r = await jobs.recuperarAlArrancar();
+        const r = await registro.recuperarAlArrancar();
 
         assert.strictEqual(r.legacyRetirado, 1);
         const fila = base.trabajosPersistidos.get(id);
@@ -145,7 +152,7 @@ module.exports = async function run() {
         sembrarLegacy('s_' + 'cc'.repeat(16), { estado: 'queued' });
         sembrarLegacy('s_' + 'dd'.repeat(16), { estado: 'running' });
 
-        const r = await jobs.recuperarAlArrancar();
+        const r = await registro.recuperarAlArrancar();
 
         assert.strictEqual(r.legacyRetirado, 2);
         assert.deepStrictEqual(llamadas, []);
@@ -160,10 +167,10 @@ module.exports = async function run() {
         ejecutorEspia();
         sembrarLegacy('s_' + 'ee'.repeat(16));
 
-        const primero = await jobs.recuperarAlArrancar();
+        const primero = await registro.recuperarAlArrancar();
         assert.strictEqual(primero.legacyRetirado, 1);
 
-        const segundo = await jobs.recuperarAlArrancar();
+        const segundo = await registro.recuperarAlArrancar();
         assert.strictEqual(segundo.legacyRetirado, 0, 'volvio a retirar algo ya retirado');
         assert.deepStrictEqual(llamadas, []);
     });
@@ -177,7 +184,7 @@ module.exports = async function run() {
         const arrancados = ejecutorEspia();
         sembrarLegacy('s_' + 'ff'.repeat(16));
 
-        for (let i = 0; i < 5; i++) await jobs.recuperarAlArrancar();
+        for (let i = 0; i < 5; i++) await registro.recuperarAlArrancar();
 
         assert.deepStrictEqual(arrancados, []);
         assert.deepStrictEqual(llamadas, []);
@@ -192,7 +199,7 @@ module.exports = async function run() {
         const id = 's_' + '11'.repeat(16);
         sembrarLegacy(id);
 
-        const r = await jobs.recuperarAlArrancar();
+        const r = await registro.recuperarAlArrancar();
 
         assert.strictEqual(r.adoptados, 1, 'no se adopto el trabajo huerfano');
         assert.deepStrictEqual(arrancados, [id], 'el runner no arranco tras adoptar');
@@ -207,9 +214,9 @@ module.exports = async function run() {
         const id = 's_' + '22'.repeat(16);
         sembrarLegacy(id);
 
-        await jobs.recuperarAlArrancar();
+        await registro.recuperarAlArrancar();
 
-        const trabajo = await jobs.obtener(id);
+        const trabajo = await registro.obtener(id);
         assert.ok(trabajo, 'el trabajo adoptado no esta en memoria');
         assert.strictEqual(trabajo.checkpoint.outfits.length, 2,
             'se perdio lo que el trabajo ya habia encontrado');
@@ -233,5 +240,6 @@ module.exports = async function run() {
     limitador.reset();
     colaDeGrupos.reset();
     jobs.reset();
+    registro.reset();
     return ok;
 };

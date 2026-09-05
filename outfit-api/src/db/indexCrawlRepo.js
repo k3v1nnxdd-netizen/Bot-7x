@@ -51,6 +51,7 @@ function filaAEstado(fila) {
         lastRunAt: fila.last_run_at ? new Date(fila.last_run_at).getTime() : null,
         lastFullPassAt: fila.last_full_pass_at ? new Date(fila.last_full_pass_at).getTime() : null,
         cycleStartedAt: fila.cycle_started_at ? new Date(fila.cycle_started_at).getTime() : null,
+        lapClean: fila.lap_clean === true,
         lastError: fila.last_error ?? null,
         leaseOwner: fila.lease_owner ?? null,
         leaseExpiresAt: fila.lease_expires_at ? new Date(fila.lease_expires_at).getTime() : null,
@@ -107,7 +108,7 @@ async function registrarDemanda(groupId, { faltan = 1, peso = 1 } = {}) {
 // `soloConDemanda` es lo que impide recorrer la whitelist entera: sin demanda
 // registrada, un grupo solo entra si nunca se ha recorrido o si ya tocaba su
 // vuelta de refresco.
-async function tomar(instancia, { leaseMs, refrescarCadaMs = null } = {}) {
+async function tomar(instancia, { leaseMs, refrescarCadaMs = null, revisitarCadaMs = null } = {}) {
     if (!disponible()) return null;
 
     const { rows } = await db.query(
@@ -119,6 +120,12 @@ async function tomar(instancia, { leaseMs, refrescarCadaMs = null } = {}) {
                 AND (
                     priority > 0
                     OR last_run_at IS NULL
+                    -- REVISITA. Sin esta condicion, un grupo a medio indexar y
+                    -- sin demanda dejaba de elegirse hasta la siguiente vuelta
+                    -- completa (dias), y el worker se quedaba sin trabajo que
+                    -- hacer teniendo cientos de usuarios sin mirar.
+                    OR ($4::double precision IS NOT NULL
+                        AND last_run_at < NOW() - ($4::double precision * INTERVAL '1 millisecond'))
                     OR ($3::double precision IS NOT NULL
                         AND (last_full_pass_at IS NULL
                              OR last_full_pass_at < NOW() - ($3::double precision * INTERVAL '1 millisecond')))
@@ -134,7 +141,7 @@ async function tomar(instancia, { leaseMs, refrescarCadaMs = null } = {}) {
            FROM elegido
           WHERE c.group_id = elegido.group_id
       RETURNING c.*`,
-        [instancia, leaseMs, refrescarCadaMs],
+        [instancia, leaseMs, refrescarCadaMs, revisitarCadaMs],
         OP.tomar
     );
 
@@ -157,6 +164,7 @@ async function guardarCursor(groupId, instancia, avance) {
                 last_full_pass_at = CASE WHEN $8 THEN NOW() ELSE last_full_pass_at END,
                 cycle_started_at  = CASE WHEN $11::bigint IS NULL THEN cycle_started_at
                                          ELSE to_timestamp($11::bigint / 1000.0) END,
+                lap_clean         = $12,
                 -- La demanda se consume con el trabajo hecho, no de golpe: un
                 -- grupo muy pedido sigue teniendo prioridad en la vuelta
                 -- siguiente hasta que de verdad se ha recorrido.
@@ -174,6 +182,7 @@ async function guardarCursor(groupId, instancia, avance) {
             avance.prioridadConsumida ?? 0,
             avance.leaseMs ?? 60_000,
             avance.cycleStartedAt ?? null,
+            avance.lapClean === true,
         ],
         OP.guardar
     );

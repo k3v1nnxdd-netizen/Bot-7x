@@ -679,6 +679,38 @@ const indexWorker = {
     // TTL de una ficha de catalogo. Es el precio de un asset, que se mueve
     // menos que un avatar entero pero mas que su existencia.
     catalogTtlMs: intFromEnv('INDEX_WORKER_CATALOG_TTL_MS', 3 * 24 * 60 * 60_000),
+
+    // ── LIVENESS ────────────────────────────────────────────────────────────
+    //
+    // Cada cuanto se vuelve a mirar un grupo YA VISTO. Es la correccion del
+    // fallo que dejaba el indice clavado: un grupo a medio indexar y sin
+    // demanda registrada dejaba de ser elegible hasta la siguiente vuelta
+    // completa —siete dias— y el worker se quedaba devolviendo "sin trabajo"
+    // sin error, sin log y sin avanzar. Ahora se revisita solito; si no hay
+    // nada pendiente el ciclo es un no-op de dos consultas.
+    revisitEveryMs: intFromEnv('INDEX_WORKER_REVISIT_EVERY_MS', 30_000),
+
+    // Latido del worker: una linea cada minuto diciendo que sigue vivo, en que
+    // etapa esta y cuanto lleva sin progresar. Sin esto, "no pasa nada" y "esta
+    // muerto" se ven igual desde fuera.
+    heartbeatEveryMs: intFromEnv('INDEX_WORKER_HEARTBEAT_EVERY_MS', 60_000),
+
+    // Ciclos seguidos sin progreso REAL y sin cooldown que lo explique antes de
+    // avisar. No mata nada: deja constancia y sigue.
+    stallCycles: intFromEnv('INDEX_WORKER_STALL_CYCLES', 2),
+
+    // SOLO UN AVISO, nunca una autorizacion. Si una vuelta termina limpia pero
+    // habiendo visto pocos de los conocidos, se deja constancia y se marcan las
+    // bajas igualmente — la autorizacion la da la evidencia de vuelta completa
+    // (ver plugin_index_crawl.lap_clean), no una proporcion. Un 95% interrumpido
+    // sigue dejando fuera a usuarios activos, asi que un umbral no sirve para
+    // decidir esto.
+    leaverWarnRatio: Number(process.env.INDEX_WORKER_LEAVER_WARN_RATIO ?? 0.8),
+
+    // Vigilante del ciclo. Si un ciclo no termina en este plazo se le da por
+    // colgado y se deja pasar al siguiente: un await que no vuelve nunca
+    // dejaria el worker parado para siempre sin que nadie se enterara.
+    cycleTimeoutMs: intFromEnv('INDEX_WORKER_CYCLE_TIMEOUT_MS', 120_000),
 };
 
 // ── SERVIR DESDE EL INDICE (fase 3) ─────────────────────────────────────────

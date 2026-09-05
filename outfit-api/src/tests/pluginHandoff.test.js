@@ -100,6 +100,14 @@ module.exports = async function run() {
     const base = crearBaseFalsa();
     base.instalar();
 
+    // EL CAMINO ANTIGUO, FIJADO A PROPOSITO. `recuperarAlArrancar` cambia de
+    // comportamiento segun INDEX_SERVE_ENABLED: con el indice sirviendo no
+    // adopta ni reanuda nada, porque nadie espera esos trabajos. Este archivo
+    // prueba justo lo contrario, asi que lo deja explicito en vez de heredar lo
+    // que dejara puesto el archivo anterior.
+    const servirDesdeIndice = config.indexServe.enabled;
+    config.indexServe.enabled = false;
+
     // ── Instancia B: su propio registro y su propio runner ───────────────────
     const jobsB = jobsA.crearRegistro({ instancia: INSTANCIA_B });
     crearRunner(jobsB);
@@ -619,6 +627,7 @@ module.exports = async function run() {
     config.pluginSearch.rateLimitHeartbeatMs = original.cfg.parkHeartbeat;
     config.pluginSearch.rateLimitWaitMarginMs = original.cfg.margen;
     config.pluginSearch.rateLimitWaitBudgetMs = original.cfg.presupuesto;
+    config.indexServe.enabled = servirDesdeIndice;
     cache.reset();
     ownRateLimit.reset();
     robloxRateLimiter.reset();

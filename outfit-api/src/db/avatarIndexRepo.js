@@ -335,13 +335,15 @@ async function pendientesDePrecio(groupId, {
 async function cobertura(groupId, { ttlAvatarMs, ttlPrecioMs, minAccessories = 0 } = {}) {
     if (!disponible()) return null;
 
+    // `members` es COUNT(DISTINCT user_id) de la pertenencia activa: usuarios
+    // distintos, nunca filas de un join ni paginas recorridas.
     const { rows } = await db.query(
-        `SELECT COUNT(*)::int AS miembros,
-                COUNT(a.user_id)::int AS indexados,
-                COUNT(*) FILTER (WHERE a.state = 'valid')::int AS validos,
-                COUNT(*) FILTER (WHERE a.state = 'valid' AND a.accessories >= $4)::int AS elegibles,
-                COUNT(*) FILTER (WHERE a.accessories < $4 AND a.user_id IS NOT NULL)::int AS bajoMinimo,
-                COUNT(*) FILTER (
+        `SELECT COUNT(DISTINCT m.user_id)::int AS miembros,
+                COUNT(DISTINCT a.user_id)::int AS indexados,
+                COUNT(DISTINCT a.user_id) FILTER (WHERE a.state = 'valid')::int AS validos,
+                COUNT(DISTINCT a.user_id) FILTER (WHERE a.state = 'valid' AND a.accessories >= $4)::int AS elegibles,
+                COUNT(DISTINCT a.user_id) FILTER (WHERE a.accessories < $4)::int AS bajoMinimo,
+                COUNT(DISTINCT a.user_id) FILTER (
                     WHERE a.state = 'valid'
                       AND a.avatar_fetched_at >= NOW() - ($2::double precision * INTERVAL '1 millisecond')
                       AND a.priced_at IS NOT NULL
@@ -360,6 +362,7 @@ async function cobertura(groupId, { ttlAvatarMs, ttlPrecioMs, minAccessories = 0
     return {
         groupId: String(groupId),
         members: miembros,
+        knownMembers: miembros,
         indexed: indexados,
         valid: Number(f.validos ?? 0),
         eligible: Number(f.elegibles ?? 0),

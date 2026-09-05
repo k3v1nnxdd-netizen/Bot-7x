@@ -8,15 +8,20 @@ const { ewma } = require('../services/pluginSearch/eta');
 // Doble de Postgres EN MEMORIA con la misma semantica que las tres tablas del
 // plugin: el lease con caducidad (lo que impide que dos busquedas del mismo
 // grupo corrompan el cursor), la EWMA de las estadisticas, y los trabajos con
-// su checkpoint, su fencing por instancia y su adopcion tras una caida.
+// su checkpoint, su VALLADO POR INSTANCIA, su latido y su adopcion.
 //
-// Compartido por pluginRotation.test.js y pluginPark.test.js: dos copias del
-// mismo doble acabarian con dos semanticas distintas de la misma tabla.
+// EL VALLADO ES POR TRABAJO, NO GLOBAL: cada trabajo en memoria lleva la
+// instancia que lo creo o adopto (`trabajo.instanceId`), y la fila del doble
+// solo acepta escrituras de esa instancia — exactamente como la sentencia real
+// (`WHERE instance_id = $me`). Eso es lo que permite levantar DOS registros en
+// el mismo proceso (una instancia "vieja" y una "nueva", como en un redeploy)
+// sobre la misma base y probar quien puede escribir que.
+//
+// Compartido por pluginRotation.test.js, pluginPark.test.js y
+// pluginHandoff.test.js: dos copias del mismo doble acabarian con dos
+// semanticas distintas de la misma tabla.
 
-// Identidad de "este proceso" dentro del doble. Un trabajo cuya fila lleve otra
-// instancia no es nuestro, y las escrituras vallada lo rechazan igual que la
-// sentencia real (`WHERE instance_id = $me`).
-const ESTA_INSTANCIA = 'instancia-de-pruebas';
+const ESTA_INSTANCIA = jobRepo.__instancia;
 
 function crearBaseFalsa() {
     const rotaciones = new Map();
@@ -25,8 +30,12 @@ function crearBaseFalsa() {
     let disponible = true;
     let fallarAdquirir = false;
 
+    // Fallos TRANSITORIOS inyectados: cuantos latidos/volcados seguidos deben
+    // fallar (como si la base no respondiera).
+    let latidosQueFallan = 0;
+
     // Contadores de operaciones, para poder afirmar sobre lo que se escribio.
-    const operaciones = { renew: 0, snapshot: 0, adopt: 0 };
+    const operaciones = { renew: 0, snapshot: 0, heartbeat: 0, adopt: 0, release: 0 };
 
     const filaAJob = fila => ({
         searchId: fila.searchId, groupId: fila.groupId, status: fila.status,
@@ -35,10 +44,33 @@ function crearBaseFalsa() {
         stats: fila.stats, error: fila.error,
         params: fila.params ?? null, phase: fila.phase ?? 'working',
         resumeAt: fila.resumeAt ?? null, rateLimitedRoute: fila.rateLimitedRoute ?? null,
-        checkpoint: fila.checkpoint ?? null, instanceId: fila.instanceId ?? null,
+        checkpoint: fila.checkpoint ?? null,
+        instanceId: fila.instanceId ?? null, previousInstanceId: fila.previousInstanceId ?? null,
+        handoffs: fila.handoffs ?? 0, adoptedAt: fila.adoptedAt ?? null, heartbeatAt: fila.heartbeatAt ?? null,
         createdAt: fila.createdAt, startedAt: fila.startedAt, finishedAt: fila.finishedAt,
         desdeBase: true,
     });
+
+    // Quien es el dueño, como la consulta real.
+    const quienEsElDueño = async searchId => {
+        const fila = trabajosPersistidos.get(searchId);
+        if (!fila) return { ok: false, motivo: jobRepo.NO_ES_MIO.AUSENTE, dueño: null, estado: null };
+        if (!['queued', 'running'].includes(fila.status)) {
+            return { ok: false, motivo: jobRepo.NO_ES_MIO.TERMINAL, dueño: fila.instanceId, estado: fila.status };
+        }
+        if (fila.instanceId === null) return { ok: false, motivo: jobRepo.NO_ES_MIO.SOLTADO, dueño: null, estado: fila.status };
+        return {
+            ok: false, motivo: jobRepo.NO_ES_MIO.ADOPTADO, dueño: fila.instanceId, estado: fila.status,
+            previo: fila.previousInstanceId ?? null, handoffs: fila.handoffs ?? 0,
+        };
+    };
+
+    const veredicto = async (trabajo, tocada) => {
+        if (tocada) return { ok: true };
+        const quien = await quienEsElDueño(trabajo.searchId);
+        if (quien.motivo === jobRepo.NO_ES_MIO.ADOPTADO && quien.dueño === trabajo.instanceId) return { ok: true, transitorio: true };
+        return quien;
+    };
 
     return {
         rotaciones,
@@ -48,15 +80,17 @@ function crearBaseFalsa() {
         ESTA_INSTANCIA,
         set disponible(v) { disponible = v; },
         set fallarAdquirir(v) { fallarAdquirir = v; },
+        set latidosQueFallan(n) { latidosQueFallan = n; },
 
         instalar() {
             repo.disponible = () => disponible;
 
             // ── plugin_search_jobs ───────────────────────────────────────────
             jobRepo.disponible = () => disponible;
+            jobRepo.quienEsElDueño = quienEsElDueño;
 
             jobRepo.crear = async trabajo => {
-                if (!disponible) return;
+                if (!disponible) return { persistido: false };
                 trabajosPersistidos.set(trabajo.searchId, {
                     searchId: trabajo.searchId, groupId: String(trabajo.groupId),
                     status: trabajo.status, target: trabajo.target, found: 0,
@@ -64,19 +98,20 @@ function crearBaseFalsa() {
                     outfits: [], stats: null, error: null,
                     params: trabajo.params ? JSON.parse(JSON.stringify(trabajo.params)) : null,
                     phase: 'working', resumeAt: null, rateLimitedRoute: null, checkpoint: null,
-                    instanceId: ESTA_INSTANCIA,
+                    instanceId: trabajo.instanceId, previousInstanceId: null, handoffs: 0, adoptedAt: null,
                     createdAt: Date.now(), startedAt: null, finishedAt: null,
                     heartbeatAt: Date.now(), expiresAt: null,
                 });
+                return { persistido: true };
             };
 
-            // FENCED, como la sentencia real: solo escribe si la fila sigue
-            // siendo de esta instancia, y devuelve si lo era.
+            // VALLADO, como la sentencia real: solo escribe si la fila es de la
+            // instancia del trabajo, y si no, diagnostica.
             jobRepo.actualizar = async trabajo => {
-                if (!disponible) return true;
+                if (!disponible) return { ok: true, transitorio: true };
+                if (latidosQueFallan > 0) { latidosQueFallan--; return { ok: true, transitorio: true }; }
                 const fila = trabajosPersistidos.get(trabajo.searchId);
-                if (!fila) return true;
-                if (fila.instanceId !== ESTA_INSTANCIA) return false;
+                if (!fila || fila.instanceId !== trabajo.instanceId) return veredicto(trabajo, false);
                 operaciones.snapshot++;
                 fila.status = trabajo.status;
                 fila.found = trabajo.progress?.found ?? 0;
@@ -86,18 +121,30 @@ function crearBaseFalsa() {
                 fila.phase = trabajo.phase ?? 'working';
                 fila.resumeAt = trabajo.resumeAt ?? null;
                 fila.rateLimitedRoute = trabajo.rateLimitedRoute ?? null;
-                if (trabajo.checkpointPendiente) {
-                    fila.checkpoint = JSON.parse(JSON.stringify(trabajo.checkpointPendiente));
-                }
+                if (trabajo.checkpointPendiente) fila.checkpoint = JSON.parse(JSON.stringify(trabajo.checkpointPendiente));
                 fila.heartbeatAt = Date.now();
-                return true;
+                return { ok: true };
+            };
+
+            jobRepo.latir = async trabajo => {
+                if (!disponible) return { ok: true, transitorio: true };
+                if (latidosQueFallan > 0) { latidosQueFallan--; return { ok: true, transitorio: true }; }
+                const fila = trabajosPersistidos.get(trabajo.searchId);
+                if (!fila || fila.instanceId !== trabajo.instanceId) return veredicto(trabajo, false);
+                operaciones.heartbeat++;
+                fila.heartbeatAt = Date.now();
+                fila.status = trabajo.status;
+                fila.phase = trabajo.phase ?? 'working';
+                fila.resumeAt = trabajo.resumeAt ?? null;
+                fila.rateLimitedRoute = trabajo.rateLimitedRoute ?? null;
+                if (trabajo.progress) fila.progress = trabajo.progress;
+                return { ok: true };
             };
 
             jobRepo.terminar = async trabajo => {
-                if (!disponible) return;
+                if (!disponible) return { ok: true };
                 const fila = trabajosPersistidos.get(trabajo.searchId);
-                if (!fila) return;
-                if (fila.instanceId !== ESTA_INSTANCIA) return;
+                if (!fila || fila.instanceId !== trabajo.instanceId) return veredicto(trabajo, false);
                 fila.status = trabajo.status;
                 fila.found = trabajo.outfits?.length ?? 0;
                 fila.candidatesExamined = trabajo.stats?.candidatesExamined ?? 0;
@@ -112,6 +159,23 @@ function crearBaseFalsa() {
                 fila.finishedAt = Date.now();
                 fila.heartbeatAt = Date.now();
                 fila.expiresAt = Date.now() + config.pluginJobs.retentionMs;
+                return { ok: true };
+            };
+
+            // Soltar al apagar: sin dueño, con el ultimo checkpoint.
+            jobRepo.soltar = async trabajo => {
+                if (!disponible) return { ok: false };
+                const fila = trabajosPersistidos.get(trabajo.searchId);
+                if (!fila || fila.instanceId !== trabajo.instanceId) return { ok: false };
+                if (!['queued', 'running'].includes(fila.status)) return { ok: false };
+                operaciones.release++;
+                fila.previousInstanceId = fila.instanceId;
+                fila.instanceId = null;
+                fila.phase = 'recovering';
+                if (trabajo.checkpoint) fila.checkpoint = JSON.parse(JSON.stringify(trabajo.checkpoint));
+                if (trabajo.progress) fila.progress = trabajo.progress;
+                fila.updatedAt = Date.now();
+                return { ok: true };
             };
 
             jobRepo.leer = async searchId => {
@@ -120,9 +184,9 @@ function crearBaseFalsa() {
                 return fila ? filaAJob(fila) : null;
             };
 
-            // Adopcion atomica de lo reanudable con latido viejo: cambia de
-            // dueño y devuelve las filas, igual que el UPDATE ... RETURNING.
-            jobRepo.adoptarHuerfanos = async (limite = 8) => {
+            // Adopcion atomica de lo soltado o con latido viejo, para la
+            // instancia que lo pide.
+            jobRepo.adoptarHuerfanos = async (instancia, limite = 8) => {
                 if (!disponible) return [];
                 const adoptadas = [];
                 const ahora = Date.now();
@@ -130,14 +194,23 @@ function crearBaseFalsa() {
                     if (adoptadas.length >= limite) break;
                     if (!['queued', 'running'].includes(fila.status)) continue;
                     if (!fila.params) continue;
-                    const plazo = fila.status === 'queued'
-                        ? config.pluginJobs.queuedTimeoutMs
-                        : config.pluginJobs.heartbeatTimeoutMs;
-                    if (fila.heartbeatAt !== null && fila.heartbeatAt >= ahora - plazo) continue;
-                    fila.instanceId = ESTA_INSTANCIA;
+                    const ultimo = fila.heartbeatAt ?? fila.createdAt;
+                    const soltado = fila.instanceId === null;
+                    const viejo = ultimo < ahora - config.pluginJobs.adoptAfterMs;
+                    if (!soltado && !viejo) continue;
+                    const previo = fila.instanceId;
+                    fila.previousInstanceId = previo;
+                    fila.instanceId = instancia;
+                    fila.adoptedAt = ahora;
+                    fila.handoffs = (fila.handoffs ?? 0) + 1;
                     fila.heartbeatAt = ahora;
                     operaciones.adopt++;
-                    adoptadas.push(filaAJob(fila));
+                    adoptadas.push({
+                        ...filaAJob(fila),
+                        adoptedFrom: previo,
+                        heartbeatAgeMs: Math.max(0, ahora - ultimo),
+                        adoptionReason: soltado ? 'released' : 'heartbeat_stale',
+                    });
                 }
                 return adoptadas;
             };
@@ -148,11 +221,11 @@ function crearBaseFalsa() {
                 const ahora = Date.now();
                 for (const fila of trabajosPersistidos.values()) {
                     if (!['queued', 'running'].includes(fila.status)) continue;
-                    if (fila.params) continue; // reanudable: se adopta, no se expira
-                    const plazo = fila.status === 'queued'
-                        ? config.pluginJobs.queuedTimeoutMs
-                        : config.pluginJobs.heartbeatTimeoutMs;
-                    if (fila.heartbeatAt !== null && fila.heartbeatAt >= ahora - plazo) continue;
+                    const ultimo = fila.heartbeatAt ?? fila.createdAt;
+                    const legado = !fila.params && ultimo < ahora - config.pluginJobs.adoptAfterMs;
+                    const soltadoOlvidado = fila.instanceId === null
+                        && (fila.updatedAt ?? ultimo) < ahora - config.pluginJobs.releasedExpireMs;
+                    if (!legado && !soltadoOlvidado) continue;
                     fila.status = 'expired';
                     fila.stoppedBy = 'expired';
                     fila.finishedAt = ahora;
@@ -202,8 +275,6 @@ function crearBaseFalsa() {
             repo.guardar = async estado => {
                 if (!disponible) return false;
                 const fila = rotaciones.get(String(estado.groupId));
-                // El WHERE lease_owner de la sentencia real: si el lease ya no
-                // es tuyo, no se escribe nada.
                 if (!fila || fila.leaseOwner !== estado.owner) return false;
                 fila.cursor = estado.cursor;
                 fila.intraPageOffset = estado.intraPageOffset;
@@ -214,7 +285,6 @@ function crearBaseFalsa() {
                 return true;
             };
 
-            // Solo el lease, sin avance: lo que hace un trabajo estacionado.
             repo.renovar = async (groupId, owner, leaseMs) => {
                 if (!disponible) return true;
                 const fila = rotaciones.get(String(groupId));
@@ -232,9 +302,6 @@ function crearBaseFalsa() {
                 }
             };
 
-            // Sin esto, el doble caeria en la implementacion real, que consulta
-            // una base que en los tests no existe: devolveria "no se sabe" y la
-            // espera se comportaria distinto de como se comporta en produccion.
             repo.esperaDelLease = async groupId => {
                 const fila = rotaciones.get(String(groupId));
                 if (!fila || !fila.leaseExpiresAt) return 0;
@@ -266,8 +333,6 @@ function crearBaseFalsa() {
             };
         },
 
-        // Simula que OTRA REPLICA tiene el lease del grupo: la fila existe con
-        // un dueño que no es el de este proceso y con caducidad en el futuro.
         otraInstanciaToma(groupId, { duracionMs = config.pluginRotation.leaseMs } = {}) {
             const clave = String(groupId);
             const fila = rotaciones.get(clave) ?? {
@@ -280,7 +345,6 @@ function crearBaseFalsa() {
             return fila;
         },
 
-        // La otra replica termina y suelta, dejando el cursor mas adelante.
         otraInstanciaSuelta(groupId, avance = {}) {
             const fila = rotaciones.get(String(groupId));
             if (!fila) return;
@@ -289,14 +353,13 @@ function crearBaseFalsa() {
             fila.leaseExpiresAt = null;
         },
 
-        // Simula la MUERTE de la instancia que tiene un trabajo: la fila queda
-        // con un dueño que ya no existe y un latido viejo. Es exactamente lo
-        // que ve la siguiente instancia al arrancar.
+        // Simula la MUERTE del dueño de un trabajo desde el punto de vista de
+        // la base: la fila conserva al dueño, pero su latido es viejo. Es
+        // exactamente lo que ve la siguiente instancia al arrancar.
         instanciaMuereCon(searchId) {
             const fila = trabajosPersistidos.get(searchId);
             if (!fila) return null;
-            fila.instanceId = 'instancia-muerta';
-            fila.heartbeatAt = 0;
+            fila.heartbeatAt = Date.now() - config.pluginJobs.adoptAfterMs - 1;
             return fila;
         },
 
@@ -306,9 +369,8 @@ function crearBaseFalsa() {
             trabajosPersistidos.clear();
             disponible = true;
             fallarAdquirir = false;
-            operaciones.renew = 0;
-            operaciones.snapshot = 0;
-            operaciones.adopt = 0;
+            latidosQueFallan = 0;
+            for (const k of Object.keys(operaciones)) operaciones[k] = 0;
         },
     };
 }

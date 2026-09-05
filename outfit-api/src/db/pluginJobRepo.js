@@ -10,23 +10,36 @@ const logger = require('../observability/logger');
 // INSTANCIA: con el estado solo en memoria, un GET que cae en la replica
 // equivocada responde 404 aunque el trabajo exista y este corriendo.
 //
-// NO CONVIERTE LA BASE EN UN STREAM DE ESCRITURAS, que es el error facil aqui.
-// El estado caliente vive en memoria (ver services/pluginSearch/jobs.js) y a
-// Postgres solo se baja:
-//   - al crear (queued) y al arrancar (running);
-//   - por HITOS: cuando sube `found`, que es lo que de verdad cambia la foto;
-//   - cada PLUGIN_JOB_SNAPSHOT_MS como maximo, aunque no haya hitos — ese
-//     volcado hace ademas de latido;
-//   - al terminar, ya con el resultado completo.
-// Una busqueda de 20 segundos son del orden de 10 escrituras, no cientos.
+// ── PROPIEDAD (ownership) ────────────────────────────────────────────────────
 //
-// SIN BASE DE DATOS TODO ESTO ES NULO y el servicio sigue funcionando con los
-// trabajos en memoria, igual que la API de outfits lleva funcionando sin
-// Postgres desde el primer dia.
+// Cada fila lleva `instance_id`: el proceso que la esta EJECUTANDO. Toda
+// escritura de ese proceso va vallada (`WHERE instance_id = $me`), asi que dos
+// procesos no pueden avanzar el mismo trabajo a la vez: el que perdio la
+// propiedad se entera en su siguiente escritura y para.
+//
+// La propiedad se mantiene con un LATIDO independiente del progreso (ver
+// jobs.js): cada pocos segundos, trabaje, espere turno o este estacionado por
+// Roblox. Un trabajo cuyo latido lleva `adoptAfterMs` sin renovarse es un
+// huerfano y otra instancia puede adoptarlo — y solo entonces.
+//
+// LA TOLERANCIA A FALLOS TRANSITORIOS de la base esta en la relacion entre el
+// intervalo de latido y `adoptAfterMs`: con latidos cada 5 s y adopcion a los
+// 90 s hacen falta dieciocho latidos fallidos seguidos para que un trabajo
+// vivo parezca muerto. Un bache de Postgres de veinte segundos no le quita el
+// trabajo a nadie.
+//
+// ── EL FALLO QUE ESTO CORRIGE ────────────────────────────────────────────────
+//
+// La creacion (INSERT) no se esperaba, y la primera escritura vallada del
+// ejecutor (UPDATE ... WHERE instance_id = $me) podia llegar a Postgres ANTES
+// de que la fila existiera. Cero filas afectadas se interpretaba como "otra
+// instancia lo adopto": el proceso soltaba una busqueda que NADIE mas tenia, y
+// el trabajo se quedaba en 0 de 10 para siempre. Ahora la creacion se espera,
+// y cero filas afectadas se DIAGNOSTICA antes de concluir nada: se lee quien
+// es el dueño, y solo si es otra instancia se considera adoptado.
 
-// Identidad de este proceso. Sirve para saber, al arrancar, si un trabajo
-// 'running' era NUESTRO (y por tanto esta muerto tras el reinicio) o de otra
-// replica que sigue viva y latiendo.
+// Identidad de este proceso. Cambia en cada arranque a proposito: tras un
+// redeploy, el proceso nuevo no debe poder confundirse con el viejo.
 const INSTANCIA = `${process.pid}-${crypto.randomBytes(4).toString('hex')}`;
 
 const disponible = () => db.isConfigured();
@@ -53,7 +66,13 @@ function filaAJob(fila) {
         resumeAt: fila.resume_at?.getTime?.() ?? null,
         rateLimitedRoute: fila.rate_limited_route ?? null,
         checkpoint: fila.checkpoint ?? null,
+
+        // Propiedad.
         instanceId: fila.instance_id ?? null,
+        previousInstanceId: fila.previous_instance_id ?? null,
+        handoffs: fila.handoffs ?? 0,
+        adoptedAt: fila.adopted_at?.getTime?.() ?? null,
+        heartbeatAt: fila.heartbeat_at?.getTime?.() ?? null,
 
         createdAt: fila.created_at?.getTime?.() ?? null,
         startedAt: fila.started_at?.getTime?.() ?? null,
@@ -64,8 +83,58 @@ function filaAJob(fila) {
     };
 }
 
+// El resultado de toda escritura vallada. `ok: false` significa que la fila NO
+// es de este proceso, y `motivo` dice por que — que es lo que decide si hay que
+// parar (adoptado) o seguir en memoria (la fila no existe).
+const NO_ES_MIO = Object.freeze({
+    ADOPTADO: 'adopted',    // otra instancia es la dueña
+    SOLTADO: 'released',    // nadie es dueño: se solto (apagado) y aun no se adopto
+    AUSENTE: 'missing',     // la fila no existe
+    TERMINAL: 'terminal',   // ya termino (o expiro) segun la base
+});
+
+// Quien es el dueño de un trabajo segun la base. Se consulta SOLO cuando una
+// escritura vallada no toco ninguna fila: es lo que distingue "me lo quitaron"
+// de "la fila no esta" — y esa diferencia es la que antes no se hacia.
+async function quienEsElDueño(searchId) {
+    try {
+        const { rows } = await db.query(
+            `SELECT instance_id, status, heartbeat_at, previous_instance_id, handoffs
+               FROM plugin_search_jobs WHERE search_id = $1`,
+            [searchId], 'jobs.owner'
+        );
+        if (rows.length === 0) return { ok: false, motivo: NO_ES_MIO.AUSENTE, dueño: null, estado: null };
+        const fila = rows[0];
+        const terminal = !['queued', 'running'].includes(fila.status);
+        if (terminal) return { ok: false, motivo: NO_ES_MIO.TERMINAL, dueño: fila.instance_id, estado: fila.status };
+        if (fila.instance_id === null) return { ok: false, motivo: NO_ES_MIO.SOLTADO, dueño: null, estado: fila.status };
+        return {
+            ok: false, motivo: NO_ES_MIO.ADOPTADO, dueño: fila.instance_id, estado: fila.status,
+            previo: fila.previous_instance_id ?? null, handoffs: fila.handoffs ?? 0,
+        };
+    } catch (err) {
+        // No se sabe. Se asume que sigue siendo nuestro: parar una busqueda por
+        // un bache de la base seria peor que un latido de mas.
+        return { ok: true, transitorio: true };
+    }
+}
+
+// Interpreta el rowCount de una escritura vallada.
+async function veredicto(trabajo, rowCount) {
+    if (rowCount > 0) return { ok: true };
+    const quien = await quienEsElDueño(trabajo.searchId);
+    if (quien.ok) return quien;
+    // La fila es de OTRA instancia, o de nadie, o ya termino. Si es de este
+    // mismo proceso pero el UPDATE no la toco, algo raro paso (una carrera con
+    // la propia creacion): se trata como transitorio, no como adopcion.
+    if (quien.motivo === NO_ES_MIO.ADOPTADO && quien.dueño === trabajo.instanceId) {
+        return { ok: true, transitorio: true };
+    }
+    return quien;
+}
+
 async function crear(trabajo) {
-    if (!disponible()) return;
+    if (!disponible()) return { persistido: false };
     try {
         await db.query(
             `INSERT INTO plugin_search_jobs
@@ -73,39 +142,29 @@ async function crear(trabajo) {
              VALUES ($1, $2, $3, $4, $5, NOW(), $6, 'working')
              ON CONFLICT (search_id) DO NOTHING`,
             [
-                trabajo.searchId, String(trabajo.groupId), trabajo.status, trabajo.target, INSTANCIA,
+                trabajo.searchId, String(trabajo.groupId), trabajo.status, trabajo.target, trabajo.instanceId,
                 // La peticion entera: sin ella un trabajo que muera a medias
                 // no se puede reanudar en otra instancia.
                 trabajo.params ? JSON.stringify(trabajo.params) : null,
             ],
             'jobs.create'
         );
+        return { persistido: true };
     } catch (err) {
         // Un trabajo que no se puede persistir sigue sirviendo desde memoria:
         // lo unico que se pierde es poder consultarlo tras un reinicio.
         logger.warn('No se pudo persistir el trabajo de busqueda', {
-            searchId: trabajo.searchId, detail: err?.message,
+            searchId: trabajo.searchId, code: err?.code ?? null, detail: err?.message,
         });
+        return { persistido: false };
     }
 }
 
-// Volcado de estado + latido. `updated_at` y `heartbeat_at` van juntos: mientras
-// haya volcados, el trabajo esta vivo.
-//
-// ── FENCING POR INSTANCIA ────────────────────────────────────────────────────
-// El UPDATE solo toca la fila si el trabajo SIGUE SIENDO DE ESTE PROCESO. Si
-// otra instancia lo adopto (porque nuestro latido se quedo viejo: una pausa de
-// GC, una red partida, un despliegue a medias), esta escritura no hace nada y
-// devuelve `false` — y quien llama tiene que PARAR, porque a partir de ese
-// momento hay otro proceso avanzando la misma busqueda. Dos dueños escribiendo
-// el mismo checkpoint es la unica forma de corromperlo; esta valla es lo que
-// lo impide.
-//
-// Devuelve true si la fila sigue siendo nuestra (o si no hay base, o si la
-// base tuvo un bache: ahi no se puede afirmar lo contrario y parar una
-// busqueda por eso seria peor).
+// Volcado de estado + latido, VALLADO por instancia. Devuelve { ok } o
+// { ok: false, motivo, dueño }: quien llama decide, y solo 'adopted' significa
+// "para, otra instancia lo continua".
 async function actualizar(trabajo) {
-    if (!disponible()) return true;
+    if (!disponible()) return { ok: true };
     try {
         const { rowCount } = await db.query(
             `UPDATE plugin_search_jobs
@@ -128,36 +187,64 @@ async function actualizar(trabajo) {
                 trabajo.progress?.candidatesExamined ?? 0,
                 trabajo.progress ? JSON.stringify(trabajo.progress) : null,
                 trabajo.startedAt ? new Date(trabajo.startedAt) : null,
-                INSTANCIA,
+                trabajo.instanceId,
                 trabajo.phase ?? 'working',
                 trabajo.resumeAt ? new Date(trabajo.resumeAt) : null,
                 trabajo.rateLimitedRoute ?? null,
-                // COALESCE: si este volcado no trae checkpoint, se conserva el
-                // ultimo. Solo se manda cuando cambio (ver jobs.js).
                 trabajo.checkpointPendiente ? JSON.stringify(trabajo.checkpointPendiente) : null,
             ],
             'jobs.snapshot'
         );
-        return rowCount > 0;
+        return veredicto(trabajo, rowCount);
     } catch (err) {
         // warn, no debug: un volcado fallido es un checkpoint que NO es
-        // durable, y si el proceso muere ahora el trabajo no se podra
-        // reanudar desde aqui. Tiene que verse. (La linea de pool.js ya trae
-        // repositorio, operacion y SQLSTATE; esta añade el contexto del job.)
+        // durable. Pero un bache de la base no le quita el trabajo a nadie.
         logger.warn('No se pudo volcar el progreso del trabajo', {
             searchId: trabajo.searchId, phase: trabajo.phase ?? 'working',
             code: err?.code ?? null, detail: err?.message,
         });
-        return true;
+        return { ok: true, transitorio: true };
     }
 }
 
-// Cierre. Aqui SI se guarda el resultado entero, y se fija la caducidad: es la
-// unica escritura grande de todo el ciclo y ocurre una vez.
-async function terminar(trabajo) {
-    if (!disponible()) return;
+// LATIDO. Es lo que dice "sigo aqui" — trabajando, esperando turno o
+// estacionado por Roblox —, independientemente de si hubo progreso que
+// contar. Ligero a proposito: fase, cuando reanuda y la foto de progreso (para
+// que un GET en otra replica vea el contador de la pausa moverse).
+async function latir(trabajo) {
+    if (!disponible()) return { ok: true };
     try {
-        await db.query(
+        const { rowCount } = await db.query(
+            `UPDATE plugin_search_jobs
+                SET heartbeat_at = NOW(),
+                    updated_at = NOW(),
+                    status = $3,
+                    phase = $4,
+                    resume_at = $5,
+                    rate_limited_route = $6,
+                    progress = COALESCE($7, progress)
+              WHERE search_id = $1
+                AND instance_id = $2`,
+            [
+                trabajo.searchId, trabajo.instanceId, trabajo.status,
+                trabajo.phase ?? 'working',
+                trabajo.resumeAt ? new Date(trabajo.resumeAt) : null,
+                trabajo.rateLimitedRoute ?? null,
+                trabajo.progress ? JSON.stringify(trabajo.progress) : null,
+            ],
+            'jobs.heartbeat'
+        );
+        return veredicto(trabajo, rowCount);
+    } catch (err) {
+        return { ok: true, transitorio: true, error: err?.code ?? null };
+    }
+}
+
+// Cierre. Aqui SI se guarda el resultado entero, y se fija la caducidad.
+async function terminar(trabajo) {
+    if (!disponible()) return { ok: true };
+    try {
+        const { rowCount } = await db.query(
             `UPDATE plugin_search_jobs
                 SET status = $2,
                     found = $3,
@@ -184,14 +271,51 @@ async function terminar(trabajo) {
                 JSON.stringify({ outfits: trabajo.outfits ?? [], stats: trabajo.stats ?? null }),
                 trabajo.error?.code ?? null,
                 config.pluginJobs.retentionMs,
-                INSTANCIA,
+                trabajo.instanceId,
             ],
             'jobs.finish'
         );
+        return veredicto(trabajo, rowCount);
     } catch (err) {
         logger.warn('No se pudo persistir el resultado del trabajo', {
-            searchId: trabajo.searchId, detail: err?.message,
+            searchId: trabajo.searchId, code: err?.code ?? null, detail: err?.message,
         });
+        return { ok: true, transitorio: true };
+    }
+}
+
+// SOLTAR al apagar. La instancia que recibe SIGTERM deja sus trabajos SIN
+// dueño (instance_id NULL) y con su ultimo checkpoint: cualquier instancia viva
+// los adopta en su siguiente pasada de recuperacion, sin esperar a que el
+// latido caduque. Es lo que hace que un redeploy cueste segundos de pausa en
+// vez de un minuto y medio de trabajo aparentemente congelado.
+async function soltar(trabajo) {
+    if (!disponible()) return { ok: true };
+    try {
+        const { rowCount } = await db.query(
+            `UPDATE plugin_search_jobs
+                SET previous_instance_id = instance_id,
+                    instance_id = NULL,
+                    phase = 'recovering',
+                    checkpoint = COALESCE($3, checkpoint),
+                    progress = COALESCE($4, progress),
+                    updated_at = NOW()
+              WHERE search_id = $1
+                AND instance_id = $2
+                AND status IN ('queued', 'running')`,
+            [
+                trabajo.searchId, trabajo.instanceId,
+                trabajo.checkpoint ? JSON.stringify(trabajo.checkpoint) : null,
+                trabajo.progress ? JSON.stringify(trabajo.progress) : null,
+            ],
+            'jobs.release'
+        );
+        return { ok: rowCount > 0 };
+    } catch (err) {
+        logger.warn('No se pudo soltar el trabajo al apagar', {
+            searchId: trabajo.searchId, code: err?.code ?? null, detail: err?.message,
+        });
+        return { ok: false };
     }
 }
 
@@ -208,76 +332,70 @@ async function leer(searchId) {
     }
 }
 
-// ── Arranque: ADOPTAR lo reanudable, expirar solo lo que no lo es ────────────
+// ── Adopcion ─────────────────────────────────────────────────────────────────
 //
-// Un trabajo que estaba estacionado esperando a Roblox cuando su proceso murio
-// NO es un huerfano que haya que dar por perdido: tiene su peticion y su
-// checkpoint en la fila, y otra instancia puede seguir exactamente donde se
-// quedo. Eso es lo que hace esta consulta, y lo hace ATOMICAMENTE: el UPDATE
-// solo cambia de dueño las filas cuyo latido esta viejo, y devuelve las que
-// cambio. Si dos replicas arrancan a la vez, cada fila la adopta UNA sola.
+// Cambia de dueño, ATOMICAMENTE, los trabajos reanudables que de verdad se han
+// quedado sin nadie:
 //
-// Se limita a un puñado por pasada: adoptar significa arrancar una busqueda,
-// y una instancia recien levantada no deberia arrancar cincuenta a la vez.
-async function adoptarHuerfanos(limite = 8) {
+//   - los SOLTADOS por una instancia que se apago (instance_id NULL), al
+//     instante;
+//   - los de una instancia que dejo de latir hace mas de adoptAfterMs, sea
+//     cual sea su fase: trabajando, en cola o estacionado por Roblox. Un
+//     trabajo vivo late en todas ellas, asi que ninguna se confunde con la
+//     muerte.
+//
+// Con varias replicas arrancando a la vez, cada fila la adopta UNA sola
+// (FOR UPDATE SKIP LOCKED). Y devuelve, junto con la fila, de quien era, cuanto
+// llevaba sin latir y por que se adopto: es lo que el log necesita para que un
+// cambio de dueño se pueda explicar despues.
+async function adoptarHuerfanos(instancia, limite = 8) {
     if (!disponible()) return [];
     try {
         const { rows } = await db.query(
-            `UPDATE plugin_search_jobs
-                SET instance_id = $1,
+            `WITH candidatos AS (
+                SELECT search_id,
+                       instance_id AS previo,
+                       EXTRACT(EPOCH FROM (NOW() - COALESCE(heartbeat_at, created_at))) * 1000 AS edad_ms,
+                       CASE WHEN instance_id IS NULL THEN 'released' ELSE 'heartbeat_stale' END AS motivo
+                  FROM plugin_search_jobs
+                 WHERE status IN ('queued', 'running')
+                   AND params IS NOT NULL
+                   AND (instance_id IS NULL
+                        OR COALESCE(heartbeat_at, created_at) < NOW() - ($2::bigint * INTERVAL '1 millisecond'))
+                 ORDER BY created_at
+                 LIMIT $3
+                 FOR UPDATE SKIP LOCKED
+             )
+             UPDATE plugin_search_jobs j
+                SET previous_instance_id = c.previo,
+                    instance_id = $1,
+                    adopted_at = NOW(),
+                    handoffs = j.handoffs + 1,
                     heartbeat_at = NOW(),
                     updated_at = NOW()
-              WHERE search_id IN (
-                    SELECT search_id
-                      FROM plugin_search_jobs
-                     WHERE status IN ('queued', 'running')
-                       AND params IS NOT NULL
-                       AND (heartbeat_at IS NULL
-                            OR heartbeat_at < NOW() - (
-                                CASE WHEN status = 'queued' THEN $3::bigint ELSE $2::bigint END
-                                * INTERVAL '1 millisecond'))
-                     ORDER BY created_at
-                     LIMIT $4
-                     FOR UPDATE SKIP LOCKED)
-              RETURNING *`,
-            [
-                INSTANCIA,
-                config.pluginJobs.heartbeatTimeoutMs,
-                config.pluginJobs.queuedTimeoutMs,
-                limite,
-            ],
+               FROM candidatos c
+              WHERE j.search_id = c.search_id
+          RETURNING j.*, c.previo AS adopted_from, c.edad_ms AS heartbeat_age_ms, c.motivo AS adoption_reason`,
+            [instancia, config.pluginJobs.adoptAfterMs, limite],
             'jobs.adopt'
         );
-        if (rows.length > 0) {
-            logger.info('Trabajos de busqueda adoptados de una instancia caida', {
-                trabajos: rows.length,
-                searchIds: rows.map(r => r.search_id).join(','),
-            });
-        }
-        return rows.map(filaAJob);
+        return rows.map(fila => ({
+            ...filaAJob(fila),
+            adoptedFrom: fila.adopted_from ?? null,
+            heartbeatAgeMs: Math.round(Number(fila.heartbeat_age_ms) || 0),
+            adoptionReason: fila.adoption_reason,
+        }));
     } catch (err) {
         logger.warn('No se pudieron adoptar los trabajos huerfanos', { code: err?.code ?? null, detail: err?.message });
         return [];
     }
 }
 
-// ── Arranque: nada puede quedarse 'running' para siempre ─────────────────────
+// ── Expirar lo que NO se puede reanudar ──────────────────────────────────────
 //
-// Un proceso que muere deja sus trabajos en curso escritos como 'running'. Sin
-// esto, ese estado seria eterno y el plugin esperaria un resultado que no va a
-// llegar nunca. Se comprueba por LATIDO y no por instancia: una replica viva
-// sigue latiendo, asi que solo caen los que de verdad estan huerfanos — lo que
-// hace este barrido seguro tambien con varias replicas arrancando a la vez.
-//
-// SOLO LOS NO REANUDABLES (sin `params`: filas anteriores a park/resume). Los
-// que tienen peticion se ADOPTAN (ver adoptarHuerfanos), no se expiran.
-//
-// DOS PLAZOS, y no uno, porque son dos situaciones distintas. Un trabajo
-// 'running' late en cada segmento: si deja de latir un par de minutos, esta
-// muerto. Un trabajo 'queued' NO LATE — esperar turno es exactamente no hacer
-// nada — y con presupuestos de hasta tres minutos, una espera legitima detras
-// de una busqueda grande dura mas que el plazo de latido. Compartir reloj
-// convertia esa espera en un 'expired' mentiroso.
+// Solo dos casos: filas anteriores a park/resume (sin `params`) cuyo dueño
+// dejo de latir, y filas SOLTADAS que ninguna instancia adopto en un plazo
+// largo (no hay ninguna viva). Todo lo demas se adopta, no se expira.
 async function expirarHuerfanos() {
     if (!disponible()) return 0;
     try {
@@ -289,20 +407,21 @@ async function expirarHuerfanos() {
                     updated_at = NOW(),
                     expires_at = NOW() + ($1::bigint * INTERVAL '1 millisecond')
               WHERE status IN ('queued', 'running')
-                AND params IS NULL
-                AND (heartbeat_at IS NULL
-                     OR heartbeat_at < NOW() - (
-                         CASE WHEN status = 'queued' THEN $3::bigint ELSE $2::bigint END
-                         * INTERVAL '1 millisecond'))`,
+                AND (
+                      (params IS NULL
+                       AND COALESCE(heartbeat_at, created_at) < NOW() - ($2::bigint * INTERVAL '1 millisecond'))
+                   OR (instance_id IS NULL
+                       AND updated_at < NOW() - ($3::bigint * INTERVAL '1 millisecond'))
+                )`,
             [
                 config.pluginJobs.retentionMs,
-                config.pluginJobs.heartbeatTimeoutMs,
-                config.pluginJobs.queuedTimeoutMs,
+                config.pluginJobs.adoptAfterMs,
+                config.pluginJobs.releasedExpireMs,
             ],
             'jobs.expireOrphans'
         );
         if (rowCount > 0) {
-            logger.warn('Trabajos de busqueda huerfanos marcados como expirados', { trabajos: rowCount });
+            logger.warn('Trabajos de busqueda no reanudables marcados como expirados', { trabajos: rowCount });
         }
         return rowCount;
     } catch (err) {
@@ -311,9 +430,7 @@ async function expirarHuerfanos() {
     }
 }
 
-// Recoleccion por caducidad. Un trabajo terminado se conserva lo justo para que
-// el plugin recoja su resultado aunque haya habido un redeploy por medio; a
-// partir de ahi es basura que solo engorda la tabla.
+// Recoleccion por caducidad.
 async function limpiarVencidos() {
     if (!disponible()) return 0;
     try {
@@ -330,6 +447,8 @@ async function limpiarVencidos() {
 }
 
 module.exports = {
-    disponible, crear, actualizar, terminar, leer, adoptarHuerfanos, expirarHuerfanos, limpiarVencidos,
+    disponible, crear, actualizar, latir, terminar, soltar, leer,
+    adoptarHuerfanos, expirarHuerfanos, limpiarVencidos, quienEsElDueño,
+    NO_ES_MIO,
     __instancia: INSTANCIA,
 };

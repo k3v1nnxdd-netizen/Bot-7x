@@ -155,6 +155,11 @@ async function ejecutarBusqueda(
         requestId = null, searchId = null, checkpoint = null,
         onProgress = null, onEncolado = null,
         onParquear = null, onLatido = null, onReanudar = null, onCheckpoint = null,
+        // ¿Sigue siendo este proceso el dueño del trabajo? Lo sabe el registro
+        // de trabajos (por su latido). Se pregunta ANTES de gastar nada: una
+        // busqueda cuyo trabajo se traspaso o se solto no debe tocar ni la
+        // rotacion ni Roblox, aunque acabe de conseguir el turno del grupo.
+        esDueño = () => true,
     } = {}
 ) {
     const stats = crearStats();
@@ -197,6 +202,15 @@ async function ejecutarBusqueda(
         maxPaginas: techoPaginas,
         yaVistos: [...yaIncluidos, ...pendientes.map(m => String(m.userId))],
     });
+
+    // Con el turno del grupo en la mano, ANTES de mover nada: ¿sigue siendo
+    // nuestro el trabajo? Mientras se esperaba turno pudo traspasarse (o
+    // soltarse en un apagado). Si ya no lo es, se suelta el turno sin haber
+    // avanzado el cursor ni gastado una llamada.
+    if (!esDueño()) {
+        await rotacion.cerrar({ guardarAvance: false });
+        throw trabajoPerdido(searchId);
+    }
 
     // EL RELOJ ARRANCA AQUI, no al aceptar la peticion. Hacer cola no es
     // buscar. Y al reanudar, los relojes continuan desde lo que ya llevaban.
@@ -306,8 +320,16 @@ async function ejecutarBusqueda(
         tiempoMs, indice, rotacion, frenadoElAvatar,
     });
 
+    // Si el trabajo deja de ser nuestro a mitad, la rotacion se cierra SIN
+    // guardar avance: lo que esta busqueda hubiera entregado sin veredicto lo
+    // volvera a entregar a quien continue. Guardar avance de un trabajo que ya
+    // continua otra instancia le saltaria candidatos.
+    let perdido = false;
+
     try {
         for (;;) {
+            if (!esDueño()) { perdido = true; throw trabajoPerdido(searchId); }
+
             const parada = motivoParaParar(estadoDeParada());
             if (parada) { stats.pararPor(parada); break; }
 
@@ -445,11 +467,18 @@ async function ejecutarBusqueda(
                 if (puertaAvatar === VEREDICTO.AGOTADO) frenadoElAvatar = true;
             }
         }
+    } catch (err) {
+        // Un traspaso detectado en cualquier gancho (progreso, latido de
+        // pausa, checkpoint) llega aqui como 'job_adopted': la rotacion no
+        // debe guardar avance por encima de lo que otra instancia continuara.
+        if (err?.code === 'job_adopted') perdido = true;
+        throw err;
     } finally {
         // SIEMPRE: un lease sin soltar bloquea el grupo hasta que caduque. Si
-        // quedan pendientes, se cierra SIN guardar el ultimo tramo: la
-        // siguiente busqueda los vuelve a entregar en vez de saltarselos.
-        await rotacion.cerrar({ guardarAvance: pendientes.length === 0 });
+        // quedan pendientes, o si el trabajo ya no es nuestro, se cierra SIN
+        // guardar el ultimo tramo: quien continue lo vuelve a entregar en vez
+        // de saltarselo.
+        await rotacion.cerrar({ guardarAvance: !perdido && pendientes.length === 0 });
     }
 
     const paradaFinal = motivoParaParar(estadoDeParada());
@@ -510,6 +539,15 @@ async function ejecutarBusqueda(
 function leasePerdido(groupId) {
     const err = new Error(`El lease de rotacion del grupo ${groupId} dejo de ser de esta busqueda`);
     err.code = 'lease_lost';
+    return err;
+}
+
+// El trabajo ya no es de este proceso (traspasado o soltado). Mismo codigo que
+// el error del registro de trabajos, para que el runner lo trate igual: se
+// suelta la busqueda sin marcar nada como fallido.
+function trabajoPerdido(searchId) {
+    const err = new Error(`El trabajo ${searchId} ya no es de esta instancia`);
+    err.code = 'job_adopted';
     return err;
 }
 

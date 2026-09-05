@@ -8,11 +8,6 @@ const repo = require('../../db/pluginJobRepo');
 // Registro de trabajos de busqueda. Existe por una razon concreta: una peticion
 // HTTP no puede contar como va mientras la esta atendiendo.
 //
-// EL PROBLEMA. `HttpService:RequestAsync` de Roblox devuelve cuando el servidor
-// termina. Con una busqueda de 10-25 segundos, el plugin no puede enseñar
-// progreso real: o inventa un contador (mentira) o deja la interfaz congelada.
-// Partirlo en arrancar + preguntar es lo que permite una barra que no miente.
-//
 // ── CALIENTE EN MEMORIA, DURABLE EN POSTGRES ────────────────────────────────
 //
 // El estado vivo esta en memoria porque cambia varias veces por segundo. Pero
@@ -21,24 +16,40 @@ const repo = require('../../db/pluginJobRepo');
 //
 //   - un GET despues de un redeploy encuentra el trabajo y su resultado;
 //   - un GET que aterriza en OTRA REPLICA lo encuentra igual;
-//   - un trabajo ESTACIONADO esperando a Roblox cuando su proceso muere lo
-//     ADOPTA otra instancia y sigue exactamente donde se quedo, en vez de morir
-//     como huerfano y obligar al plugin a empezar de cero.
+//   - un trabajo cuyo proceso muere (o se apaga en un redeploy) lo ADOPTA otra
+//     instancia y sigue exactamente donde se quedo, con el mismo searchId.
 //
-// Sin convertir la base en un stream de escrituras: se vuelca al crear, al
-// arrancar, POR HITOS (cuando sube `found`), como mucho cada
-// PLUGIN_JOB_SNAPSHOT_MS — ese volcado hace ademas de latido —, al estacionar
-// y reanudar, en cada latido de una pausa, y al terminar.
+// ── LA PROPIEDAD, Y LA INVARIANTE QUE ESTE MODULO GARANTIZA ─────────────────
 //
-// ── FENCING ──────────────────────────────────────────────────────────────────
+//   Todo trabajo no terminal tiene EXACTAMENTE UN ejecutor valido, o esta
+//   esperando de forma intencional y recuperable (en cola, o estacionado por
+//   Roblox) con un dueño vivo que LATE por el. Nunca queda abandonado.
 //
-// Cada volcado lleva la identidad de este proceso y solo escribe si la fila
-// sigue siendo suya (ver pluginJobRepo.actualizar). Si otra instancia adopto el
-// trabajo — porque nuestro latido se quedo viejo — el volcado devuelve "no es
-// tuyo" y este proceso lanza TrabajoAdoptadoError: la busqueda que corria aqui
-// PARA, y no marca el trabajo como fallido, porque el trabajo sigue vivo en
-// otra parte. Dos dueños escribiendo el mismo checkpoint es la unica forma de
-// corromperlo, y esta valla es lo que lo impide.
+// Tres mecanismos la sostienen, y los tres hacen falta:
+//
+//   1. LATIDO INDEPENDIENTE. Cada trabajo vivo late cada pocos segundos por su
+//      cuenta — trabaje, espere turno o este estacionado —, con un temporizador
+//      propio, no "cuando haya progreso". Un trabajo lento no parece muerto.
+//
+//   2. VALLADO CON DIAGNOSTICO. Toda escritura va con `WHERE instance_id =
+//      $me`. Si no toca ninguna fila NO se concluye nada todavia: se lee quien
+//      es el dueño. Solo si es OTRA instancia este proceso suelta el trabajo —
+//      y lo suelta sabiendo que hay alguien que lo continua. "La fila aun no
+//      existe" o "la base tuvo un bache" no son adopciones.
+//
+//   3. ADOPCION SOLO DE HUERFANOS. Otra instancia solo adopta un trabajo cuyo
+//      dueño lleva `adoptAfterMs` sin latir (dieciocho latidos fallidos) o que
+//      fue SOLTADO explicitamente al apagarse. Un trabajo vivo, en la fase que
+//      sea, no se roba.
+//
+// ── EL FALLO QUE ESTO CORRIGE ────────────────────────────────────────────────
+//
+// La creacion no se esperaba, la primera escritura vallada del ejecutor podia
+// llegar antes que el INSERT, y "cero filas" se leia como "adoptado". El
+// proceso soltaba una busqueda que NADIE tenia: el trabajo se quedaba en 0 de
+// 10 para siempre mientras el plugin preguntaba. Ahora la creacion se espera,
+// cero filas se diagnostica, y el runner NO arranca una busqueda si no es el
+// dueño.
 
 const ESTADO = Object.freeze({
     QUEUED: 'queued',       // esperando turno del grupo, o recien creado
@@ -46,430 +57,625 @@ const ESTADO = Object.freeze({
     COMPLETED: 'completed', // llego a `amount`
     PARTIAL: 'partial',     // termino limpiamente con menos de `amount`
     FAILED: 'failed',       // error no previsto
-    EXPIRED: 'expired',     // huerfano: su proceso murio y dejo de latir
+    EXPIRED: 'expired',     // huerfano no reanudable: nadie lo pudo continuar
 });
 
-// Fase INTERNA de un trabajo 'running'. No es un status nuevo — el plugin
-// sigue viendo 'running' — sino un detalle dentro de `progress`:
+// Fase INTERNA de un trabajo vivo. No es un status nuevo — el plugin sigue
+// viendo 'queued' / 'running' — sino un detalle aparte:
 //   working        recorriendo la comunidad
 //   rateLimitWait  estacionado hasta `resumeAt` porque Roblox pidio esperar
+//   queued         esperando turno del grupo
+//   recovering     soltado por su instancia (apagado): a la espera de adopcion
+//   orphaned       su dueño dejo de latir: adoptable por cualquiera
 const FASE = Object.freeze({
     TRABAJANDO: 'working',
     ESPERANDO_ROBLOX: 'rateLimitWait',
+    EN_COLA: 'queued',
+    RECUPERANDO: 'recovering',
+    HUERFANO: 'orphaned',
 });
 
 const TERMINALES = new Set([ESTADO.COMPLETED, ESTADO.PARTIAL, ESTADO.FAILED, ESTADO.EXPIRED]);
 
 class TrabajoAdoptadoError extends Error {
-    constructor(searchId) {
-        super(`El trabajo ${searchId} fue adoptado por otra instancia`);
+    constructor(searchId, dueño = null) {
+        super(`El trabajo ${searchId} lo continua otra instancia (${dueño ?? 'desconocida'})`);
         this.name = 'TrabajoAdoptadoError';
         this.code = 'job_adopted';
         this.searchId = searchId;
+        this.dueño = dueño;
     }
-}
-
-const trabajos = new Map();
-
-// Quien sabe ARRANCAR una busqueda a partir de un trabajo (el runner). Se
-// inyecta en vez de importarse para no cerrar un ciclo jobs -> runner -> jobs.
-let ejecutor = null;
-function registrarEjecutor(fn) {
-    ejecutor = fn;
 }
 
 // 128 bits de aleatoriedad criptografica. Va en una URL y es la unica cosa que
 // separa el resultado de una busqueda del de otra, asi que tiene que ser
-// IMPREDECIBLE y no enumerable: un contador, una marca de tiempo o cualquier
-// cosa derivada del groupId dejaria que quien tenga la clave del plugin leyera
-// busquedas ajenas simplemente probando.
+// IMPREDECIBLE y no enumerable.
 function nuevoId() {
     return `s_${crypto.randomBytes(16).toString('hex')}`;
 }
 
-function limpiar(ahora = Date.now()) {
-    for (const [id, trabajo] of trabajos) {
-        const terminado = TERMINALES.has(trabajo.status);
-        if (terminado && ahora - trabajo.finishedAt > config.pluginJobs.resultTtlMs) {
-            // Solo se suelta la copia CALIENTE: en Postgres sigue hasta su
-            // retencion, asi que un GET tardio lo encuentra igual.
-            trabajos.delete(id);
-            continue;
-        }
-
-        // DOS PLAZOS DISTINTOS, y no es un detalle. Un trabajo 'running' late en
-        // cada segmento — y, estacionado, en cada latido de la pausa. Un
-        // trabajo 'queued' NO LATE, porque esperar turno es exactamente no
-        // hacer nada, y con presupuestos largos una espera legitima detras de
-        // una busqueda grande dura mas que el plazo de latido.
-        const limiteVivo = trabajo.status === ESTADO.QUEUED
-            ? config.pluginJobs.queuedTimeoutMs
-            : config.pluginJobs.heartbeatTimeoutMs;
-
-        if (!terminado && ahora - trabajo.updatedAt > limiteVivo) {
-            trabajo.status = ESTADO.EXPIRED;
-            trabajo.finishedAt = ahora;
-            trabajo.stoppedBy = 'expired';
-            logger.warn('Trabajo de busqueda expirado sin terminar', {
-                searchId: id, edadMs: ahora - trabajo.createdAt,
-            });
-            repo.terminar(trabajo);
-        }
-    }
-}
-
-function esqueleto({ searchId, requestId, groupId, target, params, createdAt = Date.now() }) {
-    return {
-        searchId,
-        status: ESTADO.QUEUED,
-        requestId,
-        groupId,
-        target,
-        // La peticion entera. Es lo que hace REANUDABLE al trabajo: sin ella,
-        // otra instancia no sabria ni que precios filtrar.
-        params,
-        createdAt,
-        startedAt: null,
-        updatedAt: createdAt,
-        finishedAt: null,
-        // Posicion en la cola del grupo. null = no esta esperando a nadie.
-        queuePosition: null,
-        progress: null,
-        outfits: [],
-        stats: null,
-        stoppedBy: null,
-        error: null,
-
-        // ── Park / resume ────────────────────────────────────────────────────
-        phase: FASE.TRABAJANDO,
-        resumeAt: null,
-        rateLimitedRoute: null,
-        // Ultimo checkpoint conocido, y el que aun no se ha bajado a la base.
-        checkpoint: null,
-        checkpointPendiente: null,
-        // Otra instancia se lo llevo: este proceso no debe volver a tocarlo.
-        adoptado: false,
-
-        // Ultimo volcado a Postgres, para no escribir mas de lo necesario.
-        ultimoSnapshot: 0,
-        ultimoFound: 0,
-    };
-}
-
-function crear({ peticion, requestId }) {
-    limpiar();
-
-    if (trabajos.size >= config.pluginJobs.maxLive) {
-        const masViejo = [...trabajos.entries()]
-            .filter(([, t]) => TERMINALES.has(t.status))
-            .sort((a, b) => a[1].finishedAt - b[1].finishedAt)[0];
-        if (masViejo) trabajos.delete(masViejo[0]);
-    }
-
-    const trabajo = esqueleto({
-        searchId: nuevoId(),
-        requestId,
-        groupId: peticion.groupId,
-        target: peticion.amount,
-        params: { ...peticion },
-    });
-
-    trabajos.set(trabajo.searchId, trabajo);
-    repo.crear(trabajo);
-    return trabajo;
-}
-
-// ── El unico camino de escritura a la base para un trabajo vivo ─────────────
+// ── UN REGISTRO POR PROCESO ─────────────────────────────────────────────────
 //
-// Devuelve cuando la base ha contestado, y si la base dice que el trabajo ya no
-// es nuestro, LANZA. Que lance aqui y no mas arriba es a proposito: todo lo que
-// vuelca (progreso, latido, checkpoint) pasa por aqui, asi que no hay forma de
-// que una busqueda adoptada siga escribiendo sin enterarse.
-async function volcar(trabajo) {
-    if (trabajo.adoptado) throw new TrabajoAdoptadoError(trabajo.searchId);
+// `crearRegistro` existe para que las pruebas puedan levantar DOS instancias en
+// el mismo proceso — una "vieja" y una "nueva", como en un redeploy de Railway
+// — compartiendo la misma base de mentira y sin compartir memoria. En
+// produccion hay uno solo: el de este proceso, exportado abajo.
+function crearRegistro({ instancia = repo.__instancia } = {}) {
+    const trabajos = new Map();
+    const latidos = new Map(); // searchId -> temporizador
 
-    const mio = await repo.actualizar(trabajo);
-    if (mio === false) {
+    // Quien sabe ARRANCAR una busqueda a partir de un trabajo (el runner). Se
+    // inyecta en vez de importarse para no cerrar un ciclo jobs -> runner -> jobs.
+    let ejecutor = null;
+
+    // ── Latido ───────────────────────────────────────────────────────────────
+
+    function detenerLatido(id) {
+        const t = latidos.get(id);
+        if (t) { clearInterval(t); latidos.delete(id); }
+    }
+
+    // Marca este trabajo como PERDIDO para este proceso: otra instancia es la
+    // dueña. Se deja de latir, se deja constancia, y la busqueda que corra aqui
+    // se enterara en su siguiente checkpoint y parara SIN marcar el trabajo
+    // como fallido — sigue vivo en otra parte.
+    function marcarAdoptado(trabajo, quien) {
+        if (trabajo.adoptado) return;
         trabajo.adoptado = true;
+        trabajo.adoptadoPor = quien?.dueño ?? null;
+        detenerLatido(trabajo.searchId);
         logger.warn('Trabajo de busqueda adoptado por otra instancia: este proceso lo suelta', {
             searchId: trabajo.searchId,
+            groupId: String(trabajo.groupId),
+            previousInstance: instancia,
+            newInstance: quien?.dueño ?? null,
+            reason: quien?.motivo ?? null,
+            phase: trabajo.phase,
+            found: trabajo.progress?.found ?? 0,
+            handoffs: quien?.handoffs ?? null,
         });
-        throw new TrabajoAdoptadoError(trabajo.searchId);
     }
-    trabajo.checkpointPendiente = null;
-    trabajo.ultimoSnapshot = Date.now();
-}
 
-// El grupo esta ocupado: este trabajo espera turno. Se distingue de `running` a
-// proposito — el plugin tiene que poder decir "esperando turno (2º)" en vez de
-// enseñar una barra de progreso que no se mueve.
-function marcarEnCola(id, posicion) {
-    const trabajo = trabajos.get(id);
-    if (!trabajo || TERMINALES.has(trabajo.status)) return Promise.resolve();
-    trabajo.status = ESTADO.QUEUED;
-    trabajo.queuePosition = posicion;
-    trabajo.updatedAt = Date.now();
-    // Quien llama (la cola del grupo) no espera esta promesa, asi que una
-    // adopcion detectada aqui no puede quedar como rechazo sin dueño: se
-    // registra y el siguiente volcado de la busqueda — ese si esperado — es el
-    // que la corta.
-    return volcar(trabajo).catch(err => {
-        logger.warn('No se pudo marcar el trabajo como en cola', { searchId: id, code: err?.code ?? null });
-    });
-}
+    // Que hacer con el veredicto de una escritura vallada. SOLO 'adopted'
+    // significa que hay que parar. Todo lo demas se registra y se sigue.
+    function interpretar(trabajo, resultado, operacion) {
+        if (!resultado || resultado.ok) {
+            if (resultado?.transitorio) {
+                trabajo.latidosFallidos = (trabajo.latidosFallidos ?? 0) + 1;
+                if (trabajo.latidosFallidos === 1 || trabajo.latidosFallidos % 6 === 0) {
+                    logger.warn('Escritura del trabajo sin confirmar (base transitoriamente indisponible)', {
+                        searchId: trabajo.searchId, operacion, seguidas: trabajo.latidosFallidos,
+                        toleranciaMs: config.pluginJobs.adoptAfterMs,
+                    });
+                }
+            } else {
+                trabajo.latidosFallidos = 0;
+            }
+            return true;
+        }
 
-function marcarEnCurso(id) {
-    const trabajo = trabajos.get(id);
-    if (!trabajo) return;
-    trabajo.status = ESTADO.RUNNING;
-    trabajo.phase = FASE.TRABAJANDO;
-    trabajo.startedAt = trabajo.startedAt ?? Date.now();
-    trabajo.updatedAt = Date.now();
-    trabajo.queuePosition = null;
-    return volcar(trabajo);
-}
+        switch (resultado.motivo) {
+            case repo.NO_ES_MIO.ADOPTADO:
+                marcarAdoptado(trabajo, resultado);
+                throw new TrabajoAdoptadoError(trabajo.searchId, resultado.dueño);
 
-// Progreso en vivo. Lo llama la busqueda al final de cada segmento.
-//
-// EL VOLCADO NO ES EN CADA LLAMADA: solo cuando sube `found` (un hito de
-// verdad), cuando hay un checkpoint nuevo que bajar, o cuando ha pasado el
-// intervalo de snapshot. Sin esta condicion, una busqueda larga escribiria en
-// Postgres decenas de veces sin que la foto cambie de forma apreciable.
-async function actualizarProgreso(id, progreso) {
-    const trabajo = trabajos.get(id);
-    if (!trabajo || TERMINALES.has(trabajo.status)) return;
-    if (trabajo.adoptado) throw new TrabajoAdoptadoError(id);
+            case repo.NO_ES_MIO.SOLTADO:
+                // Lo soltamos nosotros al apagar (o alguien lo solto por
+                // nosotros). Este proceso ya no debe tocarlo.
+                marcarAdoptado(trabajo, { ...resultado, dueño: null });
+                throw new TrabajoAdoptadoError(trabajo.searchId, null);
 
-    const ahora = Date.now();
-    trabajo.progress = progreso;
-    trabajo.updatedAt = ahora;
+            case repo.NO_ES_MIO.AUSENTE:
+                // La fila no existe: el trabajo vive solo en memoria (la
+                // creacion no se pudo persistir). NO es una adopcion. Se avisa
+                // una vez y se sigue: lo unico que se pierde es la
+                // recuperabilidad tras un reinicio.
+                if (!trabajo.avisadoSinFila) {
+                    trabajo.avisadoSinFila = true;
+                    logger.warn('El trabajo de busqueda no esta en la base: sigue solo en memoria', {
+                        searchId: trabajo.searchId, operacion,
+                    });
+                }
+                return true;
 
-    const hito = (progreso?.found ?? 0) > trabajo.ultimoFound;
-    const tocaSnapshot = ahora - trabajo.ultimoSnapshot >= config.pluginJobs.snapshotMs;
+            case repo.NO_ES_MIO.TERMINAL:
+                // Segun la base ya termino (por ejemplo, otra instancia lo
+                // adopto Y lo termino, o el recolector lo expiro). Parar.
+                marcarAdoptado(trabajo, resultado);
+                throw new TrabajoAdoptadoError(trabajo.searchId, resultado.dueño);
 
-    if (hito || tocaSnapshot || trabajo.checkpointPendiente) {
-        trabajo.ultimoFound = progreso?.found ?? trabajo.ultimoFound;
-        await volcar(trabajo);
+            default:
+                return true;
+        }
     }
-}
 
-// Checkpoint nuevo: se recuerda y baja en el siguiente volcado. No fuerza uno
-// por si solo — al final de cada ola ya hay un progreso que lo arrastra.
-function guardarCheckpoint(id, checkpoint) {
-    const trabajo = trabajos.get(id);
-    if (!trabajo || TERMINALES.has(trabajo.status)) return;
-    trabajo.checkpoint = checkpoint;
-    trabajo.checkpointPendiente = checkpoint;
-}
+    // Un latido. Nunca lanza hacia el temporizador; si el trabajo ya no es
+    // nuestro, lo marca y la busqueda parara en su siguiente checkpoint.
+    async function latidoPeriodico(id) {
+        const trabajo = trabajos.get(id);
+        if (!trabajo || TERMINALES.has(trabajo.status) || trabajo.adoptado) {
+            detenerLatido(id);
+            return;
+        }
+        trabajo.updatedAt = Date.now();
+        try {
+            interpretar(trabajo, await repo.latir(trabajo), 'heartbeat');
+        } catch (err) {
+            if (!(err instanceof TrabajoAdoptadoError)) {
+                logger.warn('Latido del trabajo fallido', { searchId: id, detail: err?.message });
+            }
+        }
+    }
 
-// ── Park ─────────────────────────────────────────────────────────────────────
-//
-// Roblox pidio esperar. Se deja constancia DURABLE de la pausa antes de
-// empezarla: fase, ruta, cuando reanudar y el checkpoint con todo lo necesario
-// para seguir. Si este proceso muere durante la espera, esa fila es lo que
-// otra instancia lee para adoptar el trabajo y continuar. El volcado es
-// forzado: aqui no aplica ninguna economia de escrituras.
-async function parquear(id, { route, resumeAt, retryAfterMs, checkpoint, progreso }) {
-    const trabajo = trabajos.get(id);
-    if (!trabajo || TERMINALES.has(trabajo.status)) return;
+    function iniciarLatido(trabajo) {
+        detenerLatido(trabajo.searchId);
+        const t = setInterval(() => { latidoPeriodico(trabajo.searchId); }, config.pluginJobs.heartbeatIntervalMs);
+        t.unref?.();
+        latidos.set(trabajo.searchId, t);
+    }
 
-    trabajo.phase = FASE.ESPERANDO_ROBLOX;
-    trabajo.rateLimitedRoute = route;
-    trabajo.resumeAt = resumeAt;
-    if (checkpoint) {
+    // ── Ciclo de vida ────────────────────────────────────────────────────────
+
+    function limpiar(ahora = Date.now()) {
+        for (const [id, trabajo] of trabajos) {
+            const terminado = TERMINALES.has(trabajo.status);
+            if (terminado && ahora - trabajo.finishedAt > config.pluginJobs.resultTtlMs) {
+                // Solo se suelta la copia CALIENTE: en Postgres sigue hasta su
+                // retencion, asi que un GET tardio lo encuentra igual.
+                detenerLatido(id);
+                trabajos.delete(id);
+                continue;
+            }
+
+            // Un trabajo vivo de ESTE proceso late cada pocos segundos, asi
+            // que `updatedAt` solo se queda viejo si su ejecutor murio sin
+            // cerrar (un bug) o si lo solto. Se expira localmente para que el
+            // GET no lo enseñe 'running' para siempre; en la base, si sigue
+            // siendo nuestro, se marca igual (vallado).
+            if (!terminado && !trabajo.adoptado && ahora - trabajo.updatedAt > config.pluginJobs.adoptAfterMs) {
+                trabajo.status = ESTADO.EXPIRED;
+                trabajo.finishedAt = ahora;
+                trabajo.stoppedBy = 'expired';
+                detenerLatido(id);
+                logger.warn('Trabajo de busqueda expirado sin terminar', {
+                    searchId: id, edadMs: ahora - trabajo.createdAt, instance: instancia,
+                });
+                repo.terminar(trabajo);
+            }
+        }
+    }
+
+    function esqueleto({ searchId, requestId, groupId, target, params, createdAt = Date.now() }) {
+        return {
+            searchId,
+            status: ESTADO.QUEUED,
+            requestId,
+            groupId,
+            target,
+            params,
+            instanceId: instancia,
+            createdAt,
+            startedAt: null,
+            updatedAt: createdAt,
+            finishedAt: null,
+            queuePosition: null,
+            progress: null,
+            outfits: [],
+            stats: null,
+            stoppedBy: null,
+            error: null,
+
+            // ── Park / resume ────────────────────────────────────────────────
+            phase: FASE.TRABAJANDO,
+            resumeAt: null,
+            rateLimitedRoute: null,
+            checkpoint: null,
+            checkpointPendiente: null,
+
+            // ── Propiedad ────────────────────────────────────────────────────
+            adoptado: false,        // otra instancia se lo llevo: no tocarlo mas
+            adoptadoPor: null,
+            handoffs: 0,
+            previousInstanceId: null,
+            durable: true,          // false si el INSERT no se pudo hacer
+            latidosFallidos: 0,
+            avisadoSinFila: false,
+
+            ultimoSnapshot: 0,
+            ultimoFound: 0,
+        };
+    }
+
+    // Crea el trabajo y ESPERA a que exista en la base antes de devolverlo.
+    // Es la correccion de la carrera: la primera escritura vallada del
+    // ejecutor tiene que encontrar la fila, o no podria distinguir "aun no
+    // existe" de "me lo quitaron".
+    async function crear({ peticion, requestId }) {
+        limpiar();
+
+        if (trabajos.size >= config.pluginJobs.maxLive) {
+            const masViejo = [...trabajos.entries()]
+                .filter(([, t]) => TERMINALES.has(t.status))
+                .sort((a, b) => a[1].finishedAt - b[1].finishedAt)[0];
+            if (masViejo) { detenerLatido(masViejo[0]); trabajos.delete(masViejo[0]); }
+        }
+
+        const trabajo = esqueleto({
+            searchId: nuevoId(),
+            requestId,
+            groupId: peticion.groupId,
+            target: peticion.amount,
+            params: { ...peticion },
+        });
+
+        trabajos.set(trabajo.searchId, trabajo);
+        const { persistido } = await repo.crear(trabajo);
+        trabajo.durable = persistido;
+        iniciarLatido(trabajo);
+        return trabajo;
+    }
+
+    // El unico camino de escritura de progreso. Lanza TrabajoAdoptadoError si
+    // el trabajo ya no es de este proceso.
+    async function volcar(trabajo, operacion = 'snapshot') {
+        if (trabajo.adoptado) throw new TrabajoAdoptadoError(trabajo.searchId, trabajo.adoptadoPor);
+        interpretar(trabajo, await repo.actualizar(trabajo), operacion);
+        trabajo.checkpointPendiente = null;
+        trabajo.ultimoSnapshot = Date.now();
+    }
+
+    function marcarEnCola(id, posicion) {
+        const trabajo = trabajos.get(id);
+        if (!trabajo || TERMINALES.has(trabajo.status)) return Promise.resolve();
+        trabajo.status = ESTADO.QUEUED;
+        trabajo.phase = FASE.EN_COLA;
+        trabajo.queuePosition = posicion;
+        trabajo.updatedAt = Date.now();
+        return volcar(trabajo, 'queued').catch(err => {
+            // Quien llama (la cola del grupo) no espera esta promesa: una
+            // adopcion detectada aqui ya esta marcada y la corta el siguiente
+            // volcado esperado de la busqueda.
+            if (!(err instanceof TrabajoAdoptadoError)) {
+                logger.warn('No se pudo marcar el trabajo como en cola', { searchId: id, code: err?.code ?? null });
+            }
+        });
+    }
+
+    // Lanza si el trabajo NO es nuestro: el runner no arranca una busqueda
+    // que otra instancia ya esta ejecutando.
+    async function marcarEnCurso(id) {
+        const trabajo = trabajos.get(id);
+        if (!trabajo) return;
+        trabajo.status = ESTADO.RUNNING;
+        trabajo.phase = FASE.TRABAJANDO;
+        trabajo.startedAt = trabajo.startedAt ?? Date.now();
+        trabajo.updatedAt = Date.now();
+        trabajo.queuePosition = null;
+        await volcar(trabajo, 'start');
+    }
+
+    async function actualizarProgreso(id, progreso) {
+        const trabajo = trabajos.get(id);
+        if (!trabajo || TERMINALES.has(trabajo.status)) return;
+        if (trabajo.adoptado) throw new TrabajoAdoptadoError(id, trabajo.adoptadoPor);
+
+        const ahora = Date.now();
+        trabajo.progress = progreso;
+        trabajo.updatedAt = ahora;
+
+        const hito = (progreso?.found ?? 0) > trabajo.ultimoFound;
+        const tocaSnapshot = ahora - trabajo.ultimoSnapshot >= config.pluginJobs.snapshotMs;
+
+        if (hito || tocaSnapshot || trabajo.checkpointPendiente) {
+            trabajo.ultimoFound = progreso?.found ?? trabajo.ultimoFound;
+            await volcar(trabajo, 'progress');
+        }
+    }
+
+    function guardarCheckpoint(id, checkpoint) {
+        const trabajo = trabajos.get(id);
+        if (!trabajo || TERMINALES.has(trabajo.status)) return;
         trabajo.checkpoint = checkpoint;
         trabajo.checkpointPendiente = checkpoint;
     }
-    if (progreso) trabajo.progress = progreso;
-    trabajo.updatedAt = Date.now();
 
-    logger.info('Trabajo de busqueda estacionado', {
-        searchId: id, route, retryAfterMs,
-        resumeAt: new Date(resumeAt).toISOString(),
-        found: trabajo.progress?.found ?? 0,
-    });
+    async function parquear(id, { route, resumeAt, retryAfterMs, checkpoint, progreso }) {
+        const trabajo = trabajos.get(id);
+        if (!trabajo || TERMINALES.has(trabajo.status)) return;
 
-    await volcar(trabajo);
-}
+        trabajo.phase = FASE.ESPERANDO_ROBLOX;
+        trabajo.rateLimitedRoute = route;
+        trabajo.resumeAt = resumeAt;
+        if (checkpoint) { trabajo.checkpoint = checkpoint; trabajo.checkpointPendiente = checkpoint; }
+        if (progreso) trabajo.progress = progreso;
+        trabajo.updatedAt = Date.now();
 
-// Latido de un trabajo estacionado. Es lo que lo distingue de uno muerto: sin
-// esto, una pausa de 25 s se pareceria a un proceso caido y el recolector lo
-// adoptaria — o lo expiraria — a mitad.
-async function latir(id, progreso) {
-    const trabajo = trabajos.get(id);
-    if (!trabajo || TERMINALES.has(trabajo.status)) return;
-    if (progreso) trabajo.progress = progreso;
-    trabajo.updatedAt = Date.now();
-    await volcar(trabajo);
-}
+        logger.info('Trabajo de busqueda estacionado', {
+            searchId: id, route, retryAfterMs,
+            resumeAt: new Date(resumeAt).toISOString(),
+            found: trabajo.progress?.found ?? 0,
+            instance: instancia,
+        });
 
-async function reanudar(id, progreso) {
-    const trabajo = trabajos.get(id);
-    if (!trabajo || TERMINALES.has(trabajo.status)) return;
-    trabajo.phase = FASE.TRABAJANDO;
-    trabajo.rateLimitedRoute = null;
-    trabajo.resumeAt = null;
-    if (progreso) trabajo.progress = progreso;
-    trabajo.updatedAt = Date.now();
-    await volcar(trabajo);
-}
+        await volcar(trabajo, 'park');
+    }
 
-function terminar(id, { outfits, stats, progress }) {
-    const trabajo = trabajos.get(id);
-    if (!trabajo) return null;
+    async function latir(id, progreso) {
+        const trabajo = trabajos.get(id);
+        if (!trabajo || TERMINALES.has(trabajo.status)) return;
+        if (progreso) trabajo.progress = progreso;
+        trabajo.updatedAt = Date.now();
+        await volcar(trabajo, 'park-heartbeat');
+    }
 
-    trabajo.status = outfits.length >= trabajo.target ? ESTADO.COMPLETED : ESTADO.PARTIAL;
-    trabajo.finishedAt = Date.now();
-    trabajo.updatedAt = trabajo.finishedAt;
-    trabajo.outfits = outfits;
-    trabajo.stats = stats;
-    trabajo.stoppedBy = stats?.stoppedBy ?? null;
-    trabajo.progress = progress;
-    trabajo.queuePosition = null;
-    trabajo.phase = FASE.TRABAJANDO;
-    trabajo.resumeAt = null;
-    trabajo.rateLimitedRoute = null;
+    async function reanudar(id, progreso) {
+        const trabajo = trabajos.get(id);
+        if (!trabajo || TERMINALES.has(trabajo.status)) return;
+        trabajo.phase = FASE.TRABAJANDO;
+        trabajo.rateLimitedRoute = null;
+        trabajo.resumeAt = null;
+        if (progreso) trabajo.progress = progreso;
+        trabajo.updatedAt = Date.now();
+        await volcar(trabajo, 'resume');
+    }
 
-    repo.terminar(trabajo);
-    return trabajo;
-}
+    function terminar(id, { outfits, stats, progress }) {
+        const trabajo = trabajos.get(id);
+        if (!trabajo) return null;
 
-function fallar(id, err) {
-    const trabajo = trabajos.get(id);
-    if (!trabajo) return null;
+        trabajo.status = outfits.length >= trabajo.target ? ESTADO.COMPLETED : ESTADO.PARTIAL;
+        trabajo.finishedAt = Date.now();
+        trabajo.updatedAt = trabajo.finishedAt;
+        trabajo.outfits = outfits;
+        trabajo.stats = stats;
+        trabajo.stoppedBy = stats?.stoppedBy ?? null;
+        trabajo.progress = progress;
+        trabajo.queuePosition = null;
+        trabajo.phase = FASE.TRABAJANDO;
+        trabajo.resumeAt = null;
+        trabajo.rateLimitedRoute = null;
 
-    trabajo.status = ESTADO.FAILED;
-    trabajo.finishedAt = Date.now();
-    trabajo.updatedAt = trabajo.finishedAt;
-    // Codigo estable, nunca el mensaje crudo: un error de axios arrastra URLs y
-    // configuracion interna, y esto viaja al plugin.
-    trabajo.error = { code: err?.code ?? 'internal_error' };
-    trabajo.stoppedBy = err?.code === 'queue_timeout' ? 'queueTimeout' : 'failed';
-    trabajo.queuePosition = null;
-    trabajo.phase = FASE.TRABAJANDO;
-    trabajo.resumeAt = null;
-    trabajo.rateLimitedRoute = null;
+        detenerLatido(id);
+        repo.terminar(trabajo);
+        return trabajo;
+    }
 
-    repo.terminar(trabajo);
-    return trabajo;
-}
+    function fallar(id, err) {
+        const trabajo = trabajos.get(id);
+        if (!trabajo) return null;
 
-// Busca el trabajo: primero en memoria (la version viva) y, si no esta, en
-// Postgres. Esa segunda parte es lo que hace que un GET funcione tras un
-// redeploy o cuando aterriza en otra replica.
-async function obtener(id) {
-    limpiar();
-    const caliente = trabajos.get(id);
-    if (caliente) return caliente;
-    return repo.leer(id);
-}
+        trabajo.status = ESTADO.FAILED;
+        trabajo.finishedAt = Date.now();
+        trabajo.updatedAt = trabajo.finishedAt;
+        trabajo.error = { code: err?.code ?? 'internal_error' };
+        trabajo.stoppedBy = err?.code === 'queue_timeout' ? 'queueTimeout' : 'failed';
+        trabajo.queuePosition = null;
+        trabajo.phase = FASE.TRABAJANDO;
+        trabajo.resumeAt = null;
+        trabajo.rateLimitedRoute = null;
 
-function presentar(trabajo) {
-    const terminado = TERMINALES.has(trabajo.status);
+        detenerLatido(id);
+        repo.terminar(trabajo);
+        return trabajo;
+    }
+
+    // Busca el trabajo: primero en memoria (la version viva) y, si no esta, en
+    // Postgres. Y si la copia en memoria ya NO ES NUESTRA (otra instancia lo
+    // adopto, o lo soltamos al apagar), se sirve la de la base: es la unica que
+    // refleja lo que el dueño actual esta haciendo. Sin esto, un GET que cayera
+    // en la instancia vieja enseñaria para siempre la foto del momento del
+    // traspaso.
+    async function obtener(id) {
+        limpiar();
+        const caliente = trabajos.get(id);
+        if (caliente && !(caliente.adoptado && !TERMINALES.has(caliente.status))) return caliente;
+        const enBase = await repo.leer(id);
+        return enBase ?? caliente ?? null;
+    }
+
+    // ── Fase y propiedad de cara al GET ──────────────────────────────────────
+    //
+    // Distingue lo que un trabajo vivo puede estar haciendo, tambien cuando la
+    // fila viene de la base (otra replica lo tiene, o nadie):
+    //
+    //   queued         espera turno del grupo
+    //   working        recorriendo la comunidad
+    //   rateLimitWait  estacionado por Roblox hasta resumeAt
+    //   recovering     su instancia lo solto (apagado): pendiente de adopcion
+    //   orphaned       su dueño dejo de latir: cualquier instancia lo adoptara
+    function faseDe(trabajo, ahora = Date.now()) {
+        if (TERMINALES.has(trabajo.status)) return null;
+        if (trabajo.status === ESTADO.QUEUED) return FASE.EN_COLA;
+        if (trabajo.desdeBase) {
+            if (trabajo.instanceId === null) return FASE.RECUPERANDO;
+            const edad = trabajo.heartbeatAt ? ahora - trabajo.heartbeatAt : Infinity;
+            if (edad > config.pluginJobs.adoptAfterMs) return FASE.HUERFANO;
+        }
+        return trabajo.phase ?? FASE.TRABAJANDO;
+    }
+
+    function presentar(trabajo) {
+        const terminado = TERMINALES.has(trabajo.status);
+        const ahora = Date.now();
+        const fase = faseDe(trabajo, ahora);
+
+        // Foto de progreso. Estacionado y leido de la base, el contador de la
+        // pausa se recalcula al leer: asi el plugin ve moverse "quedan 20 s"
+        // aunque pregunte a una replica que no tiene el trabajo en memoria.
+        let progress = trabajo.status === ESTADO.QUEUED ? null : (trabajo.progress ?? null);
+        if (progress && fase === FASE.ESPERANDO_ROBLOX && trabajo.resumeAt) {
+            const restante = Math.max(0, trabajo.resumeAt - ahora);
+            progress = { ...progress, phase: fase, cooldownRemainingMs: restante,
+                estimatedRemainingMs: Math.max(progress.estimatedRemainingMs ?? 0, restante) };
+        } else if (progress && fase && progress.phase !== fase) {
+            progress = { ...progress, phase: fase };
+        }
+
+        return {
+            searchId: trabajo.searchId,
+            status: trabajo.status,
+            requested: trabajo.target,
+            found: terminado ? (trabajo.outfits?.length ?? trabajo.found ?? 0) : (trabajo.progress?.found ?? 0),
+
+            // Aditivo: en que esta el trabajo, y de quien es. El plugin de hoy
+            // lo ignora; uno de mañana puede decir "recuperando tras un
+            // despliegue" en vez de enseñar 0 candidatos sin explicacion.
+            phase: fase,
+            ownership: {
+                instance: trabajo.instanceId ?? null,
+                previousInstance: trabajo.previousInstanceId ?? null,
+                handoffs: trabajo.handoffs ?? 0,
+                heartbeatAgeMs: terminado ? null
+                    : Math.max(0, ahora - (trabajo.desdeBase ? (trabajo.heartbeatAt ?? trabajo.createdAt ?? ahora) : trabajo.updatedAt)),
+                servedFrom: trabajo.desdeBase ? 'database' : 'memory',
+            },
+
+            queuePosition: trabajo.status === ESTADO.QUEUED ? (trabajo.queuePosition ?? null) : null,
+            progress,
+
+            pollAfterMs: terminado ? null : config.pluginJobs.pollIntervalMs,
+            outfits: terminado ? (trabajo.outfits ?? []) : [],
+            stats: terminado ? (trabajo.stats ?? null) : null,
+            stoppedBy: trabajo.stoppedBy ?? null,
+            error: trabajo.error ?? null,
+        };
+    }
+
+    // ── Recuperacion (arranque y periodica) ──────────────────────────────────
+    //
+    // 1. ADOPTAR lo reanudable sin dueño vivo: soltado por una instancia que se
+    //    apago, o cuyo dueño lleva adoptAfterMs sin latir. SOLO si hay un
+    //    ejecutor registrado: adoptar sin poder ejecutar seria fabricar
+    //    exactamente el huerfano que se quiere evitar.
+    // 2. EXPIRAR lo no reanudable.
+    // 3. BORRAR lo vencido.
+    async function recuperarAlArrancar() {
+        let arrancados = 0;
+        let adoptados = [];
+
+        if (!ejecutor) {
+            logger.warn('Recuperacion sin ejecutor registrado: no se adopta ningun trabajo', { instance: instancia });
+        } else {
+            adoptados = await repo.adoptarHuerfanos(instancia);
+            for (const fila of adoptados) {
+                const trabajo = hidratar(fila);
+                trabajos.set(trabajo.searchId, trabajo);
+                // Latir YA, antes de que el runner consiga el turno del grupo:
+                // desde este instante el trabajo tiene dueño vivo.
+                iniciarLatido(trabajo);
+
+                logger.info('Trabajo de busqueda adoptado', {
+                    searchId: trabajo.searchId,
+                    groupId: String(trabajo.groupId),
+                    previousInstance: fila.adoptedFrom ?? null,
+                    newInstance: instancia,
+                    reason: fila.adoptionReason,
+                    heartbeatAgeMs: fila.heartbeatAgeMs,
+                    handoffs: trabajo.handoffs,
+                    phase: fila.phase,
+                    found: trabajo.checkpoint?.outfits?.length ?? 0,
+                    pendingCandidates: trabajo.checkpoint?.pendientes?.length ?? 0,
+                    resumeAt: fila.resumeAt ? new Date(fila.resumeAt).toISOString() : null,
+                });
+
+                // Sin await: corre en segundo plano igual que un POST asincrono.
+                // El ejecutor nunca rechaza.
+                ejecutor(trabajo);
+                arrancados++;
+                logger.info('Runner arrancado tras adoptar', {
+                    searchId: trabajo.searchId, newInstance: instancia,
+                    resumedFromCheckpoint: Boolean(trabajo.checkpoint),
+                });
+            }
+        }
+
+        const expirados = await repo.expirarHuerfanos();
+        const borrados = await repo.limpiarVencidos();
+        return { adoptados: arrancados, expirados, borrados };
+    }
+
+    function hidratar(fila) {
+        const trabajo = esqueleto({
+            searchId: fila.searchId,
+            requestId: null,
+            groupId: fila.groupId,
+            target: fila.target,
+            params: fila.params,
+            createdAt: fila.createdAt ?? Date.now(),
+        });
+        trabajo.status = ESTADO.RUNNING;
+        trabajo.startedAt = fila.startedAt ?? null;
+        trabajo.progress = fila.progress ?? null;
+        trabajo.checkpoint = fila.checkpoint ?? null;
+        trabajo.phase = fila.phase === FASE.ESPERANDO_ROBLOX ? FASE.ESPERANDO_ROBLOX : FASE.TRABAJANDO;
+        trabajo.resumeAt = fila.resumeAt ?? null;
+        trabajo.rateLimitedRoute = fila.rateLimitedRoute ?? null;
+        trabajo.handoffs = fila.handoffs ?? 0;
+        trabajo.previousInstanceId = fila.adoptedFrom ?? fila.previousInstanceId ?? null;
+        trabajo.ultimoFound = fila.checkpoint?.outfits?.length ?? fila.found ?? 0;
+        return trabajo;
+    }
+
+    // ── Apagado ──────────────────────────────────────────────────────────────
+    //
+    // Al recibir SIGTERM (cada redeploy de Railway), esta instancia SUELTA sus
+    // trabajos vivos: deja en la base su ultimo checkpoint y la fila sin dueño.
+    // Cualquier instancia viva los adopta en su siguiente pasada, en segundos,
+    // sin esperar a que el latido caduque. Las busquedas que corren aqui se
+    // enteran en su siguiente checkpoint y paran sin marcar nada como fallido.
+    async function soltarTodos() {
+        const vivos = [...trabajos.values()].filter(t => !TERMINALES.has(t.status) && !t.adoptado);
+        let soltados = 0;
+        for (const trabajo of vivos) {
+            detenerLatido(trabajo.searchId);
+            const { ok } = await repo.soltar(trabajo);
+            trabajo.adoptado = true; // este proceso no lo toca mas, pase lo que pase
+            trabajo.adoptadoPor = null;
+            if (ok) soltados++;
+            logger.info('Trabajo de busqueda soltado al apagar', {
+                searchId: trabajo.searchId, groupId: String(trabajo.groupId),
+                previousInstance: instancia, phase: trabajo.phase,
+                found: trabajo.progress?.found ?? 0, released: ok,
+            });
+        }
+        return { vivos: vivos.length, soltados };
+    }
+
+    function registrarEjecutor(fn) {
+        ejecutor = fn;
+    }
+
+    function reset() {
+        for (const id of [...latidos.keys()]) detenerLatido(id);
+        trabajos.clear();
+    }
 
     return {
-        searchId: trabajo.searchId,
-        status: trabajo.status,
-        requested: trabajo.target,
-        found: terminado ? (trabajo.outfits?.length ?? trabajo.found ?? 0) : (trabajo.progress?.found ?? 0),
-
-        // Mientras espera turno NO hay progreso que enseñar — no ha empezado —,
-        // y en su lugar va la posicion en la cola. Mezclar las dos cosas haria
-        // que el plugin pintara una barra parada como si fuera lento.
-        //
-        // Estacionado por Roblox, `progress` lleva `phase: 'rateLimitWait'`,
-        // `rateLimitedRoute`, `resumeAt` y `retryAfterMs` (los pone el
-        // estimador): el status sigue siendo 'running' y el mismo searchId, asi
-        // que el plugin de hoy lo sigue igual y uno de mañana puede decir
-        // "esperando a Roblox, 20 s".
-        queuePosition: trabajo.status === ESTADO.QUEUED ? (trabajo.queuePosition ?? null) : null,
-        progress: trabajo.status === ESTADO.QUEUED ? null : (trabajo.progress ?? null),
-
-        pollAfterMs: terminado ? null : config.pluginJobs.pollIntervalMs,
-        outfits: terminado ? (trabajo.outfits ?? []) : [],
-        stats: terminado ? (trabajo.stats ?? null) : null,
-        stoppedBy: trabajo.stoppedBy ?? null,
-        error: trabajo.error ?? null,
+        instancia,
+        crear, marcarEnCola, marcarEnCurso, actualizarProgreso, guardarCheckpoint,
+        parquear, latir, reanudar, terminar, fallar,
+        obtener, presentar, limpiar, recuperarAlArrancar, registrarEjecutor, soltarTodos, reset,
+        tamano: () => trabajos.size,
+        // Solo para pruebas: simula la MUERTE del proceso para sus trabajos —
+        // dejan de latir y la busqueda que corra aqui para en su siguiente
+        // checkpoint, sin escribir nada mas en la base.
+        __simularMuerte() {
+            for (const trabajo of trabajos.values()) {
+                if (TERMINALES.has(trabajo.status)) continue;
+                detenerLatido(trabajo.searchId);
+                trabajo.adoptado = true;
+                trabajo.adoptadoPor = 'proceso-muerto';
+            }
+        },
+        __congelarLatidos() {
+            for (const id of [...latidos.keys()]) detenerLatido(id);
+        },
     };
 }
 
-// ── Recuperacion al arrancar (y en cada pasada del recolector) ───────────────
-//
-// TRES cosas, en este orden, y el orden importa:
-//
-//   1. ADOPTAR los trabajos reanudables de instancias caidas (tienen peticion
-//      y, si estaban estacionados, checkpoint). Se vuelven a arrancar aqui,
-//      con el MISMO searchId, desde donde se quedaron. El plugin que los estaba
-//      siguiendo no nota mas que un latido tardio.
-//   2. EXPIRAR lo que no se puede reanudar (filas antiguas sin peticion).
-//   3. BORRAR lo vencido.
-//
-// Marcar huerfanos ANTES de aceptar trafico es lo que garantiza que ningun
-// trabajo se quede 'running' eternamente tras un reinicio.
-async function recuperarAlArrancar() {
-    const adoptados = await repo.adoptarHuerfanos();
-    let arrancados = 0;
-
-    for (const fila of adoptados) {
-        const trabajo = hidratar(fila);
-        trabajos.set(trabajo.searchId, trabajo);
-
-        if (!ejecutor) {
-            logger.warn('Trabajo adoptado sin ejecutor registrado: no se puede reanudar', {
-                searchId: trabajo.searchId,
-            });
-            continue;
-        }
-
-        logger.info('Reanudando trabajo de busqueda adoptado', {
-            searchId: trabajo.searchId,
-            groupId: String(trabajo.groupId),
-            found: trabajo.checkpoint?.outfits?.length ?? 0,
-            pendientes: trabajo.checkpoint?.pendientes?.length ?? 0,
-            estabaEstacionado: fila.phase === FASE.ESPERANDO_ROBLOX,
-            resumeAt: fila.resumeAt ? new Date(fila.resumeAt).toISOString() : null,
-        });
-
-        // Sin await: cada reanudacion corre en segundo plano igual que un POST
-        // asincrono. El ejecutor nunca rechaza.
-        ejecutor(trabajo);
-        arrancados++;
-    }
-
-    const expirados = await repo.expirarHuerfanos();
-    const borrados = await repo.limpiarVencidos();
-    return { adoptados: arrancados, expirados, borrados };
-}
-
-// De una fila de la base a un trabajo en memoria listo para reanudarse.
-function hidratar(fila) {
-    const trabajo = esqueleto({
-        searchId: fila.searchId,
-        requestId: null,
-        groupId: fila.groupId,
-        target: fila.target,
-        params: fila.params,
-        createdAt: fila.createdAt ?? Date.now(),
-    });
-    trabajo.status = ESTADO.RUNNING;
-    trabajo.startedAt = fila.startedAt ?? null;
-    trabajo.progress = fila.progress ?? null;
-    trabajo.checkpoint = fila.checkpoint ?? null;
-    trabajo.phase = fila.phase ?? FASE.TRABAJANDO;
-    trabajo.resumeAt = fila.resumeAt ?? null;
-    trabajo.rateLimitedRoute = fila.rateLimitedRoute ?? null;
-    trabajo.ultimoFound = fila.checkpoint?.outfits?.length ?? fila.found ?? 0;
-    return trabajo;
-}
-
-function reset() {
-    trabajos.clear();
-}
+const porDefecto = crearRegistro();
 
 module.exports = {
-    ESTADO, FASE, TERMINALES, TrabajoAdoptadoError,
-    crear, marcarEnCola, marcarEnCurso, actualizarProgreso, guardarCheckpoint,
-    parquear, latir, reanudar, terminar, fallar,
-    obtener, presentar, limpiar, recuperarAlArrancar, registrarEjecutor, reset,
-    get tamano() { return trabajos.size; },
+    ...porDefecto,
+    ESTADO, FASE, TERMINALES, TrabajoAdoptadoError, crearRegistro,
 };

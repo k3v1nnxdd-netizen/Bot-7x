@@ -43,9 +43,13 @@ ensureSchema().then(async () => {
 
 // Recolector de trabajos vencidos. `unref` para que no impida apagar el
 // proceso: es mantenimiento, no trabajo pendiente.
+// Cada pasada ADOPTA lo que otra instancia solto al apagarse o dejo de latir,
+// ademas de limpiar lo vencido. Es corta a proposito: tras un redeploy, el
+// trabajo que la instancia vieja solto tiene que estar corriendo aqui en
+// segundos, no cuando caduque un latido.
 const limpiezaDeTrabajos = setInterval(() => {
     jobs.recuperarAlArrancar().catch(() => { /* ya se registra dentro */ });
-}, config.pluginJobs.cleanupIntervalMs);
+}, config.pluginJobs.recoveryIntervalMs);
 limpiezaDeTrabajos.unref();
 
 // keepAliveTimeout debe SUPERAR el idle timeout del proxy que tengamos
@@ -79,11 +83,22 @@ function shutdown(signal) {
     // quedaria sin base a mitad. close() nunca lanza.
     clearInterval(limpiezaDeTrabajos);
 
-    server.close(async () => {
-        await db.close();
-        logger.info('Servidor cerrado limpiamente');
-        process.exit(0);
-    });
+    // LOS TRABAJOS VIVOS SE SUELTAN ANTES DE CERRAR NADA. Cada uno deja en la
+    // base su ultimo checkpoint y la fila sin dueño: la instancia nueva del
+    // redeploy los adopta en su siguiente pasada, en segundos, con el mismo
+    // searchId y desde donde estaban. Sin esto, un trabajo a medias esperaria
+    // a que caducara el latido para que alguien lo continuara, y el plugin
+    // veria minuto y medio de "0 candidatos" sin explicacion.
+    jobs.soltarTodos()
+        .then(r => logger.info('Trabajos de busqueda soltados para el relevo', r))
+        .catch(err => logger.warn('No se pudieron soltar los trabajos al apagar', { detail: err?.message }))
+        .finally(() => {
+            server.close(async () => {
+                await db.close();
+                logger.info('Servidor cerrado limpiamente');
+                process.exit(0);
+            });
+        });
 
     // Si algo se queda colgado, no se espera indefinidamente: Railway acabaria
     // mandando SIGKILL de todas formas, y salir por nuestro pie deja un log

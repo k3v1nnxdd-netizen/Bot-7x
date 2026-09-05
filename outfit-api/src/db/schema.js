@@ -160,6 +160,15 @@ const DDL = [
             'ALTER TABLE plugin_search_jobs ADD COLUMN IF NOT EXISTS resume_at TIMESTAMPTZ',
             'ALTER TABLE plugin_search_jobs ADD COLUMN IF NOT EXISTS rate_limited_route TEXT',
             'ALTER TABLE plugin_search_jobs ADD COLUMN IF NOT EXISTS checkpoint JSONB',
+
+            // ── Propiedad y traspasos ────────────────────────────────────────
+            // Quien lo tenia antes, cuando cambio de manos y cuantas veces. Es
+            // lo que permite explicar despues un cambio de dueño con la fila
+            // delante: de que instancia a cual, y si fue un apagado limpio
+            // (soltado) o un proceso que dejo de latir.
+            'ALTER TABLE plugin_search_jobs ADD COLUMN IF NOT EXISTS previous_instance_id TEXT',
+            'ALTER TABLE plugin_search_jobs ADD COLUMN IF NOT EXISTS adopted_at TIMESTAMPTZ',
+            'ALTER TABLE plugin_search_jobs ADD COLUMN IF NOT EXISTS handoffs INTEGER NOT NULL DEFAULT 0',
         ],
     },
     {

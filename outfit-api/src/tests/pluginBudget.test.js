@@ -302,11 +302,19 @@ module.exports = async function run() {
             'la espera en cola es mas corta que la busqueda mas larga posible');
     });
 
-    test('un trabajo en cola no se da por muerto antes de que la cola lo expulse', () => {
-        // Un trabajo `queued` no late porque no esta haciendo nada. Medirlo con
-        // el reloj del latido convertia una espera legitima en un 'expired'.
-        assert.ok(config.pluginJobs.queuedTimeoutMs > config.pluginQueue.waitTimeoutMs,
-            'un trabajo en cola expiraria antes de que la cola le diera un motivo');
+    test('la adopcion tolera muchos latidos fallidos seguidos: un bache de la base no roba trabajos', () => {
+        // Todo trabajo vivo late cada `heartbeatIntervalMs`, haga lo que haga.
+        // Solo se adopta tras `adoptAfterMs` sin latir: la relacion entre los
+        // dos es la tolerancia a fallos transitorios de Postgres.
+        const latidosPerdidos = config.pluginJobs.adoptAfterMs / config.pluginJobs.heartbeatIntervalMs;
+        assert.ok(latidosPerdidos >= 6,
+            `hacen falta solo ${latidosPerdidos} latidos fallidos para perder un trabajo: demasiado fragil`);
+        // Y un trabajo estacionado por Roblox late mas a menudo de lo que tarda
+        // en darse por huerfano.
+        assert.ok(config.pluginSearch.rateLimitHeartbeatMs * 3 < config.pluginJobs.adoptAfterMs);
+        // La recuperacion pasa lo bastante a menudo para que un trabajo soltado
+        // en un redeploy no espere ni un minuto a que alguien lo continue.
+        assert.ok(config.pluginJobs.recoveryIntervalMs <= 60_000);
     });
 
     return suite.run();

@@ -381,10 +381,11 @@ module.exports = async function run() {
         assert.ok(encontradosAntes >= 3);
 
         // ── La instancia muere ───────────────────────────────────────────────
-        // Su fila queda con un dueño que ya no existe y un latido viejo. El
-        // proceso viejo, si sigue vivo (aqui lo esta), ve en su siguiente
-        // latido que la fila ya no es suya y SUELTA la busqueda.
+        // De cara a la base: su fila conserva al dueño pero el latido es viejo.
+        // De cara al proceso: deja de latir y la busqueda que corria para en su
+        // siguiente checkpoint sin escribir nada mas (como un proceso muerto).
         base.instanciaMuereCon(searchId);
+        jobs.__simularMuerte();
         robloxRateLimiter.reset(); // el limitador de la instancia nueva arranca limpio
         await dormir(150);
 

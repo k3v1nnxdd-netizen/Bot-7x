@@ -486,7 +486,7 @@ const pluginSearch = {
 
     // Cada cuanto late un trabajo ESTACIONADO. Es lo que lo distingue de uno
     // muerto: refresca el heartbeat del job y renueva el lease del grupo. Bien
-    // por debajo del plazo de latido (heartbeatTimeoutMs) para que una pausa de
+    // por debajo del plazo de adopcion (adoptAfterMs) para que una pausa de
     // 30 s no se confunda nunca con un proceso caido.
     rateLimitHeartbeatMs: intFromEnv('PLUGIN_SEARCH_RATE_LIMIT_HEARTBEAT_MS', 5_000),
 
@@ -629,32 +629,38 @@ const pluginJobs = {
     // no hay hitos, cada este intervalo — que ademas hace de latido.
     snapshotMs: intFromEnv('PLUGIN_JOB_SNAPSHOT_MS', 2_000),
 
-    // Sin latido durante este tiempo, un trabajo EN CURSO se da por muerto.
-    // Es lo que impide que un proceso que se cayo deje jobs eternamente
-    // 'running' en la base. Holgado respecto a snapshotMs para no matar a un
-    // trabajo vivo que solo va lento: un latido sale al cerrar cada segmento, y
-    // un segmento son 25 avatares.
-    heartbeatTimeoutMs: intFromEnv('PLUGIN_JOB_HEARTBEAT_TIMEOUT_MS', 120_000),
+    // ── Propiedad: latido y adopcion ─────────────────────────────────────────
+    //
+    // Cada trabajo vivo LATE por su cuenta, cada este intervalo, haga lo que
+    // haga: trabajar, esperar turno del grupo o estar estacionado por Roblox.
+    // El latido es independiente del progreso a proposito: antes solo se
+    // escribia al cerrar cada ola, y una ola lenta o una espera en cola se
+    // parecian a un proceso muerto.
+    heartbeatIntervalMs: intFromEnv('PLUGIN_JOB_HEARTBEAT_INTERVAL_MS', 5_000),
 
-    // Y este es el plazo de los trabajos que aun ESPERAN TURNO, que es distinto
-    // y no puede compartir reloj con el anterior: un trabajo en cola no late
-    // porque no esta haciendo nada — es correcto que no se mueva — y matarlo
-    // por eso convertiria una espera legitima en un 'expired' mentiroso. El
-    // unico plazo que le aplica es el de la propia cola, que ya lo saca con un
-    // motivo claro; esto es solo la red por si ese camino se pierde.
-    queuedTimeoutMs: intFromEnv(
-        'PLUGIN_JOB_QUEUED_TIMEOUT_MS',
-        pluginQueue.waitTimeoutMs + 30_000
-    ),
+    // Sin latido durante este tiempo, un trabajo se considera HUERFANO y otra
+    // instancia puede adoptarlo — sea cual sea su fase. Es la unica condicion
+    // de adopcion (ademas de que su dueño lo haya SOLTADO al apagarse), y la
+    // relacion con el intervalo es la tolerancia a fallos transitorios: con
+    // latidos cada 5 s, 90 s son dieciocho latidos fallidos seguidos. Un bache
+    // de Postgres de veinte segundos no le quita el trabajo a nadie; un
+    // proceso muerto se recupera en minuto y medio.
+    adoptAfterMs: intFromEnv('PLUGIN_JOB_ADOPT_AFTER_MS', 90_000),
+
+    // Cada cuanto pasa la recuperacion: adoptar lo soltado o huerfano y borrar
+    // lo vencido. Corto, porque tras un redeploy el trabajo soltado por la
+    // instancia vieja tiene que estar corriendo en la nueva en segundos.
+    recoveryIntervalMs: intFromEnv('PLUGIN_JOB_RECOVERY_INTERVAL_MS', 15_000),
+
+    // Un trabajo SOLTADO que ninguna instancia adopta en este plazo (no hay
+    // ninguna viva) se expira, para que nada quede 'running' para siempre.
+    releasedExpireMs: intFromEnv('PLUGIN_JOB_RELEASED_EXPIRE_MS', 60 * 60_000),
 
     // Cuanto sobrevive un trabajo TERMINADO en la base, con sus resultados.
     // Es lo que permite recoger el resultado tras un redeploy o desde otra
     // instancia. Pasado el plazo se borra: son resultados de una busqueda, no
     // un almacen.
     retentionMs: intFromEnv('PLUGIN_JOB_RETENTION_MS', 30 * 60_000),
-
-    // Cada cuanto pasa el recolector de trabajos vencidos.
-    cleanupIntervalMs: intFromEnv('PLUGIN_JOB_CLEANUP_INTERVAL_MS', 5 * 60_000),
 };
 
 const pluginEta = {

@@ -83,7 +83,11 @@ router.post('/outfits/search', async (req, res) => {
         throw err;
     }
 
-    const trabajo = jobs.crear({ peticion, requestId: req.requestId });
+    // Se ESPERA a que el trabajo exista en la base antes de arrancarlo. Era
+    // una carrera: la primera escritura vallada del ejecutor podia llegar a
+    // Postgres antes que el INSERT, no tocar ninguna fila, y leerse como "otra
+    // instancia lo adopto" — el proceso soltaba una busqueda que nadie tenia.
+    const trabajo = await jobs.crear({ peticion, requestId: req.requestId });
 
     // ── Modo asincrono: se responde YA y la busqueda sigue por su cuenta ─────
     if (peticion.async) {

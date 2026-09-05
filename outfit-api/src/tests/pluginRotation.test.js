@@ -1208,7 +1208,7 @@ module.exports = async function run() {
             found: 2, candidatesExamined: 8, stoppedBy: null, progress: null,
             outfits: [], stats: null, error: null,
             createdAt: Date.now() - 600_000, startedAt: Date.now() - 600_000, finishedAt: null,
-            heartbeatAt: Date.now() - config.pluginJobs.heartbeatTimeoutMs - 10_000,
+            heartbeatAt: Date.now() - config.pluginJobs.adoptAfterMs - 10_000,
             expiresAt: null,
         });
 

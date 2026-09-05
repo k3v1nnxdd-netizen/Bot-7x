@@ -223,7 +223,24 @@ const upstream = {
     // escuchar la primera contestacion.
     routeConcurrency: {
         userAvatar: intFromEnv('UPSTREAM_ROUTE_CONCURRENCY_USER_AVATAR', 2),
+        userAvatarV2: intFromEnv('UPSTREAM_ROUTE_CONCURRENCY_USER_AVATAR_V2', 2),
         catalogDetails: intFromEnv('UPSTREAM_ROUTE_CONCURRENCY_CATALOG_DETAILS', 2),
+    },
+
+    // ── SUELO DE RITMO POR RUTA ─────────────────────────────────────────────
+    //
+    // Separacion MINIMA entre llamadas, desde la primera y sin esperar a que
+    // Roblox se queje. El marcapasos normal arranca en cero y solo aparece tras
+    // un 429; esto es lo contrario: un ritmo que no se supera nunca.
+    //
+    // Para v2 son 334 ms, es decir 3 por segundo. La medicion real desde
+    // Railway aguanto 3,59 por segundo con doscientas llamadas y cero 429, y la
+    // cabecera anuncia numeros muchisimo mas altos — pero esa cabecera ya
+    // demostro no ser un contador fiable (repitio el mismo 'remaining' en
+    // llamadas consecutivas), asi que el ritmo se fija por lo MEDIDO y con
+    // margen por debajo, no por lo que se anuncia.
+    routeMinSpacingMs: {
+        userAvatarV2: intFromEnv('UPSTREAM_MIN_SPACING_USER_AVATAR_V2', 334),
     },
 
     // ── 429 SIN cabecera de espera ──────────────────────────────────────────

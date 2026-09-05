@@ -608,6 +608,26 @@ function normalizeAvatarAssets(data) {
     };
 }
 
+// EL AVATAR POR v2, que es el camino del worker del indice.
+//
+// Misma forma de respuesta que v1 —`assets` con `assetType` anidado— y por eso
+// comparte el mismo aplanado: lo que sale de aqui es indistinguible de lo que
+// sale de `getCurrentAvatar`, y el resto del sistema no tiene que saber por
+// cual vino.
+//
+// Lo que cambia es la CUOTA. Medido desde Railway: v1 esta en seis por hora y
+// contesta 429; v2 aguanto doscientas llamadas a 3,59 por segundo sin una
+// sola. Por eso tiene bucket propio (`userAvatarV2`) y por eso NO hay respaldo
+// a v1: caer a v1 seria caer en la ruta que sabemos cerrada, gastando la unica
+// llamada por hora que da y encima marcando la ruta como limitada.
+async function getCurrentAvatarV2(userId) {
+    const response = await rateLimiter.run('userAvatarV2', () => http_.get(
+        `https://avatar.roblox.com/v2/avatar/users/${userId}/avatar`
+    ), { endpoint: 'avatar.roblox.com/v2/avatar/users/{id}/avatar', notFoundCode: 'user_not_found' });
+
+    return normalizeAvatarAssets(response.data);
+}
+
 async function getCurrentAvatar(userId) {
     const response = await rateLimiter.run('userAvatar', () => http_.get(
         `https://avatar.roblox.com/v1/users/${userId}/avatar`
@@ -620,6 +640,7 @@ module.exports = {
     lookupUserByUsername,
     listGroupMembers,
     getCurrentAvatar,
+    getCurrentAvatarV2,
     listOutfits,
     getOutfitDetailsRaw,
     getBundlesForAsset,

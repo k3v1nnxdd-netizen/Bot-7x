@@ -48,6 +48,7 @@ module.exports = async function run() {
     const original = {
         listGroupMembers: roblox.listGroupMembers,
         getCurrentAvatar: roblox.getCurrentAvatar,
+        getCurrentAvatarV2: roblox.getCurrentAvatarV2,
         getCatalogItemDetails: roblox.getCatalogItemDetails,
         getBundlesForAsset: roblox.getBundlesForAsset,
         rotationRepo: { ...rotationRepo },
@@ -78,6 +79,14 @@ module.exports = async function run() {
     config.pluginSearch.minAccessories = 3;
     config.cache.maxEntries = 20_000;
 
+    // EL SUELO DE RITMO DE v2, ACORTADO AQUI. En produccion son 334 ms (3 por
+    // segundo, el ritmo medido en Railway); en estos casos se prueba la LOGICA
+    // del worker, y esperar un tercio de segundo por avatar convertiria el
+    // archivo en varios minutos de sleep. El valor real se comprueba en
+    // indexWorkerV2.test.js, que es donde toca.
+    const sueloV2 = config.upstream.routeMinSpacingMs.userAvatarV2;
+    config.upstream.routeMinSpacingMs.userAvatarV2 = 1;
+
     const base = crearBaseFalsa();
     base.instalar();
 
@@ -103,8 +112,10 @@ module.exports = async function run() {
         return { members, nextCursor: hasta < mundo.miembros ? `p${pagina + 1}` : null };
     };
 
-    roblox.getCurrentAvatar = async userId => {
-        const r = await limitador.run('userAvatar', async () => {
+    // EL WORKER LLAMA A v2. v1 esta en seis por hora en Railway y ya no se usa
+    // desde aqui; el doble tiene que ser el de la ruta que de verdad se pide.
+    roblox.getCurrentAvatarV2 = async userId => {
+        const r = await limitador.run('userAvatarV2', async () => {
             mundo.avatares++;
             const fallo = mundo.avatarFalla?.(Number(userId), mundo.avatares);
             if (fallo) throw fallo;
@@ -113,7 +124,7 @@ module.exports = async function run() {
                 status: 200, headers: {},
                 data: { assets: [a(0, T.Hat), a(1, T.Hair), a(2, T.Back), a(3, T.Waist)], playerAvatarType: 'R15' },
             };
-        }, { endpoint: 'avatar.roblox.com/v1/users/{id}/avatar', notFoundCode: 'user_not_found' });
+        }, { endpoint: 'avatar.roblox.com/v2/avatar/users/{id}/avatar', notFoundCode: 'user_not_found' });
         return roblox.normalizeAvatarAssets(r.data);
     };
 
@@ -145,9 +156,9 @@ module.exports = async function run() {
 
     // Congela la ruta del avatar durante una hora, como haria Roblox.
     const congelarAvatar = (ms = 60 * 60_000) => {
-        limitador.__buckets.userAvatar.cooldownUntil = Date.now() + ms;
+        limitador.__buckets.userAvatarV2.cooldownUntil = Date.now() + ms;
     };
-    const descongelar = () => { limitador.__buckets.userAvatar.cooldownUntil = 0; };
+    const descongelar = () => { limitador.__buckets.userAvatarV2.cooldownUntil = 0; };
 
     const nuevoWorker = nombre => crearWorker({ instancia: nombre });
 
@@ -656,6 +667,7 @@ module.exports = async function run() {
 
     roblox.listGroupMembers = original.listGroupMembers;
     roblox.getCurrentAvatar = original.getCurrentAvatar;
+    roblox.getCurrentAvatarV2 = original.getCurrentAvatarV2;
     roblox.getCatalogItemDetails = original.getCatalogItemDetails;
     roblox.getBundlesForAsset = original.getBundlesForAsset;
     Object.assign(rotationRepo, original.rotationRepo);
@@ -670,6 +682,7 @@ module.exports = async function run() {
     config.indexServe.enabled = original.serveEnabled;
     config.pluginSearch.minAccessories = original.minAccessories;
     config.cache.maxEntries = original.cache;
+    config.upstream.routeMinSpacingMs.userAvatarV2 = sueloV2;
     cache.reset();
     limitador.reset();
     ownRateLimit.reset();

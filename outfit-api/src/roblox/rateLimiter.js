@@ -33,7 +33,7 @@ const {
     retryBaseDelayMs, retryMaxDelayMs, inlineWaitCeilingMs,
     circuitFailureThreshold, circuitBaseCooldownMs, circuitMaxCooldownMs,
     pacerBaseMs, pacerMaxMs, pacerMinMs, pacerDecay,
-    pacerHeaderFraction, routeConcurrency,
+    pacerHeaderFraction, routeConcurrency, routeMinSpacingMs = {},
     rateLimitFallbackBaseMs, rateLimitFallbackMaxMs,
 } = config.upstream;
 
@@ -87,7 +87,10 @@ function makeBucket(name) {
         // ── Marcapasos adaptativo ────────────────────────────────────────────
         // Separacion MINIMA entre dos llamadas de esta ruta, y el instante mas
         // temprano en el que puede salir la siguiente. Ver esperarMarcapasos.
-        spacingMs: 0,              // 0 = sin marcapasos (estado sano)
+        // Arranca en el suelo de la ruta si lo tiene (v2 va a 3/s desde la
+        // primera llamada), y en 0 si no — que es el estado sano del resto.
+        spacingMs: routeMinSpacingMs[name] ?? 0,
+        minSpacingMs: routeMinSpacingMs[name] ?? 0,
         nextAllowedAt: 0,
 
         // ── Concurrencia efectiva POR RUTA ─────────────────────────────────
@@ -152,6 +155,14 @@ const buckets = {
     // congelar la herramienta interna.
     groupMembers: makeBucket('groupMembers'),
     userAvatar: makeBucket('userAvatar'),
+
+    // v2 del avatar, con bucket PROPIO y separado de userAvatar (v1) a
+    // proposito. Son cuotas distintas y se comprobo midiendo: en Railway v1
+    // esta en seis por HORA y devuelve 429, mientras v2 aguanto doscientas
+    // llamadas seguidas sin una sola. Compartir bucket haria que el cooldown
+    // de v1 —que esta permanentemente cerrado— congelara tambien a v2, que es
+    // justo el camino que ahora funciona.
+    userAvatarV2: makeBucket('userAvatarV2'),
 };
 
 // ── Diagnostico de limitacion ────────────────────────────────────────────────
@@ -367,9 +378,13 @@ function aprenderCuota(bucket, headers, remaining) {
 
 // Ritmo sostenible aprendido, o 0 si Roblox no ha publicado cuota y ventana.
 function sueloSostenible(bucket) {
+    // El suelo de la RUTA manda siempre: es un ritmo elegido por nosotros a
+    // partir de lo medido, y ni la cabecera de Roblox ni el aflojado del
+    // marcapasos pueden bajar de ahi.
+    const propio = bucket.minSpacingMs ?? 0;
     const { limit, windowMs } = bucket.quota;
-    if (!limit || !windowMs) return 0;
-    return Math.min(pacerMaxMs, windowMs / limit);
+    if (!limit || !windowMs) return propio;
+    return Math.max(propio, Math.min(pacerMaxMs, windowMs / limit));
 }
 
 // Impone un cooldown desde FUERA del limitador. Existe para un unico caso: un
@@ -451,7 +466,10 @@ function aflojarMarcapasos(bucket) {
     const relajado = Math.max(suelo, bucket.spacingMs * pacerDecay);
     // Por debajo del minimo no merece la pena mantener temporizadores vivos: se
     // apaga del todo y la ruta vuelve a ir a pelo.
-    bucket.spacingMs = relajado < pacerMinMs ? 0 : relajado;
+    // Nunca por debajo del suelo de la ruta: apagar el marcapasos de v2 seria
+    // volver a la rafaga que no queremos hacer.
+    const minimoDeRuta = bucket.minSpacingMs ?? 0;
+    bucket.spacingMs = relajado < pacerMinMs && minimoDeRuta === 0 ? 0 : Math.max(minimoDeRuta, relajado);
     if (bucket.spacingMs === 0) {
         logger.info('Marcapasos de Roblox apagado: la ruta va suelta otra vez', { route: bucket.name });
     }

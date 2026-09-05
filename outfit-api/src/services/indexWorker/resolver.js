@@ -61,12 +61,14 @@ async function resolverAvatar(miembro, { contador = crearContador() } = {}) {
             // lo encuentra hecho quien busque despues.
             avatarCacheKey(userId),
             config.ttl.userAvatar,
-            () => roblox.getCurrentAvatar(userId),
+            // v2, y SIN respaldo a v1: v1 esta en seis por hora en Railway y
+            // llamarla solo serviria para marcar su ruta como limitada.
+            () => roblox.getCurrentAvatarV2(userId),
             { negativeTtlMs: config.ttl.negative, onStatus: e => contador.marcarCache(e) }
         );
     } catch (err) {
         if (err instanceof UpstreamRateLimitedError || err instanceof CircuitOpenError) {
-            return { userId, ok: false, motivo: MOTIVO.LIMITADO, ruta: 'userAvatar' };
+            return { userId, ok: false, motivo: MOTIVO.LIMITADO, ruta: 'userAvatarV2' };
         }
         // 404: el usuario no existe. Esto SI es un dato, y se guarda.
         if (err instanceof NotFoundError) {

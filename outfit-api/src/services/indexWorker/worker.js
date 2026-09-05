@@ -43,7 +43,10 @@ const { resolverAvatar, resolverPrecios, crearContador, MOTIVO } = require('./re
 // tick. Y si un ciclo se colgara en un await que no vuelve, el vigilante lo da
 // por perdido y deja pasar al siguiente en vez de dejar el worker congelado.
 
-const RUTA_AVATAR = 'userAvatar';
+// La ruta del worker es v2, con bucket propio. Un cooldown de v1 —que en
+// Railway esta permanentemente cerrada— no puede parar al worker, y al reves
+// tampoco: la busqueda en vivo sigue usando v1 por su lado.
+const RUTA_AVATAR = 'userAvatarV2';
 const RUTA_CATALOGO = 'catalogDetails';
 
 const ETAPA = { CRAWLER: 'crawler', AVATAR: 'avatar', PRECIO: 'pricing', OCIOSO: 'idle' };

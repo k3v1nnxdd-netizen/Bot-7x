@@ -396,6 +396,43 @@ async function adoptarHuerfanos(instancia, limite = 8) {
 // Solo dos casos: filas anteriores a park/resume (sin `params`) cuyo dueño
 // dejo de latir, y filas SOLTADAS que ninguna instancia adopto en un plazo
 // largo (no hay ninguna viva). Todo lo demas se adopta, no se expira.
+// RETIRA los trabajos del sistema antiguo cuando el indice sirve las busquedas.
+//
+// Con INDEX_SERVE_ENABLED=true nadie los va a ejecutar: adoptarlos solo serviria
+// para que compitieran con el worker del indice por la MISMA cuota de Roblox,
+// que es justo lo escaso. Se marcan como 'expired' —un estado que el plugin ya
+// entiende— en vez de borrarlos, para que un plugin que siguiera sondeando
+// reciba una respuesta clara y no un 404 sin explicacion.
+//
+// Es idempotente: al segundo arranque no queda ninguno y devuelve cero.
+async function retirarLegacy() {
+    if (!disponible()) return 0;
+    try {
+        const { rowCount } = await db.query(
+            `UPDATE plugin_search_jobs
+                SET status = 'expired',
+                    stopped_by = 'expired',
+                    error_code = 'index_serving',
+                    instance_id = NULL,
+                    completed_at = NOW(),
+                    updated_at = NOW(),
+                    expires_at = NOW() + ($1::bigint * INTERVAL '1 millisecond')
+              WHERE status IN ('queued', 'running')`,
+            [config.pluginJobs.retentionMs],
+            'jobs.retireLegacy'
+        );
+        if (rowCount > 0) {
+            logger.warn('Trabajos del sistema antiguo retirados: las busquedas las sirve el indice', {
+                trabajos: rowCount,
+            });
+        }
+        return rowCount;
+    } catch (err) {
+        logger.warn('No se pudieron retirar los trabajos del sistema antiguo', { detail: err?.message });
+        return 0;
+    }
+}
+
 async function expirarHuerfanos() {
     if (!disponible()) return 0;
     try {
@@ -447,6 +484,7 @@ async function limpiarVencidos() {
 }
 
 module.exports = {
+    retirarLegacy,
     disponible, crear, actualizar, latir, terminar, soltar, leer,
     adoptarHuerfanos, expirarHuerfanos, limpiarVencidos, quienEsElDueño,
     NO_ES_MIO,

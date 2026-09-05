@@ -255,6 +255,22 @@ function crearBaseFalsa() {
                 return n;
             };
 
+            // RETIRADA del sistema antiguo: con el indice sirviendo, los
+            // trabajos pendientes se marcan expirados en vez de adoptarse.
+            jobRepo.retirarLegacy = async () => {
+                let n = 0;
+                for (const fila of trabajosPersistidos.values()) {
+                    if (!["queued", "running"].includes(fila.status)) continue;
+                    fila.status = "expired";
+                    fila.stoppedBy = "expired";
+                    fila.errorCode = "index_serving";
+                    fila.instanceId = null;
+                    fila.finishedAt = Date.now();
+                    n++;
+                }
+                return n;
+            };
+
             jobRepo.limpiarVencidos = async () => {
                 if (!disponible) return 0;
                 let n = 0;

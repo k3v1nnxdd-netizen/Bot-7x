@@ -611,6 +611,27 @@ function crearRegistro({ instancia = repo.__instancia } = {}) {
         let arrancados = 0;
         let adoptados = [];
 
+        // ── EL INDICE SIRVE: EL SISTEMA ANTIGUO NO SE TOCA ──────────────────
+        //
+        // Con INDEX_SERVE_ENABLED=true una busqueda es una consulta a Postgres y
+        // no existe ningun trabajo que reanudar. Adoptar los que quedaron del
+        // sistema anterior tendria un solo efecto: ponerlos a recorrer
+        // comunidades y a competir con el worker del indice por la MISMA cuota
+        // de Roblox, que es exactamente lo escaso.
+        //
+        // Asi que no se adoptan, no se reanudan y no se ejecutan. Se retiran:
+        // se marcan como expirados, que es un estado que el plugin entiende.
+        if (config.indexServe.enabled) {
+            const retirados = await repo.retirarLegacy();
+            const borradosAhora = await repo.limpiarVencidos();
+            if (retirados > 0) {
+                logger.info('Sistema antiguo de busquedas retirado al arrancar', {
+                    instance: instancia, retirados,
+                });
+            }
+            return { adoptados: 0, expirados: retirados, borrados: borradosAhora, legacyRetirado: retirados };
+        }
+
         if (!ejecutor) {
             logger.warn('Recuperacion sin ejecutor registrado: no se adopta ningun trabajo', { instance: instancia });
         } else {

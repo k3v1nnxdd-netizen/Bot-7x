@@ -35,22 +35,33 @@ function crearRunner(jobs) {
             throw err;
         }
 
+        // Cada gancho esta VALLADO POR EJECUCION, no solo por searchId: si
+        // este proceso pierde el trabajo y mas tarde lo readopta (nueva copia
+        // en el registro, nueva busqueda), la busqueda vieja que aun estuviera
+        // acabando su ola NO puede escribir su checkpoint encima del de la
+        // nueva. Sin esto, un poll veia found 4 y el siguiente found 3.
+        const propio = () => {
+            if (trabajo.adoptado || !jobs.esVigente(trabajo)) {
+                throw new jobsPorDefecto.TrabajoAdoptadoError(id, trabajo.adoptadoPor ?? 'otra ejecucion de esta instancia');
+            }
+        };
         try {
             const resultado = await pluginSearch.searchOutfits(peticion, {
                 requestId: trabajo.requestId,
                 searchId: id,
                 checkpoint,
-                onProgress: progreso => jobs.actualizarProgreso(id, progreso),
-                onEncolado: posicion => jobs.marcarEnCola(id, posicion),
-                onParquear: info => jobs.parquear(id, info),
-                onLatido: progreso => jobs.latir(id, progreso),
-                onReanudar: progreso => jobs.reanudar(id, progreso),
-                onCheckpoint: cp => jobs.guardarCheckpoint(id, cp),
+                onProgress: progreso => { propio(); return jobs.actualizarProgreso(id, progreso); },
+                onEncolado: posicion => { propio(); return jobs.marcarEnCola(id, posicion); },
+                onParquear: info => { propio(); return jobs.parquear(id, info); },
+                onLatido: progreso => { propio(); return jobs.latir(id, progreso); },
+                onReanudar: progreso => { propio(); return jobs.reanudar(id, progreso); },
+                onCheckpoint: cp => { propio(); jobs.guardarCheckpoint(id, cp); },
                 // La busqueda pregunta esto antes de gastar nada: si el latido
                 // descubrio que el trabajo ya no es nuestro, para en seco.
-                esDueño: () => !trabajo.adoptado,
+                esDueño: () => !trabajo.adoptado && jobs.esVigente(trabajo),
             });
 
+            propio();
             jobs.terminar(id, resultado);
             return resultado;
         } catch (err) {
@@ -65,7 +76,7 @@ function crearRunner(jobs) {
                 return null;
             }
 
-            jobs.fallar(id, err);
+            if (jobs.esVigente(trabajo)) jobs.fallar(id, err);
 
             if (relanzar) throw err;
 

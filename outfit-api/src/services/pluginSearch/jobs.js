@@ -317,10 +317,18 @@ function crearRegistro({ instancia = repo.__instancia } = {}) {
 
     // El unico camino de escritura de progreso. Lanza TrabajoAdoptadoError si
     // el trabajo ya no es de este proceso.
+    // Un outfit se ENTREGA (aparece en el GET) solo cuando su checkpoint ya
+    // esta en la base: `checkpoint` es la copia servida y solo se promociona
+    // desde `checkpointPendiente` cuando la escritura vallada volvio bien. Si
+    // el proceso muere entre encontrar un outfit y escribirlo, ningun poll lo
+    // habra visto, y la fila (lo que sirve el proceso que adopte) coincide con
+    // lo ultimo que se entrego: `found` nunca baja entre dos polls.
     async function volcar(trabajo, operacion = 'snapshot') {
         if (trabajo.adoptado) throw new TrabajoAdoptadoError(trabajo.searchId, trabajo.adoptadoPor);
+        const pendiente = trabajo.checkpointPendiente;
         interpretar(trabajo, await repo.actualizar(trabajo), operacion);
-        trabajo.checkpointPendiente = null;
+        if (pendiente) trabajo.checkpoint = pendiente;
+        if (trabajo.checkpointPendiente === pendiente) trabajo.checkpointPendiente = null;
         trabajo.ultimoSnapshot = Date.now();
     }
 
@@ -375,7 +383,7 @@ function crearRegistro({ instancia = repo.__instancia } = {}) {
     function guardarCheckpoint(id, checkpoint) {
         const trabajo = trabajos.get(id);
         if (!trabajo || TERMINALES.has(trabajo.status)) return;
-        trabajo.checkpoint = checkpoint;
+        // Solo pendiente: pasa a ser la copia servida cuando este en la base.
         trabajo.checkpointPendiente = checkpoint;
     }
 
@@ -386,7 +394,7 @@ function crearRegistro({ instancia = repo.__instancia } = {}) {
         trabajo.phase = FASE.ESPERANDO_ROBLOX;
         trabajo.rateLimitedRoute = route;
         trabajo.resumeAt = resumeAt;
-        if (checkpoint) { trabajo.checkpoint = checkpoint; trabajo.checkpointPendiente = checkpoint; }
+        if (checkpoint) trabajo.checkpointPendiente = checkpoint;
         if (progreso) trabajo.progress = progreso;
         trabajo.updatedAt = Date.now();
 
@@ -465,6 +473,13 @@ function crearRegistro({ instancia = repo.__instancia } = {}) {
     // refleja lo que el dueño actual esta haciendo. Sin esto, un GET que cayera
     // en la instancia vieja enseñaria para siempre la foto del momento del
     // traspaso.
+    // ¿Es ESTA copia la que el registro tiene por el trabajo? Una busqueda
+    // arrancada sobre una copia vieja (el proceso perdio el trabajo y lo
+    // readopto) no debe tocar la nueva a traves del searchId.
+    function esVigente(trabajo) {
+        return Boolean(trabajo) && trabajos.get(trabajo.searchId) === trabajo && !trabajo.adoptado;
+    }
+
     async function obtener(id) {
         limpiar();
         const caliente = trabajos.get(id);
@@ -494,10 +509,36 @@ function crearRegistro({ instancia = repo.__instancia } = {}) {
         return trabajo.phase ?? FASE.TRABAJANDO;
     }
 
+    // ── Outfits ACUMULADOS, tambien durante running ──────────────────────────
+    //
+    // El plugin recibe los outfits A MEDIDA QUE SE ENCUENTRAN, no al terminar.
+    // Salen del ultimo checkpoint YA ESCRITO en la base (la copia servida se
+    // promociona en `volcar`, cuando la escritura vallada volvio bien; si el
+    // trabajo es de otra instancia o esta soltado, de la fila). La busqueda
+    // lo escribe al cerrar cada ola y al estacionarse. Propiedades:
+    //
+    //   DURABLE      un outfit que un poll ha visto esta en la base: un
+    //                reinicio o un traspaso no puede hacerlo desaparecer.
+    //   ACUMULATIVO  la busqueda solo AÑADE a `encontrados`; nunca quita.
+    //   ESTABLE      se entrega siempre el prefijo `slice(0, target)`, que es
+    //                exactamente lo que devuelve el resultado final: un outfit
+    //                entregado en un poll no puede desaparecer en el siguiente.
+    //                (La unica poda posible ocurre cuando la ULTIMA ola acepta
+    //                mas de los que faltaban; esos sobrantes nunca se entregan,
+    //                asi que nunca "desaparecen".)
+    //   COHERENTE    `found` es la longitud de esa lista, por construccion.
+    function outfitsAcumulados(trabajo, terminado) {
+        if (terminado) return trabajo.outfits ?? [];
+        const guardados = trabajo.checkpoint?.outfits ?? [];
+        return guardados.slice(0, trabajo.target);
+    }
+
     function presentar(trabajo) {
         const terminado = TERMINALES.has(trabajo.status);
         const ahora = Date.now();
         const fase = faseDe(trabajo, ahora);
+        const acumulados = outfitsAcumulados(trabajo, terminado);
+        const contadores = trabajo.checkpoint?.contadores ?? null;
 
         // Foto de progreso. Estacionado y leido de la base, el contador de la
         // pausa se recalcula al leer: asi el plugin ve moverse "quedan 20 s"
@@ -510,12 +551,26 @@ function crearRegistro({ instancia = repo.__instancia } = {}) {
         } else if (progress && fase && progress.phase !== fase) {
             progress = { ...progress, phase: fase };
         }
+        if (progress) {
+            // Lo que el plugin necesita ver DURANTE la busqueda, coherente con
+            // la lista que recibe: cuantos lleva, cuantos miro, cuantos salto
+            // por pocos accesorios, cuanto trabajo y cuanto espero a Roblox.
+            progress = {
+                ...progress,
+                found: Math.min(acumulados.length, trabajo.target),
+                outfitsDelivered: acumulados.length,
+                waitingForRoblox: fase === FASE.ESPERANDO_ROBLOX,
+                rejectedTooFewAccessories: contadores?.rejectedTooFewAccessories ?? progress.rejectedTooFewAccessories ?? 0,
+                rateLimitWaits: contadores?.rateLimitWaits ?? 0,
+                rateLimitWaitedMs: Math.round(contadores?.rateLimitWaitedMs ?? 0),
+            };
+        }
 
         return {
             searchId: trabajo.searchId,
             status: trabajo.status,
             requested: trabajo.target,
-            found: terminado ? (trabajo.outfits?.length ?? trabajo.found ?? 0) : (trabajo.progress?.found ?? 0),
+            found: acumulados.length,
 
             // Aditivo: en que esta el trabajo, y de quien es. El plugin de hoy
             // lo ignora; uno de mañana puede decir "recuperando tras un
@@ -534,7 +589,10 @@ function crearRegistro({ instancia = repo.__instancia } = {}) {
             progress,
 
             pollAfterMs: terminado ? null : config.pluginJobs.pollIntervalMs,
-            outfits: terminado ? (trabajo.outfits ?? []) : [],
+            // Los encontrados HASTA AHORA, tambien en running: acumulativos y
+            // estables (ver outfitsAcumulados). El plugin de hoy los lee al
+            // terminar; uno de mañana puede pintarlos segun llegan.
+            outfits: acumulados,
             stats: terminado ? (trabajo.stats ?? null) : null,
             stoppedBy: trabajo.stoppedBy ?? null,
             error: trabajo.error ?? null,
@@ -654,7 +712,7 @@ function crearRegistro({ instancia = repo.__instancia } = {}) {
         instancia,
         crear, marcarEnCola, marcarEnCurso, actualizarProgreso, guardarCheckpoint,
         parquear, latir, reanudar, terminar, fallar,
-        obtener, presentar, limpiar, recuperarAlArrancar, registrarEjecutor, soltarTodos, reset,
+        obtener, presentar, limpiar, recuperarAlArrancar, registrarEjecutor, soltarTodos, reset, esVigente,
         tamano: () => trabajos.size,
         // Solo para pruebas: simula la MUERTE del proceso para sus trabajos —
         // dejan de latir y la busqueda que corra aqui para en su siguiente

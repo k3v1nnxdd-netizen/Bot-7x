@@ -83,7 +83,6 @@ module.exports = async function run() {
             heartbeat: config.pluginSearch.rateLimitHeartbeatMs,
             margen: config.pluginSearch.rateLimitWaitMarginMs,
             presupuesto: config.pluginSearch.rateLimitWaitBudgetMs,
-            pausa: config.pluginSearch.rateLimitSingleWaitMs,
         },
     };
 
@@ -611,7 +610,6 @@ module.exports = async function run() {
     config.pluginSearch.rateLimitHeartbeatMs = original.cfg.heartbeat;
     config.pluginSearch.rateLimitWaitMarginMs = original.cfg.margen;
     config.pluginSearch.rateLimitWaitBudgetMs = original.cfg.presupuesto;
-    config.pluginSearch.rateLimitSingleWaitMs = original.cfg.pausa;
     cache.reset();
     ownRateLimit.reset();
     robloxRateLimiter.reset();

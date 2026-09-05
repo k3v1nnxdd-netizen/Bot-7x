@@ -468,11 +468,21 @@ const pluginSearch = {
     // escalonados. Quince minutos de espera acumulada son del orden de treinta
     // cooldowns normales: una busqueda de 10 que necesite eso no esta
     // "peleando con la cuota", esta en una situacion que merece el partial.
-    rateLimitWaitBudgetMs: intFromEnv('PLUGIN_SEARCH_RATE_LIMIT_WAIT_BUDGET_MS', 15 * 60_000),
+    //
+    // CON SUELO. Es una proteccion extrema, y una variable de entorno heredada
+    // de una version anterior (45 s, 20 s por pausa) la convertia en el
+    // terminador normal: un Retry-After de 25 s no cabia y la busqueda acababa
+    // "2 de 10 · avatarRateLimit" a los 14 s. Por debajo del suelo se avisa
+    // por consola y se aplica el suelo.
+    rateLimitWaitBudgetMs: Math.max(
+        intFromEnv('PLUGIN_SEARCH_RATE_LIMIT_WAIT_BUDGET_MS', 15 * 60_000),
+        5 * 60_000
+    ),
 
-    // Techo de UNA pausa. Solo protege de una cabecera absurda: un Retry-After
-    // de cinco minutos ya no es un cooldown, es Roblox diciendo que hoy no.
-    rateLimitSingleWaitMs: intFromEnv('PLUGIN_SEARCH_RATE_LIMIT_SINGLE_WAIT_MS', 5 * 60_000),
+    // NO hay techo por pausa. Lo hubo (PLUGIN_SEARCH_RATE_LIMIT_SINGLE_WAIT_MS)
+    // y era la condicion exacta que terminaba una busqueda asincrona en su
+    // primera pausa. Una pausa, por larga que sea, cambia la fase del trabajo
+    // y se espera; lo unico que corta es el reloj de pared global.
 
     // NO hay contador de pausas. Habia uno (ocho), y era la causa directa del
     // ultimo 2 de 10: pausas de un segundo encadenadas por 429 sin cabecera lo
@@ -749,6 +759,24 @@ if (!pluginApiKey) {
         '[config] ERROR: PLUGIN_API_KEY coincide con OUTFIT_API_KEY o con ADMIN_API_KEY. Eso anula la ' +
         'separacion entre los tres publicos: el plugin de Studio, el juego vendido y el panel de ' +
         'administracion tienen que poder revocarse por separado. Cambiala.'
+    );
+}
+
+// Variables HEREDADAS de versiones anteriores que convertian una pausa de
+// Roblox en el final de la busqueda. Se avisa para que no queden en Railway
+// creyendo que hacen algo; la primera se ignora y la segunda se acota.
+if (process.env.PLUGIN_SEARCH_RATE_LIMIT_SINGLE_WAIT_MS !== undefined) {
+    console.warn(
+        '[config] PLUGIN_SEARCH_RATE_LIMIT_SINGLE_WAIT_MS ya no existe y se ignora: una pausa de Roblox, ' +
+        'por larga que sea, ya no termina una busqueda. Borra la variable.'
+    );
+}
+if (process.env.PLUGIN_SEARCH_RATE_LIMIT_WAIT_BUDGET_MS !== undefined
+    && Number(process.env.PLUGIN_SEARCH_RATE_LIMIT_WAIT_BUDGET_MS) < pluginSearch.rateLimitWaitBudgetMs) {
+    console.warn(
+        `[config] PLUGIN_SEARCH_RATE_LIMIT_WAIT_BUDGET_MS=${process.env.PLUGIN_SEARCH_RATE_LIMIT_WAIT_BUDGET_MS} ` +
+        `esta por debajo del suelo: se usan ${pluginSearch.rateLimitWaitBudgetMs} ms. ` +
+        'Es una proteccion extrema, no el terminador normal de una busqueda.'
     );
 }
 

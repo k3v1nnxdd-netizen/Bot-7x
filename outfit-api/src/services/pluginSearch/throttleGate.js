@@ -80,9 +80,7 @@ function crearPuerta(stats, {
     ahora = () => Date.now(),
     dormirFn = dormir,
 } = {}) {
-    const {
-        rateLimitSingleWaitMs, rateLimitWaitMarginMs, rateLimitHeartbeatMs,
-    } = config.pluginSearch;
+    const { rateLimitWaitMarginMs, rateLimitHeartbeatMs } = config.pluginSearch;
 
     let esperas = 0;
     let esperadoMs = 0;
@@ -112,19 +110,22 @@ function crearPuerta(stats, {
             // fallando de forma sostenida. Se respeta igual.
             const pedido = Math.max(0, freno.cooldownRemainingMs) + rateLimitWaitMarginMs;
 
-            // NO hay contador de pausas. Lo hubo, y fue la causa directa de un
-            // 2 de 10 en produccion: pausas cortas encadenadas por 429 sin
-            // cabecera lo agotaban en veinte segundos. Una pausa individual no
-            // es motivo para terminar nada; lo que acota el total es el reloj
-            // de pared, que se comprueba abajo.
-            const razones = [];
-            if (pedido > rateLimitSingleWaitMs) razones.push('pausa demasiado larga');
-
+            // UNA PAUSA, POR LARGA QUE SEA, NO TERMINA UNA BUSQUEDA ASINCRONA.
+            //
+            // Hubo dos condiciones aqui que si lo hacian, y las dos acabaron en
+            // produccion en "2 de 10 · avatarRateLimit":
+            //   - un CONTADOR de pausas (ocho), que pausas cortas encadenadas
+            //     por 429 sin cabecera agotaban en veinte segundos;
+            //   - un TECHO POR PAUSA, que un Retry-After de 25 s superaba en
+            //     cuanto la variable de entorno lo dejaba en 20 s: la primera
+            //     pausa de la busqueda, a los 14 s, la terminaba.
+            // Ninguna existe ya. Lo UNICO que corta es el presupuesto global de
+            // reloj de pared, que es la proteccion extrema: si Roblox pide una
+            // hora, se dira que no cabe; si pide 25 s, se espera, se sigue, y
+            // el plugin ve mientras tanto los outfits que ya hay.
             const disponible = Math.max(0, presupuestoDeEspera());
-            if (pedido > disponible) razones.push('sin presupuesto de reloj de pared');
-
-            if (razones.length > 0) {
-                logger.warn('Busqueda del plugin detenida: Roblox frena y la pausa no cabe', {
+            if (pedido > disponible) {
+                logger.warn('Busqueda del plugin detenida: Roblox frena y la pausa no cabe en el reloj de pared', {
                     requestId: requestContext.requestId(),
                     searchId: requestContext.searchId(),
                     routeKey,
@@ -132,8 +133,12 @@ function crearPuerta(stats, {
                     cooldownRemainingMs: freno.cooldownRemainingMs,
                     pausaPedidaMs: pedido,
                     presupuestoRestanteMs: disponible,
+                    // La configuracion en vigor, para que un corte se pueda
+                    // explicar con el log delante y no adivinando variables.
+                    waitBudgetMs: config.pluginSearch.rateLimitWaitBudgetMs,
+                    esperadoHastaAhoraMs: esperadoMs,
                     pausasHechas: esperas,
-                    motivo: razones.join(' + '),
+                    motivo: 'sin presupuesto de reloj de pared',
                 });
                 return VEREDICTO.AGOTADO;
             }

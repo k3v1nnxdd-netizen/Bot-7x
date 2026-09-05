@@ -1185,6 +1185,9 @@ module.exports = async function run() {
             found: 3, candidatesExamined: 12, stoppedBy: null,
             progress: { target: 10, found: 3, candidatesExamined: 12, elapsedMs: 1200,
                 completionRatio: 0.3, estimatedRemainingMs: 4000, etaConfidence: 'ok' },
+            // Los tres encontrados viajan en el checkpoint: es de donde el GET
+            // los entrega DURANTE running, y de donde sale `found`.
+            checkpoint: { version: 1, outfits: [{ userId: 11 }, { userId: 12 }, { userId: 13 }], pendientes: [], examinados: 12 },
             outfits: [], stats: null, error: null,
             createdAt: Date.now(), startedAt: Date.now(), finishedAt: null,
             heartbeatAt: Date.now(), expiresAt: null,
@@ -1193,6 +1196,8 @@ module.exports = async function run() {
         const res = await pedir(port, 'GET', `/plugin/outfits/search/${searchId}`);
         assert.strictEqual(res.status, 200, 'no se pudo leer un trabajo de otra instancia');
         assert.strictEqual(res.body.status, 'running');
+        assert.strictEqual(res.body.found, 3);
+        assert.deepStrictEqual(res.body.outfits.map(o => o.userId), [11, 12, 13], 'el GET no entrego los outfits ya encontrados por la otra instancia');
         assert.strictEqual(res.body.progress.found, 3);
         assert.strictEqual(res.body.progress.estimatedRemainingMs, 4000);
         assert.strictEqual(res.body.pollAfterMs, config.pluginJobs.pollIntervalMs);

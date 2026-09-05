@@ -185,13 +185,21 @@ module.exports = async function run() {
         limitador.reset();
     });
 
-    test('una espera mas larga que el techo de UNA pausa tampoco se empieza', async () => {
+    test('NO hay techo por pausa: una pausa larga se hace mientras quepa en el reloj de pared', async () => {
+        // Hubo un techo por pausa, y fue la condicion exacta que terminaba una
+        // busqueda asincrona en su PRIMERA pausa: un Retry-After de 25 s con
+        // el techo en 20 s -> "2 de 10 · avatarRateLimit" a los 14 s. Ya no
+        // existe: solo el presupuesto global decide.
         limitador.reset();
-        bucket().cooldownUntil = Date.now() + config.pluginSearch.rateLimitSingleWaitMs + 5_000;
-        // Presupuesto de sobra: lo que corta aqui es el techo por pausa, no el total.
+        bucket().cooldownUntil = Date.now() + 150;
         const puerta = puertaDePrueba({ presupuesto: 10 * 60_000 });
+        assert.strictEqual(await puerta.abrir(ruta), VEREDICTO.ESPERADO, 'una pausa que cabe en el reloj se rechazo');
 
-        assert.strictEqual(await puerta.abrir(ruta), VEREDICTO.AGOTADO);
+        // Y la misma pausa con el reloj casi agotado si se rechaza: es la UNICA
+        // condicion, y es global.
+        bucket().cooldownUntil = Date.now() + 150;
+        const sinReloj = puertaDePrueba({ presupuesto: 50 });
+        assert.strictEqual(await sinReloj.abrir(ruta), VEREDICTO.AGOTADO);
         limitador.reset();
     });
 

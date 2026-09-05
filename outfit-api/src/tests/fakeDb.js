@@ -172,7 +172,8 @@ function crearBaseFalsa() {
                 fila.previousInstanceId = fila.instanceId;
                 fila.instanceId = null;
                 fila.phase = 'recovering';
-                if (trabajo.checkpoint) fila.checkpoint = JSON.parse(JSON.stringify(trabajo.checkpoint));
+                const ultimo = trabajo.checkpointPendiente ?? trabajo.checkpoint;
+                if (ultimo) fila.checkpoint = JSON.parse(JSON.stringify(ultimo));
                 if (trabajo.progress) fila.progress = trabajo.progress;
                 fila.updatedAt = Date.now();
                 return { ok: true };

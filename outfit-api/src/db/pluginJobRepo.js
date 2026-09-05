@@ -305,7 +305,7 @@ async function soltar(trabajo) {
                 AND status IN ('queued', 'running')`,
             [
                 trabajo.searchId, trabajo.instanceId,
-                trabajo.checkpoint ? JSON.stringify(trabajo.checkpoint) : null,
+                (trabajo.checkpointPendiente ?? trabajo.checkpoint) ? JSON.stringify(trabajo.checkpointPendiente ?? trabajo.checkpoint) : null,
                 trabajo.progress ? JSON.stringify(trabajo.progress) : null,
             ],
             'jobs.release'

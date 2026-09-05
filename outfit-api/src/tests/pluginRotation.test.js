@@ -164,28 +164,28 @@ module.exports = async function run() {
         assert.strictEqual(primera.body.found, 5);
         assert.strictEqual(segunda.body.found, 5);
 
-        // rotationEnd publica la posicion VIVA (exclusiva); lo que se guarda es
-        // la inclusiva, un miembro por detras. Reanudar ahi es la definicion de
-        // resumeInclusive.
-        const esperado = primera.body.stats.rotationEnd.offset - 1;
-        assert.strictEqual(segunda.body.stats.rotationStart.offset, esperado,
+        // Lo que se guarda es la posicion VIVA: el siguiente a mirar. La
+        // segunda arranca EXACTAMENTE ahi, ni un miembro antes.
+        assert.strictEqual(segunda.body.stats.rotationStart.offset, primera.body.stats.rotationEnd.offset,
             'la segunda busqueda no arranco donde termino la primera');
 
-        // Y avanza de verdad: el tramo nuevo no repite al anterior salvo el
-        // miembro inclusivo de la frontera. (No se compara la MAGNITUD de los
-        // userId: el sentido del recorrido se sortea por grupo, asi que avanzar
-        // puede significar ids crecientes o decrecientes.)
+        // Y avanza de verdad, sin repetir a NADIE. (No se compara la MAGNITUD
+        // de los userId: el sentido del recorrido se sortea por grupo, asi que
+        // avanzar puede significar ids crecientes o decrecientes.)
         const solape = idsDe(segunda).filter(id => idsDe(primera).includes(id));
-        assert.strictEqual(solape.length, 1,
-            `la segunda busqueda deberia repetir solo el miembro inclusivo y repitio ${solape.length}`);
+        assert.strictEqual(solape.length, 0,
+            `la segunda busqueda repitio ${solape.length} miembro(s) de la primera: ${solape.join(',')}`);
         assert.ok(segunda.body.stats.rotationEnd.offset > primera.body.stats.rotationEnd.offset,
             'la rotacion no avanzo entre las dos busquedas');
     });
 
-    test('la reanudacion es INCLUSIVA: repite exactamente al ultimo miembro', async () => {
+    test('la reanudacion NO repite: la segunda empieza en el SIGUIENTE al ultimo de la primera', async () => {
+        // Hubo un miembro de solape a proposito ("resume inclusivo"), por miedo
+        // a perder a alguien si la busqueda moria entre procesarlo y guardar.
+        // El orden del bucle ya lo impide — la rotacion solo avanza despues de
+        // que el veredicto este escrito — asi que el solape era trabajo
+        // repetido y nada mas.
         poblar({ miembros: 250 });
-        assert.strictEqual(config.pluginRotation.resumeInclusive, true,
-            'este caso describe el comportamiento con resumeInclusive activado');
 
         const primera = await buscar(port, { amount: 5 });
         const segunda = await buscar(port, { amount: 5 });
@@ -193,8 +193,48 @@ module.exports = async function run() {
         const ultimoDeLaPrimera = idsDe(primera)[primera.body.found - 1];
         const primeroDeLaSegunda = idsDe(segunda)[0];
 
-        assert.strictEqual(primeroDeLaSegunda, ultimoDeLaPrimera,
-            'con resumeInclusive el primer miembro de la segunda deberia ser el ultimo de la primera');
+        assert.notStrictEqual(primeroDeLaSegunda, ultimoDeLaPrimera,
+            'la segunda busqueda volvio a empezar por el ultimo miembro de la primera');
+        assert.strictEqual(base.rotaciones.get(String(GROUP_ID)).intraPageOffset,
+            segunda.body.stats.rotationEnd.offset,
+            'lo guardado no es la posicion viva');
+    });
+
+    test('VARIAS busquedas seguidas: CERO repetidos hasta que la comunidad se da la vuelta', async () => {
+        // La garantia, dicha entera: mientras el ciclo no se complete, ningun
+        // usuario que una busqueda ya proceso vuelve a salir en otra. Y cuando
+        // la comunidad se agota, la vuelta es legitima: ahi si se repite,
+        // porque no queda nadie sin mirar.
+        poblar({ miembros: 40 });
+
+        const vistos = new Set();
+        let busquedas = 0;
+        let dioLaVuelta = false;
+
+        for (let i = 0; i < 12 && !dioLaVuelta; i++) {
+            const res = await buscar(port, { amount: 5 });
+            const ids = idsDe(res);
+            const ciclo = res.body.stats.rotationCycle;
+            const vueltas = res.body.stats.rotationWraps;
+
+            if (vueltas > 0 || ciclo > 1) {
+                // Esta busqueda cruzo el final de la comunidad: a partir de
+                // aqui repetir es correcto y se deja de exigir.
+                dioLaVuelta = true;
+                break;
+            }
+
+            const repetidos = ids.filter(id => vistos.has(id));
+            assert.deepStrictEqual(repetidos, [],
+                `la busqueda ${i + 1} repitio ${repetidos.length} usuario(s) sin haber completado el ciclo: ${repetidos.join(',')}`);
+            for (const id of ids) vistos.add(id);
+            busquedas++;
+        }
+
+        assert.ok(busquedas >= 4, `solo se encadenaron ${busquedas} busquedas antes de la vuelta: prueba poco`);
+        assert.strictEqual(vistos.size, busquedas * 5,
+            `${busquedas} busquedas de 5 tenian que dar ${busquedas * 5} usuarios distintos y dieron ${vistos.size}`);
+        assert.ok(dioLaVuelta, 'la comunidad de 40 miembros nunca se dio la vuelta');
     });
 
     test('tres busquedas seguidas recorren tramos consecutivos y sin solapes largos', async () => {
@@ -212,16 +252,16 @@ module.exports = async function run() {
         assert.ok(finales[1] > finales[0], `la 2a busqueda no avanzo: ${finales[0]} -> ${finales[1]}`);
         assert.ok(finales[2] > finales[1], `la 3a busqueda no avanzo: ${finales[1]} -> ${finales[2]}`);
 
-        // El unico solape admisible es el miembro inclusivo de la frontera.
+        // NINGUN solape: la comunidad no se ha dado la vuelta todavia.
         const solape01 = vistos[0].filter(id => vistos[1].includes(id));
         const solape12 = vistos[1].filter(id => vistos[2].includes(id));
-        assert.ok(solape01.length <= 1, `solape de ${solape01.length} entre la 1a y la 2a busqueda`);
-        assert.ok(solape12.length <= 1, `solape de ${solape12.length} entre la 2a y la 3a busqueda`);
+        assert.strictEqual(solape01.length, 0, `solape de ${solape01.length} entre la 1a y la 2a busqueda`);
+        assert.strictEqual(solape12.length, 0, `solape de ${solape12.length} entre la 2a y la 3a busqueda`);
 
-        // Y los tres tramos juntos cubren gente distinta: 3 busquedas de 5 con
-        // dos fronteras inclusivas son 13 personas distintas.
+        // Y los tres tramos juntos cubren gente distinta: 3 busquedas de 5 sin
+        // repetir a nadie son 15 personas.
         const todos = new Set(vistos.flat());
-        assert.strictEqual(todos.size, 13, `se esperaban 13 miembros distintos y hubo ${todos.size}`);
+        assert.strictEqual(todos.size, 15, `se esperaban 15 miembros distintos y hubo ${todos.size}`);
     });
 
     test('al final de la comunidad da la vuelta y sigue por el principio', async () => {
@@ -286,10 +326,9 @@ module.exports = async function run() {
         assert.ok(fila.cursor !== null, 'la rotacion se quedo guardada en la primera pagina');
         assert.strictEqual(fila.cycle, 1, 'no deberia haber dado la vuelta a la comunidad');
 
-        // La posicion viva que publica stats es EXCLUSIVA (el siguiente a
-        // mirar); lo que se guarda es la INCLUSIVA, un miembro por detras. Esa
-        // diferencia de uno es toda la definicion de resumeInclusive.
-        assert.strictEqual(fila.intraPageOffset, res.body.stats.rotationEnd.offset - 1);
+        // Lo guardado es la posicion VIVA (el siguiente a mirar), sin restarle
+        // un miembro: por eso la siguiente busqueda no repite a nadie.
+        assert.strictEqual(fila.intraPageOffset, res.body.stats.rotationEnd.offset);
 
         // Y el ultimo miembro guardado es el ultimo que la rotacion ENTREGO, no
         // el ultimo que resulto valido: la rotacion marca por donde va el
@@ -572,18 +611,18 @@ module.exports = async function run() {
         await a.cerrar();
 
         const b = await abrirRotacion(GROUP_ID, crearStats());
-        assert.strictEqual(b.inicio.offset, finDeA - 1,
-            'la segunda no reanudo en la posicion inclusiva de la primera');
+        assert.strictEqual(b.inicio.offset, finDeA,
+            'la segunda no reanudo exactamente donde termino la primera');
 
         const siguientes = await b.siguienteSegmento(6);
         await b.cerrar();
 
-        // El ultimo de A es el primero de B (reanudacion inclusiva) y de ahi en
-        // adelante todo es nuevo.
-        assert.strictEqual(siguientes[0].userId, primeros[primeros.length - 1].userId);
+        // El primero de B es el SIGUIENTE al ultimo de A: ni se salta a nadie
+        // ni se repite a nadie.
+        assert.notStrictEqual(siguientes[0].userId, primeros[primeros.length - 1].userId);
         const idsA = new Set(primeros.map(m => m.userId));
         const repetidos = siguientes.filter(m => idsA.has(m.userId));
-        assert.strictEqual(repetidos.length, 1, 'la segunda repitio mas que el miembro inclusivo');
+        assert.strictEqual(repetidos.length, 0, `la segunda repitio ${repetidos.length} miembro(s) de la primera`);
     });
 
     test('la rotacion NO retrocede aunque las busquedas se solapen en el tiempo', async () => {
@@ -741,9 +780,9 @@ module.exports = async function run() {
         const idsA = new Set(idsDe(a));
         const comunes = idsDe(b).filter(id => idsA.has(id));
 
-        // Se serializan, asi que la segunda reanuda tras la primera y solo puede
-        // repetir el miembro inclusivo de la frontera.
-        assert.ok(comunes.length <= 1,
+        // Se serializan, asi que la segunda reanuda tras la primera sin repetir
+        // a nadie.
+        assert.strictEqual(comunes.length, 0,
             `las dos busquedas devolvieron ${comunes.length} usuarios iguales`);
     });
 

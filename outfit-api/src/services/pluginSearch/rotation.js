@@ -208,6 +208,14 @@ function crear(groupId, estadoInicial, modo, stats, soltarTurno, { leaseMs, maxP
     // ya tenia en la mano.
     const vistos = new Set(yaVistos.map(String));
 
+    // DONDE se entrego cada miembro de esta busqueda. Es lo que permite
+    // guardar el avance "hasta el primer pendiente" en vez de tirarlo entero:
+    // sin esto, un solo candidato que Roblox no dejo mirar obligaba a la
+    // siguiente busqueda a repetir a TODOS los que ya tenian veredicto.
+    // Una entrada por miembro entregado, acotada por el techo de candidatos.
+    const posiciones = new Map();  // userId -> { cursor, offset, cycle, orden }
+    let entregados = 0;
+
     let wraps = 0;
     let agotado = false;
     let persistePendiente = false;
@@ -322,10 +330,20 @@ function crear(groupId, estadoInicial, modo, stats, soltarTurno, { leaseMs, maxP
                 estado.intraPageOffset++;
 
                 if (miembro && !vistos.has(String(miembro.userId))) {
-                    vistos.add(String(miembro.userId));
+                    const id = String(miembro.userId);
+                    vistos.add(id);
                     segmento.push(miembro);
-                    estado.lastUserId = String(miembro.userId);
+                    estado.lastUserId = id;
                     persistePendiente = true;
+                    // La posicion EXACTA con la que se leyo: cursor de su
+                    // pagina y su indice dentro de ella. Reanudar aqui vuelve a
+                    // entregar a este miembro y a nadie anterior.
+                    posiciones.set(id, {
+                        cursor: pagina.cursor,
+                        offset: estado.intraPageOffset - 1,
+                        cycle: estado.cycle,
+                        orden: entregados++,
+                    });
                 }
             }
 
@@ -342,17 +360,71 @@ function crear(groupId, estadoInicial, modo, stats, soltarTurno, { leaseMs, maxP
         async persistir() {
             if (modo !== MODO.LEASED || !persistePendiente) return false;
 
-            // RESUME INCLUSIVO: se guarda la posicion del ultimo miembro
-            // entregado, no la siguiente. La proxima busqueda vuelve a mirarlo
-            // — un candidato repetido, despreciable — y a cambio nadie se
-            // pierde si esta busqueda murio despues de procesarlo y antes de
-            // guardar.
-            const offset = config.pluginRotation.resumeInclusive
-                ? Math.max(0, estado.intraPageOffset - 1)
-                : estado.intraPageOffset;
-
-            const guardado = await repo.guardar({ ...estado, intraPageOffset: offset });
+            // SE GUARDA EL SIGUIENTE A MIRAR, no el ultimo mirado. Mientras la
+            // comunidad no se dé la vuelta entera, una busqueda nueva no vuelve
+            // a entregar a nadie que la anterior ya procesara.
+            //
+            // Hubo un miembro de solape a proposito ("resume inclusivo") por
+            // miedo a perder a alguien si la busqueda moria entre procesarlo y
+            // guardar. Ese miedo no aplica AQUI, y el orden del bucle es la
+            // razon:
+            //
+            //   1. onCheckpoint  -> la foto con outfits y examinados
+            //   2. onProgress    -> se ESCRIBE esa foto en Postgres
+            //   3. persistirHasta-> solo ENTONCES avanza la rotacion
+            //
+            // La rotacion nunca adelanta a un veredicto que no este ya
+            // guardado: si la escritura del paso 2 falla, lanza y no se llega
+            // al 3. Y este metodo solo se llama sin pendientes, asi que todo lo
+            // que queda por detras del offset tiene veredicto. Los candidatos
+            // SIN veredicto son los pendientes, y de esos se encarga
+            // persistirHasta, que si guarda la posicion del primero de ellos
+            // para que se vuelvan a entregar.
+            const guardado = await repo.guardar({ ...estado, intraPageOffset: estado.intraPageOffset });
             if (guardado) persistePendiente = false;
+            return guardado;
+        },
+
+        // Guarda el avance HASTA EL PRIMER PENDIENTE. Es la version segura de
+        // `persistir` cuando la busqueda tiene candidatos entregados sin
+        // veredicto porque Roblox cerro una ruta:
+        //
+        //   entregados:  [ A B C D E F G H ]
+        //   pendientes:            D   F
+        //   se guarda:   ---------^  (posicion de D)
+        //
+        // El prefijo A-C queda PROCESADO Y GUARDADO: la siguiente busqueda no
+        // los vuelve a mirar. D en adelante se vuelven a entregar, asi que
+        // ningun pendiente se pierde. Se repite el tramo entre el primer
+        // pendiente y el final — como mucho lo que quepa entre ellos, no la
+        // busqueda entera, que es lo que pasaba antes.
+        //
+        // Si algun pendiente NO tiene posicion anotada (viene del checkpoint de
+        // otra vida de la busqueda, entregado por un proceso anterior), no se
+        // puede demostrar donde estaba: NO se guarda nada y la siguiente
+        // busqueda repite. Repetir es barato; perder a alguien, no.
+        async persistirHasta(pendientes = []) {
+            if (modo !== MODO.LEASED || !persistePendiente) return false;
+            if (pendientes.length === 0) return this.persistir();
+
+            let frontera = null;
+            for (const miembro of pendientes) {
+                const pos = posiciones.get(String(miembro?.userId));
+                if (!pos) return false;
+                if (frontera === null || pos.orden < frontera.orden) frontera = pos;
+            }
+            if (!frontera) return false;
+
+            const guardado = await repo.guardar({
+                ...estado,
+                cursor: frontera.cursor,
+                intraPageOffset: frontera.offset,
+                cycle: frontera.cycle,
+                lastUserId: estado.lastUserId,
+            });
+            // OJO: persistePendiente NO se limpia. Lo guardado es una posicion
+            // ANTERIOR a donde va la busqueda, asi que sigue habiendo avance
+            // que guardar en cuanto los pendientes se resuelvan.
             return guardado;
         },
 
@@ -370,16 +442,16 @@ function crear(groupId, estadoInicial, modo, stats, soltarTurno, { leaseMs, maxP
         // llama, haya ido bien o mal — un lease sin soltar bloquea el grupo
         // hasta que caduque.
         //
-        // `guardarAvance: false` cierra SIN persistir el ultimo tramo. Es lo
-        // que hace la busqueda cuando termina con candidatos PENDIENTES (se le
-        // entregaron, pero Roblox no dejo mirarlos): la posicion guardada se
-        // queda en el ultimo tramo procesado entero, asi que la siguiente
-        // busqueda los vuelve a entregar en vez de saltarselos. Repetir un
-        // puñado es barato; perderlos es justo lo que un limite no puede
-        // provocar.
-        async cerrar({ guardarAvance = true } = {}) {
+        // `guardarAvance: false` cierra SIN persistir nada. Es lo que hace una
+        // busqueda que ya NO ES SUYA (otra instancia la adopto): quien la
+        // continua movera el cursor, y moverlo dos veces saltaria candidatos.
+        //
+        // `hasta` son los candidatos PENDIENTES (entregados sin veredicto
+        // porque Roblox cerro una ruta). Con ellos se guarda el prefijo
+        // procesado y se retoman solo ellos; sin ellos, todo el avance.
+        async cerrar({ guardarAvance = true, hasta = [] } = {}) {
             try {
-                if (guardarAvance) await this.persistir();
+                if (guardarAvance) await this.persistirHasta(hasta);
             } finally {
                 try {
                     if (modo === MODO.LEASED) {

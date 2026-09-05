@@ -517,10 +517,10 @@ module.exports = async function run() {
         assert.deepStrictEqual(idsDe(fin1), PRIMEROS_10_VALIDOS);
         assert.strictEqual(fin2.status, 'completed');
         assert.strictEqual(fin2.found, 3);
-        // El segundo continuo la rotacion donde la dejo el primero: nadie
-        // repetido entre los dos (salvo el miembro inclusivo de la frontera).
+        // El segundo continuo la rotacion donde la dejo el primero: NADIE
+        // repetido entre los dos.
         const solape = fin2.outfits.filter(o => PRIMEROS_10_VALIDOS.includes(o.userId));
-        assert.ok(solape.length <= 1, `el segundo trabajo repitio ${solape.length} outfits del primero`);
+        assert.strictEqual(solape.length, 0, `el segundo trabajo repitio ${solape.length} outfits del primero`);
         for (const id of [a1.searchId, a2.searchId]) {
             const fila = base.trabajosPersistidos.get(id);
             assert.strictEqual(fila.instanceId, INSTANCIA_B);

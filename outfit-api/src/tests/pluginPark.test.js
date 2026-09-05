@@ -312,14 +312,15 @@ module.exports = async function run() {
         const fin = await esperarTerminal(port, searchId);
         assert.strictEqual(fin.found, 10);
 
-        // Lo persistido NUNCA va por delante de lo mirado: si la busqueda
-        // termino con candidatos pendientes (entregados sin veredicto porque
-        // Roblox cerro la ruta), el avance guardado se queda en el ultimo
-        // tramo procesado entero, para que la siguiente busqueda los vuelva a
-        // entregar en vez de saltarselos. Repetir un puñado es barato; que un
-        // limite se lleve por delante a alguien, no.
+        // Lo persistido NUNCA va por delante de lo mirado. Sin pendientes se
+        // guarda la posicion viva exacta (el siguiente a mirar, con todo lo
+        // anterior ya juzgado); si la busqueda termino con candidatos
+        // pendientes — entregados sin veredicto porque Roblox cerro la ruta —
+        // se guarda la posicion del primero de ellos, para que la siguiente
+        // busqueda los vuelva a entregar en vez de saltarselos. Lo que no puede
+        // pasar nunca es guardar por encima de un candidato sin veredicto.
         const fila = base.rotaciones.get(String(GROUP_ID));
-        assert.ok(fila.intraPageOffset <= fin.stats.rotationEnd.offset - 1,
+        assert.ok(fila.intraPageOffset <= fin.stats.rotationEnd.offset,
             `la rotacion guardo ${fila.intraPageOffset}, por delante de la posicion viva ${fin.stats.rotationEnd.offset}`);
         assert.ok(fila.intraPageOffset >= 20, `la rotacion retrocedio hasta ${fila.intraPageOffset}`);
         assert.strictEqual(fila.cycle, 1);

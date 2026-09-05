@@ -91,6 +91,13 @@ function motivoParaParar({
     //    no entra en lo que queda de reloj de pared — entonces si, se para y se
     //    devuelve lo encontrado. UN MOTIVO POR RUTA: son dos endpoints con
     //    cuotas independientes y arreglos distintos.
+    //
+    // El motivo nombra LA RUTA QUE ESTA CERRADA, la haya cerrado esta busqueda
+    // o la anterior: es el endpoint que hay que ir a mirar y la cuota que hay
+    // que dejar respirar. Cuantas peticiones puso ESTA busqueda se lee aparte,
+    // en `avatarRequests` / `catalogBatches`: un motivo de ruta con cero
+    // peticiones propias significa "me encontre la puerta cerrada al llegar",
+    // y en modo asincrono ya no puede terminar una busqueda — se espera.
     if (indice.frenadoPorLimite) return PARADA.LIMITE_CATALOGO;
     if (frenadoElAvatar) return PARADA.LIMITE_AVATAR;
 
@@ -271,10 +278,21 @@ async function ejecutarBusqueda(
     // soltar la busqueda.
     let inicioDePausa = 0;
     const puerta = crearPuerta(stats, {
-        presupuestoDeEspera: () => Math.min(
-            config.pluginSearch.rateLimitWaitBudgetMs - puerta.esperadoMs,
-            relojRestante()
-        ),
+        // EL PRESUPUESTO DE ESPERA ES EL DE ESPERA, y en modo asincrono NO se
+        // recorta con el reloj de pared. Nadie sostiene un socket: esperar es
+        // gratis para quien mira el plugin, que ve la fase 'rateLimitWait' y
+        // sus outfits acumulados. Lo que acota el total sigue existiendo y son
+        // dos cosas distintas: este presupuesto acota lo ESPERADO, y el reloj
+        // de pared acota la vida entera del trabajo desde el bucle (motivo
+        // 'timeBudget', que es la verdad). Mezclarlos hacia que un cooldown
+        // HEREDADO de otra busqueda — 25 s que ya estaban corriendo cuando esta
+        // empezo — no cupiera en el reloj y terminara la busqueda al instante.
+        //
+        // En modo SINCRONO si se recorta: ahi hay un socket abierto y su plazo
+        // manda sobre cualquier ganas de esperar.
+        presupuestoDeEspera: () => (modoAsincrono
+            ? config.pluginSearch.rateLimitWaitBudgetMs - puerta.esperadoMs
+            : Math.min(config.pluginSearch.rateLimitWaitBudgetMs - puerta.esperadoMs, relojRestante())),
         alParquear: async info => {
             inicioDePausa = puerta.esperadoMs;
             if (!(await rotacion.renovar())) throw leasePerdido(groupId);
@@ -447,10 +465,14 @@ async function ejecutarBusqueda(
             onCheckpoint?.(construirCheckpoint());
             await onProgress?.(progreso);
 
-            // La rotacion solo se persiste cuando NO queda nadie pendiente:
-            // un pendiente es un miembro entregado sin veredicto, y guardar el
-            // avance por encima de el lo perderia si este proceso muriera.
-            if (pendientes.length === 0) await rotacion.persistir();
+            // La rotacion guarda hasta DONDE EMPIEZAN LOS PENDIENTES. Un
+            // pendiente es un miembro entregado sin veredicto: guardar por
+            // encima de el lo perderia. Pero no guardar NADA por su culpa
+            // tiraba tambien el prefijo ya procesado, y era el segundo fallo de
+            // produccion: tras una busqueda frenada, la siguiente volvia a
+            // examinar desde el principio a los cientos de miembros que ya
+            // tenian veredicto. Se guarda el prefijo y se retoman solo ellos.
+            await rotacion.persistirHasta(pendientes);
 
             // ── Puerta del AVATAR: solo si hay trabajo BLOQUEADO ─────────────
             //
@@ -474,11 +496,12 @@ async function ejecutarBusqueda(
         if (err?.code === 'job_adopted') perdido = true;
         throw err;
     } finally {
-        // SIEMPRE: un lease sin soltar bloquea el grupo hasta que caduque. Si
-        // quedan pendientes, o si el trabajo ya no es nuestro, se cierra SIN
-        // guardar el ultimo tramo: quien continue lo vuelve a entregar en vez
-        // de saltarselo.
-        await rotacion.cerrar({ guardarAvance: !perdido && pendientes.length === 0 });
+        // SIEMPRE: un lease sin soltar bloquea el grupo hasta que caduque. Con
+        // pendientes en la mano se guarda solo hasta el primero de ellos (el
+        // prefijo procesado no se repite, los pendientes si se vuelven a
+        // entregar). Si el trabajo YA NO ES NUESTRO no se guarda nada: quien lo
+        // continua movera el cursor, y moverlo dos veces saltaria candidatos.
+        await rotacion.cerrar({ guardarAvance: !perdido, hasta: pendientes });
     }
 
     const paradaFinal = motivoParaParar(estadoDeParada());

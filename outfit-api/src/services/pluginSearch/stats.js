@@ -188,7 +188,11 @@ function crearStats() {
         // quedaron, para que las stats finales describan la busqueda ENTERA y
         // no solo el tramo posterior al reinicio. Solo se restauran claves
         // conocidas: un checkpoint de otra version no puede colar campos.
-        restaurar(guardados = {}) {
+        // Tolera null/undefined a proposito: un checkpoint de una version
+        // anterior puede no traer contadores, y eso vale para reanudar con los
+        // contadores a cero — nunca para tumbar la busqueda que se reanuda.
+        restaurar(guardados) {
+            if (!guardados || typeof guardados !== 'object') return;
             for (const clave of Object.keys(contadores)) {
                 const valor = guardados[clave];
                 if (Number.isFinite(valor) && valor >= 0) contadores[clave] = valor;

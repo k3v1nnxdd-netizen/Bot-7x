@@ -559,13 +559,10 @@ const pluginRotation = {
     // por segmento) y el cierre.
     leaseMarginMs: intFromEnv('PLUGIN_ROTATION_LEASE_MARGIN_MS', 30_000),
 
-    // Al reanudar, se vuelve a mirar al ultimo miembro procesado?
-    //
-    // Activado (lo pedido) hace que la busqueda B empiece EN el usuario donde
-    // termino la A. Cuesta un candidato repetido por busqueda — despreciable — y
-    // a cambio no se pierde a nadie si la busqueda anterior murio justo despues
-    // de procesarlo y antes de persistir.
-    resumeInclusive: (process.env.PLUGIN_ROTATION_RESUME_INCLUSIVE ?? 'true') !== 'false',
+    // NO hay interruptor de "resume inclusivo". Lo hubo, y su efecto era que
+    // cada busqueda repitiera al ultimo miembro de la anterior. Ya no hace
+    // falta: la rotacion solo avanza DESPUES de que el veredicto este escrito
+    // (ver rotation.persistir), asi que adelantar no pierde a nadie.
 
     // Miembros que entrega la rotacion por segmento. Es el tamaño de ola: se
     // mantiene igual para que el lote de catalogo siga siendo el mismo de siempre
@@ -762,9 +759,19 @@ if (!pluginApiKey) {
     );
 }
 
-// Variables HEREDADAS de versiones anteriores que convertian una pausa de
-// Roblox en el final de la busqueda. Se avisa para que no queden en Railway
-// creyendo que hacen algo; la primera se ignora y la segunda se acota.
+// Variables HEREDADAS de versiones anteriores. Se avisa para que no queden en
+// Railway creyendo que hacen algo.
+if (process.env.PLUGIN_ROTATION_RESUME_INCLUSIVE !== undefined) {
+    // eslint-disable-next-line no-console
+    console.warn(
+        "[config] PLUGIN_ROTATION_RESUME_INCLUSIVE ya no existe y se ignora: la rotacion guarda " +
+        "siempre el SIGUIENTE miembro a mirar, asi que dos busquedas seguidas no repiten a nadie " +
+        "mientras la comunidad no se haya recorrido entera. Borrala del entorno."
+    );
+}
+
+// Las dos siguientes convertian una pausa de Roblox en el final de la
+// busqueda; la primera se ignora y la segunda se acota.
 if (process.env.PLUGIN_SEARCH_RATE_LIMIT_SINGLE_WAIT_MS !== undefined) {
     console.warn(
         '[config] PLUGIN_SEARCH_RATE_LIMIT_SINGLE_WAIT_MS ya no existe y se ignora: una pausa de Roblox, ' +

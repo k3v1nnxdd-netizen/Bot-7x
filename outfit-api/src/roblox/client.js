@@ -587,12 +587,13 @@ async function listGroupMembers(groupId, { limit = 100, cursor = null, sortOrder
 //
 // Un usuario baneado o inexistente responde 404 y sale por NotFoundError, que
 // es lo que permite descartarlo y seguir con el siguiente candidato.
-async function getCurrentAvatar(userId) {
-    const response = await rateLimiter.run('userAvatar', () => http_.get(
-        `https://avatar.roblox.com/v1/users/${userId}/avatar`
-    ), { endpoint: 'avatar.roblox.com/v1/users/{id}/avatar', notFoundCode: 'user_not_found' });
-
-    const assets = Array.isArray(response.data?.assets) ? response.data.assets : [];
+// Aplanado del avatar tal y como lo manda Roblox. PURO, y exportado para que
+// las pruebas construyan sus mundos con EL MISMO aplanado que corre en
+// produccion en vez de inventarse la forma del objeto: el tipo de cada asset
+// llega anidado en `assetType.id`, y de el depende la regla de accesorios.
+// Un mundo de prueba que se saltara esto probaria una forma que no existe.
+function normalizeAvatarAssets(data) {
+    const assets = Array.isArray(data?.assets) ? data.assets : [];
 
     return {
         assets: assets
@@ -603,8 +604,16 @@ async function getCurrentAvatar(userId) {
                 assetTypeName: asset?.assetType?.name ?? null,
             }))
             .filter(asset => asset.id != null),
-        playerAvatarType: response.data?.playerAvatarType ?? null,
+        playerAvatarType: data?.playerAvatarType ?? null,
     };
+}
+
+async function getCurrentAvatar(userId) {
+    const response = await rateLimiter.run('userAvatar', () => http_.get(
+        `https://avatar.roblox.com/v1/users/${userId}/avatar`
+    ), { endpoint: 'avatar.roblox.com/v1/users/{id}/avatar', notFoundCode: 'user_not_found' });
+
+    return normalizeAvatarAssets(response.data);
 }
 
 module.exports = {
@@ -620,6 +629,7 @@ module.exports = {
     getUniverseIdForPlace,
     getUniverseOwner,
     normalizeOutfitList, // puro; exportado para los tests
+    normalizeAvatarAssets, // puro; exportado para los tests
     // puro; exportado para los tests. Es el que decide si un 4xx de Roblox es
     // "no existe" (definitivo) o "algo va mal" (reintentable), asi que merece
     // pruebas propias en vez de solo ejercitarse de refilon.

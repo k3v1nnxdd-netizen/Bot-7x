@@ -25,6 +25,12 @@ function requestLogger(req, res, next) {
     req.requestId = requestId;
     res.setHeader('X-Request-Id', requestId);
 
+    // Instante de entrada, en milisegundos de reloj. `startedAt` de arriba es
+    // un hrtime y sirve para medir la duracion con precision; este es para que
+    // un handler pueda saber CUANTO tardo todo lo anterior a el — la cadena de
+    // licencia, sin ir mas lejos — sin volver a medirla por su cuenta.
+    res.locals.startedAtMs = Date.now();
+
     // Los servicios empujan aqui de donde salio cada dato. Es un array (y no
     // un solo valor) porque el endpoint compuesto consulta dos entidades y
     // conviene ver ambas: "hit,miss" dice mucho mas que un unico estado.

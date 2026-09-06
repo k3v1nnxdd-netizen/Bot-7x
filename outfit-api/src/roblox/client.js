@@ -295,11 +295,26 @@ function normalizeCatalogItem(item) {
 
 const catalogKey = (itemType, id) => `${itemType}:${id}`;
 
-async function getCatalogItemDetails(items) {
+// Las dos rutas del limitador que atienden ESTE MISMO endpoint de Roblox.
+//
+// El endpoint es uno, pero los cubos son dos y estan separados a proposito: el
+// juego resuelve precios por `catalogDetails` y el trabajo de fondo (plugin de
+// Studio, worker del indice) por `catalogDetailsBackground`. Un 429 provocado
+// indexando una comunidad entera no puede dejar sin precios al juego, que es lo
+// que pasaba cuando compartian cubo.
+//
+// El default es el del JUEGO: si algun dia alguien añade una llamada y se
+// olvida de etiquetarla, se protege de mas y no de menos.
+const TRAFICO = Object.freeze({
+    JUEGO: 'catalogDetails',
+    FONDO: 'catalogDetailsBackground',
+});
+
+async function getCatalogItemDetails(items, { trafico = TRAFICO.JUEGO } = {}) {
     const details = new Map();
     if (items.length === 0) return details;
 
-    const response = await rateLimiter.run('catalogDetails', () => postCatalogDetails(items), {
+    const response = await rateLimiter.run(trafico, () => postCatalogDetails(items), {
         endpoint: 'catalog.roblox.com/v1/catalog/items/details',
     });
 
@@ -656,4 +671,5 @@ module.exports = {
     // pruebas propias en vez de solo ejercitarse de refilon.
     esUniversoInexistente: UNIVERSO_INEXISTENTE,
     catalogKey,          // puro; la clave "Asset:123" / "Bundle:192"
+    TRAFICO,             // que cubo del limitador usa cada llamador de catalogo
 };

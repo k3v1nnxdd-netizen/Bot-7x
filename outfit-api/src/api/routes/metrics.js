@@ -32,6 +32,10 @@ router.get('/', (req, res) => {
     res.json({
         process: observability.getProcessMetrics(),
         http: observability.getHttpMetrics(),
+        // Lote de outfits: cuanto se pidio y cuanto se evito pedirle a Roblox.
+        // Si `upstreamCalls` se acerca a `idsRequested`, el lote esta ahorrando
+        // peticiones del juego pero no cuota de Roblox — y eso hay que verlo.
+        outfitsBatch: observability.getBatchMetrics(),
         cache: cacheStore.getMetrics(),
         ownRateLimit: ownRateLimit.getMetrics(),
         roblox: robloxRateLimiter.getMetrics(),

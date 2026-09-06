@@ -29,7 +29,7 @@ const requestContext = require('../observability/requestContext');
 // cache; esto es lo que hace que un limite duela poco en vez de tumbar todo.
 
 const {
-    maxConcurrent, maxQueue, maxRetries,
+    maxConcurrent, maxQueue, maxRetries, foregroundReserved,
     retryBaseDelayMs, retryMaxDelayMs, inlineWaitCeilingMs,
     circuitFailureThreshold, circuitBaseCooldownMs, circuitMaxCooldownMs,
     pacerBaseMs, pacerMaxMs, pacerMinMs, pacerDecay,
@@ -44,32 +44,72 @@ function sleep(ms) {
 // ── Gate de concurrencia global ──────────────────────────────────────────────
 
 let active = 0;
+
+// Cola del trabajo de fondo, separada de la de produccion. Ver acquire().
+const queueFondo = [];
 const queue = [];
 
-function acquire() {
-    if (active < maxConcurrent) {
+// Techo de peticiones en vuelo para el trabajo de fondo. Siempre deja libres
+// `foregroundReserved` slots que el fondo NO puede ocupar, pase lo que pase.
+function techoDeFondo() {
+    return Math.max(1, maxConcurrent - foregroundReserved);
+}
+
+// DOS COLAS, no una. La de produccion (juego y licencias) se sirve entera antes
+// de mirar la de fondo: sin esto, una verificacion de licencia podia quedarse
+// detras de cincuenta avatares del indexador y esperar segundos por un trabajo
+// que a nadie le corre prisa.
+//
+// No hay inanicion del fondo aunque parezca: el trafico de produccion es a
+// rafagas cortas y deja huecos constantemente. Y si algun dia no los dejara,
+// que el indexado vaya lento es exactamente la decision correcta.
+function acquire(routeKey) {
+    const fondo = esDeFondo(routeKey);
+    const techo = fondo ? techoDeFondo() : maxConcurrent;
+
+    if (active < techo) {
         active++;
         return Promise.resolve();
     }
+
+    const cola = fondo ? queueFondo : queue;
+
     // Cola llena: se rechaza AL INSTANTE en vez de acumular. Con miles de
     // jugadores, un "vuelve en 2 segundos" inmediato es infinitamente mejor
     // que un socket retenido medio minuto para acabar fallando igual.
-    if (queue.length >= maxQueue) {
+    if (cola.length >= maxQueue) {
         return Promise.reject(new UpstreamRateLimitedError(
             'Demasiadas consultas en cola hacia Roblox, reintenta en unos segundos',
             2
         ));
     }
-    return new Promise(resolve => queue.push(resolve));
+    return new Promise(resolve => cola.push(resolve));
 }
 
 function release() {
-    const next = queue.shift();
-    // El slot se TRASPASA al siguiente en cola (active no baja): si bajara y
-    // volviera a subir, una peticion nueva podria colarse entre medias y
-    // dejar a la cola esperando indefinidamente.
-    if (next) next();
-    else active--;
+    // Se libera y se reparte. Todo es SINCRONO — no hay await entre el
+    // decremento y el reparto — asi que ninguna peticion nueva puede colarse en
+    // medio y adelantar a quien lleva esperando.
+    active--;
+    repartirSlots();
+}
+
+// Reparte los slots libres: PRIMERO produccion, y solo despues fondo, y a este
+// unicamente hasta su techo. Es el punto donde se hace efectiva la prioridad.
+function repartirSlots() {
+    for (;;) {
+        if (queue.length > 0 && active < maxConcurrent) {
+            active++;
+            queue.shift()();
+            continue;
+        }
+        if (queueFondo.length > 0 && active < techoDeFondo()) {
+            active++;
+            queueFondo.shift()();
+            continue;
+        }
+        return;
+    }
 }
 
 // ── Estado por ruta ──────────────────────────────────────────────────────────
@@ -163,7 +203,44 @@ const buckets = {
     // de v1 —que esta permanentemente cerrado— congelara tambien a v2, que es
     // justo el camino que ahora funciona.
     userAvatarV2: makeBucket('userAvatarV2'),
+
+    // CATALOGO DEL TRABAJO DE FONDO (plugin de Studio e index worker).
+    //
+    // Mismo endpoint de Roblox que `catalogDetails`, pero bucket SEPARADO, y es
+    // la separacion que mas importa de todo el archivo. Los dos caminos pedian
+    // precios por el mismo cubo, asi que un 429 provocado por el worker
+    // indexando una comunidad entera ponia en cooldown —y abria el breaker de—
+    // la ruta con la que el JUEGO resuelve los precios de un outfit. El juego
+    // no fallaba con estruendo: `attachCatalogStatus` se traga el error y
+    // devuelve el outfit sin precios (ver services/outfitService.js), asi que
+    // el sintoma era "no cargan los precios" sin una sola linea de error del
+    // lado del cliente.
+    //
+    // Con dos cubos, el fondo se come sus propios 429 y el juego sigue
+    // resolviendo catalogo. Comparten la CACHE por asset, que es lo que se
+    // quiere compartir: lo que el worker ya resolvio se lo encuentra el juego
+    // hecho, sin gastar cuota.
+    catalogDetailsBackground: makeBucket('catalogDetailsBackground'),
 };
+
+// Rutas que atienden TRABAJO DE FONDO. Se listan aqui, en un solo sitio, y no
+// se deducen de quien llama: el gate las trata distinto y esa decision tiene
+// que poder leerse de un vistazo.
+//
+// Son las tres que hacen rafagas largas (indexar una comunidad, recorrer
+// avatares, poner precio a miles de assets). Todo lo demas —incluida cualquier
+// ruta nueva que alguien añada— cuenta como produccion por defecto, que es el
+// lado seguro: como mucho se protege de mas, nunca de menos.
+const RUTAS_DE_FONDO = new Set([
+    'catalogDetailsBackground',
+    'groupMembers',
+    'userAvatar',
+    'userAvatarV2',
+]);
+
+function esDeFondo(routeKey) {
+    return RUTAS_DE_FONDO.has(routeKey);
+}
 
 // ── Diagnostico de limitacion ────────────────────────────────────────────────
 //
@@ -609,6 +686,18 @@ function backoffMs(attempt) {
 // esta comprobacion, la llamada saldria contra una ruta que Roblox acaba de
 // cerrar: exactamente la peticion que no puede salir.
 async function callOnce(bucket, fn) {
+    // Medicion opcional de fases. Solo se activa si quien llama abrio un
+    // acumulador en el contexto (hoy lo hace el batch de outfits); en cualquier
+    // otro caso esto es un null y dos comparaciones.
+    //
+    // La frontera entre las dos fases es exacta: todo lo que ocurre ANTES de
+    // `fn()` es espera nuestra (slot de ruta, marcapasos, recomprobacion de
+    // cooldown, gate global) y `fn()` es Roblox. Sin esta separacion, una
+    // peticion lenta no se puede atribuir: no se sabe si Roblox tardo o si
+    // estuvimos haciendo cola contra nuestro propio limitador.
+    const medidor = requestContext.medidor();
+    const entrada = medidor ? Date.now() : 0;
+
     await acquireRouteSlot(bucket);
     try {
         await esperarMarcapasos(bucket);
@@ -621,7 +710,7 @@ async function callOnce(bucket, fn) {
             );
         }
 
-        await acquire();
+        await acquire(bucket.name);
         try {
             // `calls` se cuenta AQUI, en el punto exacto en que la peticion
             // sale, y no al entrar en run(): entre la entrada y este punto hay
@@ -629,7 +718,19 @@ async function callOnce(bucket, fn) {
             // cooldown) que pueden rechazarla sin que Roblox la vea. Contarla
             // antes inflaria el numero con intentos que nunca salieron.
             bucket.metrics.calls++;
-            return await fn();
+
+            if (!medidor) return await fn();
+
+            // El reloj se parte aqui: hasta este punto, espera; a partir de
+            // aqui, Roblox.
+            medidor.esperaLimitadorMs += Date.now() - entrada;
+            medidor.llamadasUpstream++;
+            const antesDeRoblox = Date.now();
+            try {
+                return await fn();
+            } finally {
+                medidor.robloxMs += Date.now() - antesDeRoblox;
+            }
         } finally {
             release();
         }
@@ -850,13 +951,28 @@ function getMetrics() {
             },
         };
     }
-    return { concurrency: { active, queued: queue.length, maxConcurrent, maxQueue }, byRoute };
+    return {
+        concurrency: {
+            active,
+            queued: queue.length,
+            // En vuelo y en espera del trabajo de fondo, por separado: es lo que
+            // permite ver de un vistazo si el indexado esta comiendose la
+            // concurrencia o si el juego esta esperando por su culpa.
+            queuedBackground: queueFondo.length,
+            maxConcurrent,
+            maxBackground: techoDeFondo(),
+            foregroundReserved,
+            maxQueue,
+        },
+        byRoute,
+    };
 }
 
 // Solo para los tests.
 function reset() {
     active = 0;
     queue.length = 0;
+    queueFondo.length = 0;
     for (const routeKey of Object.keys(buckets)) buckets[routeKey] = makeBucket(routeKey);
 }
 

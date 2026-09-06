@@ -93,7 +93,11 @@ function reventa(registro) {
 
 // ── Ola 1: ficha de catalogo de los assets ──────────────────────────────────
 
-async function resolverFichasDeAsset(assetIds, fallos) {
+// `trafico` decide POR QUE CUBO del limitador salen las llamadas: el del juego
+// (default) o el del trabajo de fondo. Es un parametro y no algo deducido del
+// contexto porque de el depende que un 429 del indexador no deje sin precios al
+// juego, y esa decision tiene que verse en el sitio donde se llama.
+async function resolverFichasDeAsset(assetIds, fallos, { trafico } = {}) {
     const fichas = new Map();
     const faltantes = [];
 
@@ -111,7 +115,10 @@ async function resolverFichasDeAsset(assetIds, fallos) {
         // llamada, no dos.
         const detalles = await singleFlight.run(
             `catalog:assets:${faltantes.join('.')}`,
-            () => roblox.getCatalogItemDetails(faltantes.map(id => ({ itemType: 'Asset', id: Number(id) })))
+            () => roblox.getCatalogItemDetails(
+                faltantes.map(id => ({ itemType: 'Asset', id: Number(id) })),
+                { trafico }
+            )
         );
 
         for (const assetId of faltantes) {

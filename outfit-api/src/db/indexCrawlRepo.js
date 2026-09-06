@@ -133,12 +133,15 @@ async function tomar(instancia, { leaseMs, refrescarCadaMs = null, revisitarCada
 
     const { rows } = await db.query(
         `WITH elegido AS (
-             SELECT group_id
-               FROM plugin_index_crawl
-              WHERE enabled
+             SELECT c.group_id
+               FROM plugin_index_crawl c
+              WHERE c.enabled
                 AND (lease_owner IS NULL OR lease_expires_at < NOW())
                 AND (
-                    priority > 0
+                    -- Un grupo FIJADO siempre es elegible: no depende de tener
+                    -- demanda acumulada ni de que le toque la revisita.
+                    c.group_id = ANY($5::text[])
+                    OR priority > 0
                     OR last_run_at IS NULL
                     -- REVISITA. Sin esta condicion, un grupo a medio indexar y
                     -- sin demanda dejaba de elegirse hasta la siguiente vuelta
@@ -150,7 +153,12 @@ async function tomar(instancia, { leaseMs, refrescarCadaMs = null, revisitarCada
                         AND (last_full_pass_at IS NULL
                              OR last_full_pass_at < NOW() - ($3::double precision * INTERVAL '1 millisecond')))
                 )
-              ORDER BY priority DESC, last_run_at ASC NULLS FIRST
+              -- LOS FIJADOS PRIMERO, por delante de la prioridad calculada. Es
+              -- lo que hace que su preferencia no se erosione: la prioridad
+              -- sube con la demanda y baja al servirse, pero esto no se mueve.
+              ORDER BY (c.group_id = ANY($5::text[])) DESC,
+                       priority DESC,
+                       last_run_at ASC NULLS FIRST
               LIMIT 1
                 FOR UPDATE SKIP LOCKED
          )
@@ -161,7 +169,7 @@ async function tomar(instancia, { leaseMs, refrescarCadaMs = null, revisitarCada
            FROM elegido
           WHERE c.group_id = elegido.group_id
       RETURNING c.*`,
-        [instancia, leaseMs, refrescarCadaMs, revisitarCadaMs],
+        [instancia, leaseMs, refrescarCadaMs, revisitarCadaMs, config.indexWorker.pinnedGroups],
         OP.tomar
     );
 

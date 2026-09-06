@@ -565,6 +565,25 @@ function crearWorker({ instancia, repos = {} } = {}) {
             return false;
         }
 
+        // SIEMBRA DE LOS GRUPOS FIJADOS. Un grupo solo entra en
+        // plugin_index_crawl cuando una busqueda se queda corta y registra
+        // demanda; uno fijado que todavia nadie haya buscado no tendria fila que
+        // ordenar, y su prioridad no serviria de nada. Al arrancar se asegura su
+        // existencia para que el worker pueda empezar por el desde el primer
+        // ciclo, incluso con la tabla vacia.
+        //
+        // `asegurar` es idempotente, asi que repetirlo en cada arranque (y en
+        // cada replica) no duplica ni pisa el avance que ya tuviera.
+        for (const groupId of config.indexWorker.pinnedGroups) {
+            crawlRepo.asegurar(groupId)
+                .then(() => logger.info('Grupo fijado asegurado en la cola de indexado', {
+                    instance: id, groupId,
+                }))
+                .catch(err => logger.warn('No se pudo asegurar un grupo fijado', {
+                    instance: id, groupId, detail: err?.message,
+                }));
+        }
+
         temporizador = setInterval(() => {
             if (corriendo) return;
             corriendo = true;

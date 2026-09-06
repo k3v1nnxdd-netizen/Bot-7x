@@ -8,6 +8,10 @@ const config = require('../config');
 const logger = require('../observability/logger');
 const { buildOutfit } = require('./humanoidDescription');
 const { resolveUsername, markerFor } = require('./userService');
+const { mapConLimite } = require('../utils/concurrency');
+const {
+    NotFoundError, UpstreamRateLimitedError, CircuitOpenError, UpstreamError,
+} = require('../roblox/errors');
 
 // Listado y detalle de outfits. Cada entidad tiene su propio TTL porque
 // cambian a ritmos muy distintos: la LISTA se mueve cuando el jugador crea o
@@ -230,6 +234,124 @@ async function getOutfitDetailsWithOptions(outfitId, { catalog = false, bundles 
     return outfit;
 }
 
+
+// ── LOTE DE OUTFITS (POST /v1/outfits/batch) ────────────────────────────────
+//
+// EL PROBLEMA QUE RESUELVE, MEDIDO DEL LADO DE ROBLOX. El buscador del juego
+// enseña hasta 24 outfits. Pedirlos de uno en uno cuesta 3 fichas del limitador
+// del servidor de Roblox por llamada: 24 x 3 = 72 fichas contra un cubo de 40
+// que recarga a 8/s. Aunque el cliente limite el pico a cinco en paralelo, once
+// de los veinticuatro se quedan sin datos. No es un problema de cuota NUESTRA y
+// no se arregla subiendo limites: se arregla no haciendo 24 llamadas HTTP.
+//
+// Con una sola peticion, el juego gasta 3 fichas en vez de 72.
+//
+// AQUI DENTRO NO HAY UN BUCLE SERIAL. El orden es:
+//
+//   1. Deduplicar. Dos veces el mismo id es un id.
+//   2. Leer la cache de TODOS de golpe. Lo cacheado se resuelve al instante y
+//      no gasta ni una llamada.
+//   3. Solo lo que falta sale a Roblox, con concurrencia acotada y por el
+//      camino de siempre — misma cache, mismo single-flight, mismo limitador —
+//      asi que si otra peticion ya esta resolviendo ese outfit, esta se
+//      engancha a su vuelo en vez de abrir otro.
+//
+// UN OUTFIT QUE FALLA NO TUMBA EL LOTE. Cada id lleva su propio veredicto: o
+// trae outfit, o trae el codigo de error que le corresponda. Un 404 de un
+// outfit borrado no puede dejar sin resultados a los otros veintitres.
+
+// Veredicto de un id que no se pudo resolver. El codigo es el MISMO que
+// devolveria la ruta individual para ese outfit, para que el juego no tenga que
+// aprender dos vocabularios de error.
+function errorDeOutfit(err) {
+    if (err instanceof NotFoundError) return { code: err.code, message: err.message };
+    if (err instanceof UpstreamRateLimitedError || err instanceof CircuitOpenError) {
+        return {
+            code: err.code,
+            message: err.message,
+            retryAfterSeconds: err.retryAfterSeconds ?? 5,
+        };
+    }
+    if (err instanceof UpstreamError) {
+        // La causa se registra pero NUNCA viaja: un error de axios arrastra
+        // URLs, cabeceras y configuracion interna.
+        return { code: err.code, message: 'No se pudo obtener la informacion de Roblox' };
+    }
+    return { code: 'internal_error', message: 'Error interno resolviendo este outfit' };
+}
+
+async function getOutfitsBatch(outfitIds, ctx) {
+    const medidas = {
+        requested: outfitIds.length,
+        unique: 0,
+        cacheHits: 0,
+        cacheMisses: 0,
+        singleFlightJoins: 0,
+        cacheMs: 0,
+        fetchMs: 0,
+    };
+
+    // ── 1. Deduplicar, conservando el orden de primera aparicion ────────────
+    const unicos = [...new Set(outfitIds)];
+    medidas.unique = unicos.length;
+
+    // ── 2. Cache de golpe ───────────────────────────────────────────────────
+    // Se lee ANTES de lanzar nada. Un lote que ya esta caliente no toca Roblox
+    // ni espera al limitador, y ademas asi los contadores de aciertos son
+    // exactos en vez de deducidos.
+    const resueltos = new Map();
+    const faltantes = [];
+
+    const empezoCache = Date.now();
+    for (const outfitId of unicos) {
+        const cacheado = await cacheStore.get(detailsCacheKey(outfitId));
+        if (cacheado !== undefined) {
+            resueltos.set(outfitId, { ok: true, outfit: cacheado });
+            medidas.cacheHits++;
+            ctx?.push('hit');
+        } else {
+            faltantes.push(outfitId);
+            medidas.cacheMisses++;
+            ctx?.push('miss');
+        }
+    }
+    medidas.cacheMs = Date.now() - empezoCache;
+
+    // ── 3. Lo que falta, con concurrencia acotada ───────────────────────────
+    const empezoFetch = Date.now();
+    await mapConLimite(faltantes, config.outfitsBatch.concurrency, async outfitId => {
+        // Si YA hay un vuelo para este outfit —otra peticion lo esta pidiendo
+        // ahora mismo— esta llamada se va a enganchar a el en vez de abrir otro.
+        // Se anota aqui, justo antes, porque despues ya no se distingue.
+        if (singleFlight.enVuelo(detailsCacheKey(outfitId))) medidas.singleFlightJoins++;
+
+        try {
+            // Por el camino de SIEMPRE: withCache -> singleFlight -> limitador.
+            // No se reimplementa nada, y por eso hereda la cache negativa, el
+            // breaker y el resto de garantias sin tener que repetirlas.
+            const outfit = await getOutfitDetails(outfitId, null);
+            resueltos.set(outfitId, { ok: true, outfit });
+        } catch (err) {
+            // Un fallo es de ESTE id y de ninguno mas. Nada se cachea aqui: los
+            // 429 y los 5xx no pasan por la cache (withCache solo guarda la
+            // ausencia CONFIRMADA), asi que un mal rato de Roblox no se
+            // convierte en respuestas malas guardadas.
+            resueltos.set(outfitId, { ok: false, error: errorDeOutfit(err) });
+        }
+    });
+    medidas.fetchMs = Date.now() - empezoFetch;
+
+    // ── 4. Ensamblado, en el orden pedido ───────────────────────────────────
+    // Una entrada por id UNICO, en orden de primera aparicion, y con el
+    // outfitId siempre explicito: el juego empareja por id y no por posicion.
+    const results = unicos.map(outfitId => ({ outfitId, ...resueltos.get(outfitId) }));
+
+    medidas.succeeded = results.filter(r => r.ok).length;
+    medidas.failed = results.length - medidas.succeeded;
+
+    return { results, medidas };
+}
+
 // Endpoint compuesto: resolver + listar en una sola llamada del juego.
 //
 // Existe para MINIMIZAR LLAMADAS DESDE ROBLOX, que es un recurso propio y
@@ -245,6 +367,7 @@ async function listOutfitsByUsername(username, pagination, ctx) {
 
 module.exports = {
     listOutfits,
+    getOutfitsBatch,
     getOutfitDetails,
     getOutfitDetailsWithOptions,
     listOutfitsByUsername,

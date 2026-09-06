@@ -64,4 +64,27 @@ function groupId() {
     return almacen.getStore()?.groupId ?? null;
 }
 
-module.exports = { ejecutarCon, actual, requestId, searchId, groupId };
+// Acumulador de tiempos de la peticion en curso, o null si no hay ninguno.
+//
+// POR QUE VIVE EN EL CONTEXTO Y NO SE PASA POR PARAMETRO. Para saber cuanto se
+// va en esperar al limitador y cuanto en Roblox hace falta medir DENTRO del
+// limitador, que esta cuatro capas por debajo de la ruta (ruta -> servicio ->
+// cliente -> limitador). Enhebrar un objeto de medicion por esas cuatro capas
+// ensuciaria firmas que hoy estan limpias y que comparten todas las rutas.
+//
+// El limitador suma aqui si hay acumulador; si no lo hay —el caso de casi todo
+// el trafico— no hace nada y no cuesta nada. Es opcional por diseño: ninguna
+// ruta esta obligada a medirse.
+function medidor() {
+    return almacen.getStore()?.medidor ?? null;
+}
+
+// Crea un acumulador vacio. Los milisegundos son SUMAS sobre todas las llamadas
+// salientes de la peticion, no maximos: con concurrencia, la suma puede superar
+// la duracion real de la peticion, y eso es lo que se quiere saber (cuanto
+// trabajo hubo), no cuanto reloj paso.
+function nuevoMedidor() {
+    return { esperaLimitadorMs: 0, robloxMs: 0, llamadasUpstream: 0 };
+}
+
+module.exports = { ejecutarCon, actual, requestId, searchId, groupId, medidor, nuevoMedidor };

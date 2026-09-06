@@ -53,6 +53,50 @@ process.env.UPSTREAM_RATE_LIMIT_FALLBACK_MAX_MS = '1200';
 const fs = require('fs');
 const path = require('path');
 
+// ── DIAGNOSTICO DE MUERTES SILENCIOSAS ──────────────────────────────────────
+//
+// Sin esto, una promesa rechazada sin dueño mata el proceso con exit 1 y SIN
+// una sola linea de FAIL: Node 24 trata un unhandledRejection como fatal. El
+// resultado es una corrida roja que no dice que test la rompio — y si ademas
+// la salida se descarto, no hay forma de averiguarlo. Ya paso una vez en este
+// proyecto y costo once corridas completas no reproducirlo.
+//
+// Estos dos manejadores no cambian NADA de como se ejecutan los tests: solo
+// garantizan que, si el proceso se muere por la puerta de atras, deje dicho
+// donde estaba y por que.
+
+// Fichero de test en curso. Es el dato que faltaba: un rechazo suelto puede
+// aflorar mucho despues de la linea que lo creo, pero casi siempre dentro del
+// mismo archivo, y saber cual acota la busqueda de treinta ficheros a uno.
+let ficheroEnCurso = '(ninguno todavia)';
+
+function abortarPor(tipo, error) {
+    console.error(`\n=== ${tipo.toUpperCase()} — EL PROCESO DE TESTS MUERE AQUI ===`);
+    console.error(`archivo de test en curso: ${ficheroEnCurso}`);
+
+    // El stack completo, sin recortar: es lo unico que senala la linea real.
+    if (error instanceof Error) {
+        console.error(`tipo: ${error.name}`);
+        console.error(`mensaje: ${error.message}`);
+        if (error.code) console.error(`code: ${error.code}`);
+        console.error(error.stack ?? '(sin stack)');
+        // Un error envuelto (axios, pg) esconde la causa util dentro.
+        if (error.cause) console.error('causa:', error.cause);
+    } else {
+        // Un rechazo puede llevar cualquier cosa, no solo un Error.
+        console.error('valor rechazado (no es un Error):', error);
+    }
+
+    console.error('=== fin del diagnostico ===\n');
+
+    // Se sale despues de imprimirlo TODO, no antes: process.exit corta la
+    // escritura pendiente de stdout, asi que el orden aqui importa.
+    process.exit(1);
+}
+
+process.on('unhandledRejection', razon => abortarPor('unhandledRejection', razon));
+process.on('uncaughtException', err => abortarPor('uncaughtException', err));
+
 (async () => {
     const files = fs.readdirSync(__dirname).filter(f => f.endsWith('.test.js')).sort();
     console.log(`outfit-api — ejecutando ${files.length} archivo(s) de test: ${files.join(', ')}\n`);
@@ -60,6 +104,7 @@ const path = require('path');
     let allOk = true;
     for (const file of files) {
         console.log(`--- ${file} ---`);
+        ficheroEnCurso = file;
         const testFn = require(path.join(__dirname, file));
         const ok = await testFn();
         if (!ok) allOk = false;
@@ -73,6 +118,9 @@ const path = require('path');
     console.log('TODOS LOS TESTS PASARON');
     process.exit(0);
 })().catch(err => {
-    console.error('EL RUNNER SE ROMPIO:', err);
-    process.exit(1);
+    // Fallo del propio bucle (un require roto, un test que lanza fuera de su
+    // arnes). Se aprovecha el mismo diagnostico para que la salida sea
+    // identica venga por donde venga.
+    console.error('EL RUNNER SE ROMPIO');
+    abortarPor('runner', err);
 });

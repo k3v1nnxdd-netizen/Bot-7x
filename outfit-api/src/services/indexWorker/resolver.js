@@ -159,7 +159,14 @@ async function resolverPrecios(pendientes, { contador = crearContador(), metrica
     for (let i = 0; i < faltan.length; i += tamano) {
         const lote = faltan.slice(i, i + tamano);
         try {
-            const respuesta = await roblox.getCatalogItemDetails(lote.map(id => ({ id, itemType: 'Asset' })));
+            // POR EL CUBO DE FONDO. El worker pone precio a miles de assets
+            // seguidos: si saliera por el cubo del juego, su 429 pondria en
+            // cooldown la ruta con la que el juego resuelve los precios de un
+            // outfit — que es exactamente el fallo que esto corrige.
+            const respuesta = await roblox.getCatalogItemDetails(
+                lote.map(id => ({ id, itemType: 'Asset' })),
+                { trafico: roblox.TRAFICO.FONDO }
+            );
             salida.medidas.lotes++;
             salida.medidas.pedidosARoblox += lote.length;
 

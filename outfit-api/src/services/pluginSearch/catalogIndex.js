@@ -6,7 +6,8 @@ const logger = require('../../observability/logger');
 const rateLimiter = require('../../roblox/rateLimiter');
 const requestContext = require('../../observability/requestContext');
 const { resolverFichasDeAsset, catalogCacheKey } = require('../catalogService');
-const { trocear } = require('./concurrency');
+const { TRAFICO } = require('../../roblox/client');
+const { trocear } = require('../../utils/concurrency');
 const { VEREDICTO, PUERTA_ABIERTA } = require('./throttleGate');
 
 // ETAPA 3 — CATALOGO. Es LA etapa que decide si esta busqueda tumba la cuota
@@ -142,7 +143,12 @@ function crearIndiceDeCatalogo(stats, { puerta = PUERTA_ABIERTA } = {}) {
 
                 let resueltas;
                 try {
-                    resueltas = await resolverFichasDeAsset(lote, fallos);
+                    // POR EL CUBO DE FONDO. La busqueda del plugin puede pedir
+                    // miles de precios seguidos; si saliera por el cubo del juego,
+                    // su 429 dejaria al juego sin resolver catalogo.
+                    resueltas = await resolverFichasDeAsset(lote, fallos, {
+                        trafico: TRAFICO.FONDO,
+                    });
                 } catch (err) {
                     // resolverFichasDeAsset documenta que no lanza (reporta en
                     // `fallos`). Si algun dia lo hiciera, se trata igual que un

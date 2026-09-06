@@ -57,6 +57,50 @@ function parseOutfitId(raw) {
     return parsePositiveId(raw, 'outfitId');
 }
 
+// ── POST /v1/outfits/batch ──────────────────────────────────────────────────
+//
+// Los ids llegan en un cuerpo JSON, donde el tipo NUMERO existe de verdad, asi
+// que se aceptan numero y cadena de digitos: `table.concat` de Lua produce
+// numeros y un JSONEncode de una lista de OutfitIds tambien, pero un cliente
+// que los tenga como texto no deberia romperse por eso. Lo que NO se acepta es
+// nada que no sea un id: cada elemento pasa por el mismo `parseOutfitId` que
+// usa la ruta individual, asi que el contrato es identico.
+function parseOutfitBatchBody(body, { maxIds }) {
+    if (body === undefined || body === null || typeof body !== 'object' || Array.isArray(body)) {
+        throw new ValidationError(
+            'Manda un cuerpo JSON con {"outfitIds": [123, 456]} y la cabecera Content-Type: application/json'
+        );
+    }
+
+    const crudos = body.outfitIds;
+    if (!Array.isArray(crudos)) {
+        throw new ValidationError('outfitIds debe ser una lista de ids de outfit');
+    }
+    if (crudos.length === 0) {
+        throw new ValidationError('outfitIds no puede estar vacia');
+    }
+
+    // El tope se comprueba ANTES de validar uno a uno: una lista de mil ids no
+    // debe costar mil validaciones para acabar rechazada igual.
+    if (crudos.length > maxIds) {
+        throw new ValidationError(`outfitIds admite como maximo ${maxIds} ids por peticion (llegaron ${crudos.length})`);
+    }
+
+    // Se valida CADA uno aunque venga repetido: si el juego manda un id
+    // invalido dos veces, tiene que enterarse igual. La deduplicacion es cosa
+    // del servicio, despues de que todos sean validos.
+    return {
+        outfitIds: crudos.map((valor, i) => {
+            const normalizado = typeof valor === 'number' ? String(valor) : valor;
+            try {
+                return parseOutfitId(normalizado);
+            } catch {
+                throw new ValidationError(`outfitIds[${i}] no es un id de outfit valido`);
+            }
+        }),
+    };
+}
+
 // `limit` se restringe a un conjunto cerrado en lugar de a un rango. Un rango
 // libre 1-50 permite a un llamador generar 50 variantes de clave por pagina y
 // pulverizar el hit rate de la cache sin ganar nada; tres valores cubren
@@ -715,6 +759,7 @@ module.exports = {
     parseUsername,
     parseUserId,
     parseOutfitId,
+    parseOutfitBatchBody,
     parsePagination,
     parsePageToken,
     parseBooleanFlag,

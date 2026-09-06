@@ -53,6 +53,18 @@ function run(key, fn) {
     return promise;
 }
 
+// ¿Hay ya un vuelo en curso para esta clave?
+//
+// Lectura pura, sin efectos. Existe para poder CONTAR los enganches de una
+// peticion concreta: los contadores globales de `metrics` son del proceso
+// entero, y restar antes/despues daria numeros equivocados en cuanto dos
+// peticiones se solapen — que es justo cuando el dato interesa. Consultado
+// inmediatamente antes de llamar a `run`, dice con exactitud si esta llamada
+// se va a enganchar a un vuelo ajeno o va a abrir el suyo.
+function enVuelo(key) {
+    return inFlight.has(key);
+}
+
 function getMetrics() {
     return { ...metrics, inFlight: inFlight.size };
 }
@@ -64,4 +76,4 @@ function reset() {
     metrics.joined = 0;
 }
 
-module.exports = { run, getMetrics, reset };
+module.exports = { run, enVuelo, getMetrics, reset };

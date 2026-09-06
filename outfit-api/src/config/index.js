@@ -146,6 +146,19 @@ const upstream = {
     // goteo y no en avalancha.
     maxConcurrent: intFromEnv('UPSTREAM_MAX_CONCURRENT', 3),
 
+    // SLOTS RESERVADOS PARA EL TRAFICO DE PRODUCCION (juego + licencias).
+    //
+    // El gate global es uno solo y lo comparten el juego, el plugin y el
+    // worker del indice. Sin reserva, el trabajo de fondo puede tener las tres
+    // peticiones en vuelo de forma permanente y una verificacion de licencia se
+    // queda esperando detras — que es justo lo que no puede pasar: el juego es
+    // lo que paga y ademas tiene un jugador delante.
+    //
+    // Con 1 reservado de 3, el fondo nunca pasa de 2 en vuelo y siempre queda
+    // un hueco libre para el juego. Subirlo protege mas al juego y frena mas el
+    // indexado; bajarlo a 0 vuelve al comportamiento anterior.
+    foregroundReserved: intFromEnv('UPSTREAM_FOREGROUND_RESERVED', 1),
+
     // Cola de espera del gate de concurrencia. Al llenarse se rechaza al
     // instante (503 + Retry-After) en vez de acumular miles de peticiones
     // colgadas: con miles de jugadores es preferible un "vuelve en 2s"
@@ -299,6 +312,32 @@ const maxBundleLookupsPerRequest = intFromEnv('MAX_BUNDLE_LOOKUPS_PER_REQUEST', 
 // veinte huecos libres en cada lote es tirar un 17% de la cuota — justo la que
 // hacia falta para que la busqueda no se quedara a medias.
 const maxCatalogBatchSize = intFromEnv('MAX_CATALOG_BATCH_SIZE', 120);
+
+// ── POST /v1/outfits/batch ───────────────────────────────────────────────────
+//
+// El buscador del juego enseña hasta 24 outfits a la vez. Pedirlos uno a uno
+// desde Lua no es viable y esta MEDIDO: cada GetOutfit cuesta 3 fichas del
+// limitador del servidor de Roblox, el cubo tiene 40 y recarga 8/s, asi que 24
+// peticiones cuestan 72 fichas y once se quedan sin datos aunque el cliente
+// limite el pico a cinco en paralelo. El problema no es la cuota nuestra: es
+// que el JUEGO no puede permitirse 24 llamadas HTTP.
+//
+// Con una sola peticion, el coste en el servidor de Roblox pasa de 72 fichas a
+// 3. Aqui dentro no se convierte en 24 llamadas seriales: se resuelve la cache
+// de golpe y solo lo que falta sale a Roblox, con concurrencia acotada.
+const outfitsBatch = {
+    // Tope duro de ids por peticion. 40 deja margen sobre los 24 del buscador
+    // sin abrir la puerta a que alguien pida cientos: cada id que falte en
+    // cache es una llamada a Roblox, y el tope es lo que acota el peor caso.
+    maxIds: intFromEnv('OUTFITS_BATCH_MAX_IDS', 40),
+
+    // Cuantos outfits sin cachear se resuelven a la vez. Por encima del gate
+    // global de salida no se gana nada — el limitador ya serializa — pero
+    // mantener varios en vuelo evita que el gate se quede ocioso entre llamada
+    // y llamada. Es trafico de PRIMER PLANO: compite con prioridad frente al
+    // plugin y al worker (ver UPSTREAM_FOREGROUND_RESERVED).
+    concurrency: intFromEnv('OUTFITS_BATCH_CONCURRENCY', 4),
+};
 
 // ── Limites de POST /v1/catalog/batch ───────────────────────────────────────
 // Un outfit real ronda los 20 assets; estos topes dejan 3x de margen y a la
@@ -648,6 +687,21 @@ const indexWorker = {
     // indice cuanto antes. Con 5 s y 10 usuarios por ciclo son ~2 usuarios por
     // segundo como techo teorico, y bastante menos en la practica porque el
     // marcapasos del limitador manda por encima de esto.
+    // GRUPOS FIJADOS. Van SIEMPRE los primeros al elegir a quien indexar, por
+    // delante de cualquier prioridad calculada.
+    //
+    // Por que no basta con subirle la prioridad a mano: `priority` sube por
+    // DEMANDA (una busqueda que se queda corta) y BAJA al servirse, asi que un
+    // valor puesto a dedo se erosiona solo en unas cuantas vueltas. Fijar el
+    // grupo es una decision de negocio — 'esta comunidad es la nuestra' — y no
+    // una medida que deba decaer.
+    //
+    // Lista separada por comas: INDEX_WORKER_PINNED_GROUPS=59218460,123456
+    pinnedGroups: (process.env.INDEX_WORKER_PINNED_GROUPS ?? '')
+        .split(',')
+        .map(id => id.trim())
+        .filter(id => /^[1-9][0-9]{0,19}$/.test(id)),
+
     tickMs: intFromEnv('INDEX_WORKER_TICK_MS', 5_000),
     usersPerCycle: intFromEnv('INDEX_WORKER_USERS_PER_CYCLE', 10),
 
@@ -949,6 +1003,7 @@ module.exports = {
     outfitTypes,
     maxBundleLookupsPerRequest,
     maxCatalogBatchSize,
+    outfitsBatch,
     catalogBatch,
     pluginSearch,
     pluginRotation,

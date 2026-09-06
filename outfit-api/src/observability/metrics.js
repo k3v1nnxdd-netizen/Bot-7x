@@ -71,6 +71,54 @@ function latencyMiddleware(req, res, next) {
     next();
 }
 
+// ── Lote de outfits (POST /v1/outfits/batch) ────────────────────────────────
+//
+// Acumulados DEL PROCESO, no de una peticion: la respuesta ya lleva su propio
+// `stats`, pero eso solo lo ve quien hizo esa llamada. Para saber si el lote
+// esta cumpliendo su funcion —evitar llamadas a Roblox— hace falta mirarlo en
+// agregado desde fuera, y eso es /v1/metrics.
+//
+// LA CIFRA QUE IMPORTA es la relacion entre `idsRequested` y `upstreamCalls`:
+// si el lote funciona, la segunda tiene que ser MUCHO menor que la primera. Si
+// se parecen, es que la cache no esta reteniendo y el endpoint solo esta
+// ahorrando peticiones HTTP del juego, no cuota de Roblox.
+//
+// NADA SENSIBLE: nueve contadores. Ni ids de outfit, ni de licencia, ni tokens
+// — de hecho aqui no entra ningun identificador de nada.
+const batch = {
+    requests: 0,          // peticiones de lote atendidas
+    idsRequested: 0,      // ids pedidos, con repeticiones
+    idsUnique: 0,         // los mismos tras deduplicar
+    cacheHits: 0,
+    cacheMisses: 0,
+    singleFlightJoins: 0, // enganches a un vuelo que ya estaba en curso
+    upstreamCalls: 0,     // llamadas que de verdad salieron a Roblox
+    succeeded: 0,         // outfits devueltos con datos
+    failed: 0,            // outfits que fallaron, sin tumbar su lote
+};
+
+function recordBatch(medidas) {
+    batch.requests++;
+    batch.idsRequested += medidas.requested ?? 0;
+    batch.idsUnique += medidas.unique ?? 0;
+    batch.cacheHits += medidas.cacheHits ?? 0;
+    batch.cacheMisses += medidas.cacheMisses ?? 0;
+    batch.singleFlightJoins += medidas.singleFlightJoins ?? 0;
+    batch.upstreamCalls += medidas.upstreamCalls ?? 0;
+    batch.succeeded += medidas.succeeded ?? 0;
+    batch.failed += medidas.failed ?? 0;
+}
+
+function getBatchMetrics() {
+    // `savedCalls` es lo que el endpoint ahorro de verdad: ids que se pidieron
+    // y que NO acabaron en una llamada a Roblox, por cache, por deduplicacion o
+    // por engancharse a un vuelo ajeno. Es el numero que dice si esto sirve.
+    return {
+        ...batch,
+        savedCalls: Math.max(0, batch.idsRequested - batch.upstreamCalls),
+    };
+}
+
 function getProcessMetrics() {
     const mem = process.memoryUsage();
     return {
@@ -84,6 +132,10 @@ function getProcessMetrics() {
 // Solo para los tests: deja el estado limpio entre casos.
 function reset() {
     routes.clear();
+    for (const clave of Object.keys(batch)) batch[clave] = 0;
 }
 
-module.exports = { latencyMiddleware, recordRequest, getHttpMetrics, getProcessMetrics, reset };
+module.exports = {
+    latencyMiddleware, recordRequest, getHttpMetrics, getProcessMetrics,
+    recordBatch, getBatchMetrics, reset,
+};

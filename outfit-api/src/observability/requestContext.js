@@ -79,6 +79,21 @@ function medidor() {
     return almacen.getStore()?.medidor ?? null;
 }
 
+// INSTANTE ABSOLUTO en el que la peticion en curso deja de valer la pena, o
+// null si quien corre no tiene a nadie esperando.
+//
+// Vive aqui por el mismo motivo que el medidor: quien decide si merece la pena
+// un reintento es el limitador, cuatro capas por debajo de la ruta, y el
+// presupuesto es de la PETICION entera —no de una llamada—, asi que tiene que
+// ser lo mismo para las dos llamadas encadenadas de un listado.
+//
+// Que devuelva null fuera de contexto es LA garantia de que esto no toca el
+// trabajo de fondo: el indexado y las busquedas del plugin no abren
+// presupuesto, leen null y se comportan exactamente igual que siempre.
+function fechaLimite() {
+    return almacen.getStore()?.fechaLimite ?? null;
+}
+
 // Crea un acumulador vacio. Los milisegundos son SUMAS sobre todas las llamadas
 // salientes de la peticion, no maximos: con concurrencia, la suma puede superar
 // la duracion real de la peticion, y eso es lo que se quiere saber (cuanto
@@ -87,4 +102,4 @@ function nuevoMedidor() {
     return { esperaLimitadorMs: 0, robloxMs: 0, llamadasUpstream: 0 };
 }
 
-module.exports = { ejecutarCon, actual, requestId, searchId, groupId, medidor, nuevoMedidor };
+module.exports = { ejecutarCon, actual, requestId, searchId, groupId, medidor, nuevoMedidor, fechaLimite };

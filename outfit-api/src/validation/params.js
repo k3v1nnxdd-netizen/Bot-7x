@@ -89,6 +89,19 @@ function parseOutfitBatchBody(body, { maxIds }) {
     // Se valida CADA uno aunque venga repetido: si el juego manda un id
     // invalido dos veces, tiene que enterarse igual. La deduplicacion es cosa
     // del servicio, despues de que todos sean validos.
+    // BUNDLES NO SE ADMITE EN LOTE, y el rechazo es explicito en vez de un
+    // silencio. Resolver bundles cuesta UNA llamada a Roblox POR ASSET (ver
+    // attachBundles en services/outfitService.js): con veinticuatro outfits de
+    // unos veinte assets serian cientos de llamadas nacidas de una sola
+    // peticion. Aceptarlo y no hacerlo mentiria; hacerlo tumbaria la cuota. La
+    // ruta individual lo sigue ofreciendo para el caso de un outfit concreto.
+    if (body.bundles !== undefined) {
+        throw new ValidationError(
+            'bundles no se admite en lote porque cuesta una llamada por asset; '
+            + 'pidelo por outfit en GET /v1/outfits/:outfitId?bundles=1'
+        );
+    }
+
     return {
         outfitIds: crudos.map((valor, i) => {
             const normalizado = typeof valor === 'number' ? String(valor) : valor;
@@ -98,7 +111,19 @@ function parseOutfitBatchBody(body, { maxIds }) {
                 throw new ValidationError(`outfitIds[${i}] no es un id de outfit valido`);
             }
         }),
+        // Los precios. Booleano JSON de verdad, no "1"/"true": en el cuerpo hay
+        // tipos, y aceptar cadenas aqui seria heredar una ambiguedad que solo
+        // tiene sentido en una query string.
+        catalog: parseBooleanBody(body.catalog, 'catalog'),
     };
+}
+
+function parseBooleanBody(raw, label) {
+    if (raw === undefined) return false;
+    if (typeof raw !== 'boolean') {
+        throw new ValidationError(`${label} debe ser true o false`);
+    }
+    return raw;
 }
 
 // `limit` se restringe a un conjunto cerrado en lugar de a un rango. Un rango
@@ -131,6 +156,61 @@ function parsePageToken(raw) {
         throw new ValidationError('pageToken tiene un formato invalido');
     }
     return token;
+}
+
+// Banderas de GET /v1/users/by-username/:u/outfits.
+//
+// EXISTEN PARA QUE EL JUEGO GASTE UNA SOLA PETICION. Sin ellas hacian falta dos
+// (listar y luego pedir los detalles), y una peticion de HttpService cuesta 3
+// fichas de un cubo de 40 que recarga a 8/s en el servidor de Roblox.
+//
+// DOS REGLAS, y las dos son 400 explicitos en vez de silencios:
+//
+//   catalog sin details    No hay donde poner los precios: sin detalles, la
+//                          respuesta son cuatro campos por outfit y ninguno es
+//                          un asset. Aceptarlo y no devolver precios dejaria a
+//                          quien lo pide convencido de haberlos pedido.
+//
+//   details con limit alto Cada outfit sin cachear es una llamada a Roblox. El
+//                          tope es el MISMO del lote (OUTFITS_BATCH_MAX_IDS),
+//                          porque por dentro es el mismo servicio: seria
+//                          incoherente que por esta puerta cupieran mas.
+function parseListingFlags(query, { maxDetails }, limit) {
+    const details = parseBooleanFlag(query.details, 'details');
+    const catalog = parseBooleanFlag(query.catalog, 'catalog');
+
+    if (catalog && !details) {
+        throw new ValidationError('catalog necesita details=1: sin los detalles no hay assets a los que asignar precios');
+    }
+    if (details && limit > maxDetails) {
+        throw new ValidationError(
+            `details=1 admite como maximo limit=${maxDetails} porque cada outfit sin cachear es una llamada a Roblox (llego limit=${limit})`
+        );
+    }
+
+    // BUNDLES NO EXISTE EN ESTA BUSQUEDA, y se rechaza en lugar de ignorarse —
+    // tanto `bundles=1` como `bundles=0`. Un parametro ignorado en silencio deja
+    // a quien lo manda convencido de haberlo pedido, y aqui la diferencia es
+    // grande: creeria tener la pertenencia a bundles de cada asset y estaria
+    // pintando la cuadricula sin ella.
+    //
+    // El motivo de que no exista: Roblox no dice a que bundle pertenece un
+    // outfit, y la unica via es la busqueda inversa POR ASSET, que no admite
+    // lote (ver attachBundles en services/outfitService.js). Una busqueda de 24
+    // outfits ronda los 150 assets distintos, es decir 150 llamadas nacidas de
+    // una sola peticion. Por eso se resuelve bajo demanda para UN outfit, que es
+    // cuando el jugador lo abre y el coste es de veinte llamadas y no de ciento
+    // cincuenta.
+    //
+    // Mismo rechazo que en POST /v1/outfits/batch, con el mismo motivo.
+    if (query.bundles !== undefined) {
+        throw new ValidationError(
+            'bundles no forma parte de la busqueda masiva porque cuesta una llamada a Roblox por asset; '
+            + 'resuelvelo bajo demanda para un outfit concreto en GET /v1/outfits/:outfitId?bundles=1'
+        );
+    }
+
+    return { details, catalog };
 }
 
 function parsePagination(query) {
@@ -760,6 +840,7 @@ module.exports = {
     parseUserId,
     parseOutfitId,
     parseOutfitBatchBody,
+    parseListingFlags,
     parsePagination,
     parsePageToken,
     parseBooleanFlag,

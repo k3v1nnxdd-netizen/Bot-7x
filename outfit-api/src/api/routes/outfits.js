@@ -56,7 +56,7 @@ router.use('/batch', express.json({ limit: '8kb' }));
 router.post('/batch', async (req, res) => {
     res.locals.routeLabel = 'POST /v1/outfits/batch';
 
-    const { outfitIds } = parseOutfitBatchBody(req.body, {
+    const { outfitIds, catalog } = parseOutfitBatchBody(req.body, {
         maxIds: config.outfitsBatch.maxIds,
     });
 
@@ -69,9 +69,15 @@ router.post('/batch', async (req, res) => {
     const empezado = Date.now();
     const licenseMs = res.locals.startedAtMs ? empezado - res.locals.startedAtMs : null;
 
+    // Se PARTE del contexto que ya hay abierto en vez de empezar uno nuevo:
+    // `ejecutarCon` sustituye el almacen entero, y el que viene de fuera trae la
+    // fecha limite del presupuesto de la peticion (ver api/requestBudget.js).
+    // Abrir uno limpio aqui dejaria al lote sin presupuesto y con ello sin el
+    // corte de reintentos, que es justo lo que evita que veinticuatro outfits
+    // contra un Roblox colgado se conviertan en una espera eterna.
     const { results, medidas } = await requestContext.ejecutarCon(
-        { requestId: req.requestId, medidor },
-        () => outfitService.getOutfitsBatch(outfitIds, res.locals.cache)
+        { ...requestContext.actual(), requestId: req.requestId, medidor },
+        () => outfitService.getOutfitsBatch(outfitIds, { catalog }, res.locals.cache)
     );
 
     const totalMs = Date.now() - empezado;
@@ -85,6 +91,13 @@ router.post('/batch', async (req, res) => {
         cacheMisses: medidas.cacheMisses,
         singleFlightJoins: medidas.singleFlightJoins,
         upstreamCalls: medidor.llamadasUpstream,
+        // Catalogo: si se pidio, cuantos assets DISTINTOS hubo que mirar entre
+        // todos los outfits y cuantos quedaron sin ficha. `catalogAssets` muy
+        // por debajo de la suma de assets del lote es la deduplicacion
+        // haciendo su trabajo.
+        catalog,
+        catalogAssets: medidas.catalogAssets,
+        catalogUnresolved: medidas.catalogUnresolved,
         timings: {
             // Lo que tardo la cadena de licencia, medido desde que entro la
             // peticion hasta que empezo este handler.
@@ -97,6 +110,8 @@ router.post('/batch', async (req, res) => {
             // Suma del tiempo dentro de Roblox. Con concurrencia, la suma puede
             // superar `totalMs`: dice cuanto TRABAJO hubo, no cuanto reloj paso.
             robloxMs: medidor.robloxMs,
+            // Resolver los precios de todo el lote, de golpe.
+            catalogMs: medidas.catalogMs,
             totalMs,
         },
     };

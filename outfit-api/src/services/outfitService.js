@@ -117,13 +117,30 @@ const SIN_FICHA_DE_CATALOGO = Object.freeze({
     creatorName: null,
 });
 
-async function attachCatalogStatus(outfit, ctx) {
-    const assetIds = [...new Set(outfit.assets.map(a => a.id).filter(id => id != null))];
-    if (assetIds.length === 0) return { ...outfit, catalogResolved: true };
+// Ids de asset de un outfit, sin repetidos y sin nulos.
+function assetsDe(outfit) {
+    return [...new Set(outfit.assets.map(a => a.id).filter(id => id != null))];
+}
 
+// RESOLUCION DE CATALOGO DE UN CONJUNTO DE ASSETS, venga de un outfit o de
+// veinticuatro. Devuelve un mapa assetId -> ficha con TODO lo que se pudo
+// resolver; lo que falta en el mapa es lo que no se pudo comprobar.
+//
+// POR QUE ESTA APARTE Y RECIBE UNA LISTA PLANA. Resolver por outfit obliga a
+// pagar una tanda de llamadas POR OUTFIT, y los assets se repiten muchisimo
+// entre los outfits de una misma persona (la misma camiseta en seis conjuntos).
+// Con la lista unida, veinticuatro outfits de unos veinte assets se quedan en
+// una sola deduplicacion y en los pocos lotes que hagan falta, en vez de en
+// veinticuatro tandas.
+//
+// Lo que NO cambia: el troceado sigue siendo el mismo, la cache por asset la
+// misma y el single-flight el mismo. Esto no pide mas ni mas deprisa; pide
+// MENOS VECES lo mismo.
+async function resolverCatalogo(assetIds, ctx, contextoLog = {}) {
     const encontrados = new Map();
-    const faltantes = [];
+    if (assetIds.length === 0) return encontrados;
 
+    const faltantes = [];
     for (const assetId of assetIds) {
         const cacheado = await cacheStore.get(catalogCacheKey(assetId));
         if (cacheado !== undefined) encontrados.set(assetId, cacheado);
@@ -132,7 +149,6 @@ async function attachCatalogStatus(outfit, ctx) {
 
     ctx?.push(faltantes.length === 0 ? 'catalog-hit' : 'catalog-miss');
 
-    let resuelto = true;
     for (let i = 0; i < faltantes.length; i += config.maxCatalogBatchSize) {
         const lote = faltantes.slice(i, i + config.maxCatalogBatchSize);
         try {
@@ -147,24 +163,42 @@ async function attachCatalogStatus(outfit, ctx) {
             // El outfit es el dato principal; el estado de catalogo es un
             // extra. Si Roblox limita o falla, se entrega el outfit igual con
             // `catalogResolved: false` en lugar de tumbar la respuesta entera.
-            resuelto = false;
             logger.warn('No se pudo resolver el estado de catalogo de un lote', {
-                outfitId: outfit.id, assets: lote.length, detail: err?.message,
+                ...contextoLog, assets: lote.length, detail: err?.message,
             });
         }
     }
 
+    return encontrados;
+}
+
+// Pega las fichas ya resueltas a un outfit. Pura: no consulta nada.
+//
+// `catalogResolved` se deduce de los datos en vez de arrastrarse como bandera:
+// es `true` cuando TODOS los assets del outfit tienen ficha. Un asset que
+// Roblox no reconoce si la tiene (SIN_FICHA_DE_CATALOGO), asi que solo queda
+// fuera lo que no se pudo comprobar por un fallo NUESTRO o de Roblox. Es lo que
+// permite al juego distinguir "no disponible" de "no lo pudimos comprobar", y
+// con el lote es ademas exacto por outfit: que fallara el trozo de otro no
+// marca a este.
+function aplicarCatalogo(outfit, encontrados) {
+    const assetIds = assetsDe(outfit);
     return {
         ...outfit,
         assets: outfit.assets.map(asset => {
             const registro = encontrados.get(asset.id);
             return registro ? { ...asset, catalog: registro } : asset;
         }),
-        // false = alguna consulta de catalogo fallo y hay assets sin ficha por
-        // motivos NUESTROS (no porque Roblox diga que no existen). Permite al
-        // juego distinguir "no disponible" de "no lo pudimos comprobar".
-        catalogResolved: resuelto,
+        catalogResolved: assetIds.every(id => encontrados.has(id)),
     };
+}
+
+async function attachCatalogStatus(outfit, ctx) {
+    const assetIds = assetsDe(outfit);
+    if (assetIds.length === 0) return { ...outfit, catalogResolved: true };
+
+    const encontrados = await resolverCatalogo(assetIds, ctx, { outfitId: outfit.id });
+    return aplicarCatalogo(outfit, encontrados);
 }
 
 // ── Bundles (opcional, y con reservas) ──────────────────────────────────────
@@ -280,7 +314,7 @@ function errorDeOutfit(err) {
     return { code: 'internal_error', message: 'Error interno resolviendo este outfit' };
 }
 
-async function getOutfitsBatch(outfitIds, ctx) {
+async function getOutfitsBatch(outfitIds, { catalog = false } = {}, ctx) {
     const medidas = {
         requested: outfitIds.length,
         unique: 0,
@@ -289,6 +323,11 @@ async function getOutfitsBatch(outfitIds, ctx) {
         singleFlightJoins: 0,
         cacheMs: 0,
         fetchMs: 0,
+        // Catalogo: assets distintos que hubo que mirar y cuantos quedaron sin
+        // ficha. Con `catalog` apagado se quedan a cero y no se toca nada.
+        catalogAssets: 0,
+        catalogUnresolved: 0,
+        catalogMs: 0,
     };
 
     // ── 1. Deduplicar, conservando el orden de primera aparicion ────────────
@@ -318,6 +357,8 @@ async function getOutfitsBatch(outfitIds, ctx) {
     medidas.cacheMs = Date.now() - empezoCache;
 
     // ── 3. Lo que falta, con concurrencia acotada ───────────────────────────
+    // (el catalogo va DESPUES, en el paso 4, para poder unir los assets de
+    //  todos los outfits en una sola resolucion)
     const empezoFetch = Date.now();
     await mapConLimite(faltantes, config.outfitsBatch.concurrency, async outfitId => {
         // Si YA hay un vuelo para este outfit —otra peticion lo esta pidiendo
@@ -341,7 +382,35 @@ async function getOutfitsBatch(outfitIds, ctx) {
     });
     medidas.fetchMs = Date.now() - empezoFetch;
 
-    // ── 4. Ensamblado, en el orden pedido ───────────────────────────────────
+    // ── 4. Catalogo (precios), UNA VEZ PARA TODO EL LOTE ────────────────────
+    //
+    // Aqui esta el ahorro que justifica pedir precios por lote. Resolviendo por
+    // outfit, veinticuatro outfits son veinticuatro tandas de llamadas al
+    // catalogo. Uniendo sus assets y deduplicando, son los pocos trozos que
+    // salgan — y los assets repetidos entre conjuntos, que son muchos, se piden
+    // UNA vez. No sube ninguna cuota ni ninguna concurrencia: reduce el numero
+    // de veces que se pide lo mismo.
+    if (catalog) {
+        const empezoCatalogo = Date.now();
+
+        const conOutfit = [...resueltos.values()].filter(r => r.ok);
+        const todosLosAssets = [...new Set(conOutfit.flatMap(r => assetsDe(r.outfit)))];
+        medidas.catalogAssets = todosLosAssets.length;
+
+        const fichas = await resolverCatalogo(todosLosAssets, ctx, { lote: unicos.length });
+        medidas.catalogUnresolved = todosLosAssets.filter(id => !fichas.has(id)).length;
+
+        // El pegado es puro y por outfit: un asset que no se pudo comprobar
+        // deja a SU outfit con catalogResolved:false y no mancha a los demas.
+        for (const [outfitId, veredicto] of resueltos) {
+            if (veredicto.ok) {
+                resueltos.set(outfitId, { ok: true, outfit: aplicarCatalogo(veredicto.outfit, fichas) });
+            }
+        }
+        medidas.catalogMs = Date.now() - empezoCatalogo;
+    }
+
+    // ── 5. Ensamblado, en el orden pedido ───────────────────────────────────
     // Una entrada por id UNICO, en orden de primera aparicion, y con el
     // outfitId siempre explicito: el juego empareja por id y no por posicion.
     const results = unicos.map(outfitId => ({ outfitId, ...resueltos.get(outfitId) }));
@@ -359,10 +428,59 @@ async function getOutfitsBatch(outfitIds, ctx) {
 // servidor, y este es el flujo dominante (el jugador escribe un nombre y
 // quiere ver sus outfits). Partirlo en dos peticiones duplicaria el gasto
 // del juego sin ahorrarnos a nosotros ni una llamada a Roblox.
-async function listOutfitsByUsername(username, pagination, ctx) {
+async function listOutfitsByUsername(username, pagination, { details = false, catalog = false } = {}, ctx) {
     const user = await resolveUsername(username, ctx);
     const listing = await listOutfits(user.userId, pagination, ctx);
-    return { ...listing, username: user.username, displayName: user.displayName };
+    const base = { ...listing, username: user.username, displayName: user.displayName };
+
+    // SIN `details`, la respuesta es EXACTAMENTE la de siempre. No un campo de
+    // mas, no un campo de menos: lo que ya esta desplegado en el juego no puede
+    // cambiar de forma porque exista una bandera nueva.
+    if (!details) return base;
+
+    const ids = listing.outfits.map(o => o.id);
+    if (ids.length === 0) {
+        return { ...base, stats: { requested: 0, unique: 0, succeeded: 0, failed: 0 } };
+    }
+
+    // El MISMO servicio que atiende POST /v1/outfits/batch, llamado en memoria.
+    // Ni una peticion HTTP contra nosotros mismos: eso pagaria otra vez el
+    // limitador por IP, la licencia y la propiedad del juego para resolver algo
+    // que ya esta autorizado, y ademas ataria dos rutas por la red en lugar de
+    // por una funcion.
+    //
+    // Hereda entero lo del lote: deduplicacion, cache, single-flight,
+    // concurrencia acotada, catalogo resuelto UNA vez para todos los outfits y
+    // un veredicto por id. No se sube ninguna cuota ni ninguna concurrencia.
+    const { results, medidas } = await getOutfitsBatch(ids, { catalog }, ctx);
+
+    // ORDEN DE LA LISTA, emparejando por id y no por posicion. El lote ya
+    // devuelve en orden de primera aparicion y hoy coincide, pero depender de
+    // esa coincidencia seria depender de un detalle interno de otra funcion:
+    // el dia que el lote reordene, la cuadricula se desordenaria en silencio.
+    const porId = new Map(results.map(r => [r.outfitId, r]));
+
+    return {
+        ...base,
+        // Cada entrada trae su propio veredicto, con el MISMO vocabulario que
+        // POST /v1/outfits/batch: { outfitId, ok: true, outfit } o
+        // { outfitId, ok: false, error }. Un outfit borrado no puede dejar sin
+        // cuadricula a los otros veintitres, y el juego no tiene que aprender
+        // dos formas distintas de leer lo mismo.
+        outfits: ids.map(id => porId.get(id)),
+        stats: {
+            requested: medidas.requested,
+            unique: medidas.unique,
+            succeeded: medidas.succeeded,
+            failed: medidas.failed,
+            cacheHits: medidas.cacheHits,
+            cacheMisses: medidas.cacheMisses,
+            singleFlightJoins: medidas.singleFlightJoins,
+            catalog,
+            catalogAssets: medidas.catalogAssets,
+            catalogUnresolved: medidas.catalogUnresolved,
+        },
+    };
 }
 
 module.exports = {

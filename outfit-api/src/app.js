@@ -15,6 +15,7 @@ const { requireAdminKey } = require('./security/adminKey');
 const { requirePluginKey } = require('./security/pluginKey');
 const { requireLicenseTokenHeader, requireLicensedGame } = require('./security/licenseGuard');
 const { rateLimit } = require('./security/rateLimit');
+const { requestBudget } = require('./api/requestBudget');
 const { requestLogger } = require('./observability/requestLogger');
 const { latencyMiddleware } = require('./observability/metrics');
 const { errorHandler, notFoundHandler } = require('./api/errorHandler');
@@ -76,8 +77,8 @@ function createApp() {
     // `notFoundHandler` cierra cada prefijo. Sin el, un `/v1/license/loquesea`
     // no encontraria ruta aqui, caeria al montaje general de /v1 y acabaria
     // respondiendo 401 por falta de api key en vez del 404 que corresponde.
-    app.use('/v1/license', rateLimit, requireLicenseTokenHeader, latencyMiddleware, licenseRoute, notFoundHandler);
-    app.use('/v1/catalog', rateLimit, requireLicenseTokenHeader, latencyMiddleware, catalogRoute, notFoundHandler);
+    app.use('/v1/license', rateLimit, requestBudget, requireLicenseTokenHeader, latencyMiddleware, licenseRoute, notFoundHandler);
+    app.use('/v1/catalog', rateLimit, requestBudget, requireLicenseTokenHeader, latencyMiddleware, catalogRoute, notFoundHandler);
 
     // Rutas de DATOS que consume el juego. Tambien con el token de licencia y
     // nada mas: el comprador configura UN solo Secret en su experiencia
@@ -95,9 +96,9 @@ function createApp() {
     // experiencia de Roblox, y la licencia dejaria de estar atada al juego que
     // se pago. Verificar al arrancar el servidor no sirve de nada si cada
     // lectura posterior se conforma con menos.
-    app.use('/v1/users', rateLimit, requireLicenseTokenHeader, requireLicensedGame,
+    app.use('/v1/users', rateLimit, requestBudget, requireLicenseTokenHeader, requireLicensedGame,
         latencyMiddleware, usersRoute, notFoundHandler);
-    app.use('/v1/outfits', rateLimit, requireLicenseTokenHeader, requireLicensedGame,
+    app.use('/v1/outfits', rateLimit, requestBudget, requireLicenseTokenHeader, requireLicensedGame,
         latencyMiddleware, outfitsRoute, notFoundHandler);
 
     // ── Lo unico que queda con la clave compartida ───────────────────────────

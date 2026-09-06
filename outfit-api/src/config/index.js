@@ -165,6 +165,32 @@ const upstream = {
     // inmediato a un socket abierto durante medio minuto.
     maxQueue: intFromEnv('UPSTREAM_MAX_QUEUE', 200),
 
+    // PRESUPUESTO DE TIEMPO DE UNA PETICION DEL JUEGO, upstream incluido.
+    //
+    // EL PROBLEMA QUE RESUELVE, MEDIDO. `timeoutMs` acota UNA llamada, no la
+    // peticion. Con Roblox colgado, un listado de outfits gastaba 18,6 s: tres
+    // intentos de 6 s contra un servidor que no contestaba, mas el backoff, para
+    // acabar devolviendo exactamente el mismo error que el primer intento ya
+    // habia dado a los 6 s. Y el listado encadena DOS llamadas (usuario ->
+    // outfits), asi que esos 18,6 s son el coste de UNA: lo que tarde la segunda
+    // se suma encima.
+    //
+    // Reintentar un timeout es el reintento que menos vale: agotar el timeout ya
+    // ES la señal de que ese servidor no esta contestando. Reintentar un 5xx
+    // rapido, en cambio, sale bien a menudo.
+    //
+    // Este presupuesto distingue los dos casos sin tocar `maxRetries`: antes de
+    // reintentar se comprueba si el siguiente intento cabe en lo que queda, y el
+    // coste se estima con lo que tardo el intento ANTERIOR. Un 5xx de 120 ms
+    // predice otro intento barato y se reintenta; un timeout de 6 s predice otros
+    // 6 s y se abandona. El jugador recibe el error a los ~6 s en vez de a los 37.
+    //
+    // Solo lo abren las peticiones HTTP del juego, que son las que tienen a
+    // alguien esperando delante (ver api/requestBudget.js). El trabajo de fondo
+    // —indexado, busquedas del plugin— no abre presupuesto y conserva su
+    // comportamiento: ahi nadie mira la pantalla y terminar importa mas que
+    // terminar pronto.
+    requestBudgetMs: intFromEnv('UPSTREAM_REQUEST_BUDGET_MS', 8_000),
     maxRetries: intFromEnv('UPSTREAM_MAX_RETRIES', 2),
     retryBaseDelayMs: intFromEnv('UPSTREAM_RETRY_BASE_MS', 300),
     retryMaxDelayMs: intFromEnv('UPSTREAM_RETRY_MAX_MS', 3_000),

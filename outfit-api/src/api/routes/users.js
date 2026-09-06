@@ -4,7 +4,8 @@ const express = require('express');
 const router = express.Router();
 const userService = require('../../services/userService');
 const outfitService = require('../../services/outfitService');
-const { parseUsername, parseUserId, parsePagination } = require('../../validation/params');
+const config = require('../../config');
+const { parseUsername, parseUserId, parsePagination, parseListingFlags } = require('../../validation/params');
 
 // Adaptadores HTTP finos: validar, llamar al servicio, responder. Ni logica
 // de negocio ni try/catch — Express 5 propaga el rechazo de un handler async
@@ -21,14 +22,25 @@ router.get('/by-username/:username', async (req, res) => {
     res.json(await userService.resolveUsername(username, res.locals.cache));
 });
 
-// GET /v1/users/by-username/:username/outfits?limit=&pageToken=&outfitType=
+// GET /v1/users/by-username/:username/outfits
+//     ?limit=&pageToken=&outfitType=&details=&catalog=
+//
 // Compuesto: resuelve y lista en una sola llamada, para que el juego gaste
 // una peticion de HttpService en vez de dos. Ver outfitService.
+//
+// CON details=1 GASTA UNA SOLA PETICION PARA TODA LA CUADRICULA. El juego pedia
+// la lista aqui y despues los detalles por otra ruta; ahora los detalles se
+// resuelven por dentro con el mismo servicio que atiende POST
+// /v1/outfits/batch, sin ninguna llamada HTTP contra nosotros mismos.
+//
+// SIN LAS BANDERAS LA RESPUESTA NO CAMBIA. Es lo que permite desplegar esto sin
+// tocar el juego que ya esta publicado.
 router.get('/by-username/:username/outfits', async (req, res) => {
     res.locals.routeLabel = '/v1/users/by-username/:username/outfits';
     const username = parseUsername(req.params.username);
     const pagination = parsePagination(req.query);
-    res.json(await outfitService.listOutfitsByUsername(username, pagination, res.locals.cache));
+    const flags = parseListingFlags(req.query, { maxDetails: config.outfitsBatch.maxIds }, pagination.limit);
+    res.json(await outfitService.listOutfitsByUsername(username, pagination, flags, res.locals.cache));
 });
 
 // GET /v1/users/:userId/outfits?limit=&pageToken=&outfitType=

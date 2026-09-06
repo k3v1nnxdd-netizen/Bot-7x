@@ -34,7 +34,7 @@ const {
     circuitFailureThreshold, circuitBaseCooldownMs, circuitMaxCooldownMs,
     pacerBaseMs, pacerMaxMs, pacerMinMs, pacerDecay,
     pacerHeaderFraction, routeConcurrency, routeMinSpacingMs = {},
-    rateLimitFallbackBaseMs, rateLimitFallbackMaxMs,
+    rateLimitFallbackBaseMs, rateLimitFallbackMaxMs, timeoutMs,
 } = config.upstream;
 
 function sleep(ms) {
@@ -634,11 +634,16 @@ async function waitForCooldown(bucket, endpoint) {
     const waitMs = bucket.cooldownUntil - Date.now();
     if (waitMs <= 0) return;
 
+    // Una espera que no cabe en el presupuesto no se hace: seria gastar el
+    // tiempo que le queda al jugador para acabar devolviendole el mismo
+    // Retry-After que ya se le puede dar ahora mismo.
+    const cabe = cabeOtroIntento(waitMs, 0);
+
     // Si la espera cabe dentro de la peticion, se absorbe aqui y el llamador
     // ni se entera. Si no cabe, se le devuelve el control con un Retry-After
     // honesto: sostener el socket mas tiempo no acelera a Roblox y multiplica
     // las conexiones abiertas justo cuando menos conviene.
-    if (waitMs > inlineWaitCeilingMs) {
+    if (waitMs > inlineWaitCeilingMs || !cabe) {
         bucket.metrics.shed++;
 
         // UNA linea por ventana de cooldown, no una por peticion rechazada.
@@ -663,6 +668,23 @@ async function waitForCooldown(bucket, endpoint) {
 }
 
 // ── Ejecucion ────────────────────────────────────────────────────────────────
+
+// ¿Cabe otro intento antes de que se agote el presupuesto de la peticion?
+//
+// `esperaMs` es la pausa que se haria ANTES de reintentar (backoff o cooldown)
+// y `costeEstimadoMs` lo que se espera que tarde el intento en si. La
+// estimacion la da el intento ANTERIOR, que es el mejor predictor disponible:
+// un 5xx de 120 ms anuncia otro intento barato, y un timeout de 6 s anuncia
+// otros 6 s. Se acota a `timeoutMs` porque ningun intento puede pasar de ahi.
+//
+// SIN PRESUPUESTO ABIERTO SIEMPRE CABE. No es un caso degradado: es el
+// comportamiento del trabajo de fondo, donde nadie espera y abandonar pronto
+// no le ahorra nada a nadie.
+function cabeOtroIntento(esperaMs, costeEstimadoMs) {
+    const limite = requestContext.fechaLimite();
+    if (limite == null) return true;
+    return Date.now() + esperaMs + Math.min(timeoutMs, costeEstimadoMs) <= limite;
+}
 
 function backoffMs(attempt) {
     const exponential = Math.min(retryMaxDelayMs, retryBaseDelayMs * 2 ** attempt);
@@ -766,6 +788,12 @@ async function run(routeKey, fn, { notFoundCode = 'not_found', notFoundWhen = nu
         for (let attempt = 0; ; attempt++) {
             await waitForCooldown(bucket, endpoint);
 
+            // Lo que tarda ESTE intento es la estimacion de lo que tardaria el
+            // siguiente. Se mide alrededor de callOnce —espera de nuestras
+            // puertas incluida— porque eso es exactamente lo que volveria a
+            // pagarse al reintentar.
+            const arranque = Date.now();
+
             try {
                 const response = await callOnce(bucket, fn);
                 observeRateLimitHeaders(bucket, response, endpoint);
@@ -773,6 +801,8 @@ async function run(routeKey, fn, { notFoundCode = 'not_found', notFoundWhen = nu
                 onSuccess(bucket);
                 return response;
             } catch (err) {
+                const duracionDelIntento = Date.now() - arranque;
+
                 // Un rechazo del propio gate (cola llena) no es un fallo de
                 // Roblox: no cuenta para el breaker ni se reintenta.
                 if (err instanceof UpstreamRateLimitedError && !err.fromRoblox) {
@@ -844,10 +874,12 @@ async function run(routeKey, fn, { notFoundCode = 'not_found', notFoundWhen = nu
                         // Si va a reintentarse en linea o si se devuelve el
                         // control al llamador: sin esto, dos lineas de 429
                         // seguidas no se distinguen de dos peticiones distintas.
-                        willRetry: attempt < maxRetries && waitMs <= inlineWaitCeilingMs,
+                        willRetry: attempt < maxRetries && waitMs <= inlineWaitCeilingMs
+                            && cabeOtroIntento(waitMs, duracionDelIntento),
                     });
 
-                    if (attempt < maxRetries && waitMs <= inlineWaitCeilingMs) {
+                    if (attempt < maxRetries && waitMs <= inlineWaitCeilingMs
+                        && cabeOtroIntento(waitMs, duracionDelIntento)) {
                         bucket.metrics.retries++;
                         continue; // waitForCooldown de la siguiente vuelta absorbe la espera
                     }
@@ -863,9 +895,10 @@ async function run(routeKey, fn, { notFoundCode = 'not_found', notFoundWhen = nu
                 // ── 5xx: problema de Roblox, reintentable ──
                 if (status >= 500 && status < 600) {
                     bucket.metrics.serverErrors++;
-                    if (attempt < maxRetries) {
+                    const espera = backoffMs(attempt);
+                    if (attempt < maxRetries && cabeOtroIntento(espera, duracionDelIntento)) {
                         bucket.metrics.retries++;
-                        await sleep(backoffMs(attempt));
+                        await sleep(espera);
                         continue;
                     }
                     onHardFailure(bucket, `http_${status}`, endpoint);
@@ -875,9 +908,10 @@ async function run(routeKey, fn, { notFoundCode = 'not_found', notFoundWhen = nu
                 // ── Sin respuesta: timeout, DNS, socket caido ──
                 if (!err?.response) {
                     bucket.metrics.networkErrors++;
-                    if (attempt < maxRetries) {
+                    const espera = backoffMs(attempt);
+                    if (attempt < maxRetries && cabeOtroIntento(espera, duracionDelIntento)) {
                         bucket.metrics.retries++;
-                        await sleep(backoffMs(attempt));
+                        await sleep(espera);
                         continue;
                     }
                     onHardFailure(bucket, err?.code || 'network_error', endpoint);

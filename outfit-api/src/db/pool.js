@@ -194,13 +194,8 @@ async function query(text, params = [], op = null) {
             op: op ?? 'sin-etiquetar',
             sqlState: err?.code ?? null,
             code: err?.code ?? null,
-            // Correlacion con la busqueda que la provoco, cuando la hay: sin
-            // esto, un fallo de base durante una busqueda no se puede cruzar
-            // con el `searchId` que el plugin tiene delante ni con el grupo
-            // cuya rotacion podria haberse quedado sin guardar.
+            // Correlacion con la peticion que la provoco, cuando la hay.
             requestId: requestContext.requestId(),
-            searchId: requestContext.searchId(),
-            groupId: requestContext.groupId(),
             detail: err?.message,
         });
         throw err;

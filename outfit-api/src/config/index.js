@@ -44,21 +44,6 @@ const apiKey = process.env.OUTFIT_API_KEY || null;
 // Viaja en su propio header (`x-admin-key`), tambien solo por cabecera.
 const adminApiKey = process.env.ADMIN_API_KEY || null;
 
-// TERCER secreto, y de nuevo SEPARADO de los dos anteriores. Lo manda el
-// plugin de Roblox Studio en su propia cabecera (`x-plugin-key`) y solo abre
-// las rutas /plugin.
-//
-// Por que otra clave y no reutilizar alguna: el plugin es un binario privado
-// que se instala en Studio, un sitio distinto del .rbxl que se vende y del
-// panel de administracion. Si compartiera secreto con el juego, filtrarse el
-// .rbxl abriria tambien la busqueda; si lo compartiera con /admin, un plugin
-// perdido daria control sobre las licencias. Tres publicos, tres claves, y
-// ninguna abre la puerta de otra.
-//
-// Sin ella definida, /plugin responde 503 (igual que /admin sin su clave): la
-// ruta queda APAGADA, no abierta.
-const pluginApiKey = process.env.PLUGIN_API_KEY || null;
-
 const logLevel = (process.env.LOG_LEVEL || 'info').toLowerCase();
 
 // Un unico driver soportado hoy. La variable existe para que activar Redis
@@ -146,19 +131,6 @@ const upstream = {
     // goteo y no en avalancha.
     maxConcurrent: intFromEnv('UPSTREAM_MAX_CONCURRENT', 3),
 
-    // SLOTS RESERVADOS PARA EL TRAFICO DE PRODUCCION (juego + licencias).
-    //
-    // El gate global es uno solo y lo comparten el juego, el plugin y el
-    // worker del indice. Sin reserva, el trabajo de fondo puede tener las tres
-    // peticiones en vuelo de forma permanente y una verificacion de licencia se
-    // queda esperando detras — que es justo lo que no puede pasar: el juego es
-    // lo que paga y ademas tiene un jugador delante.
-    //
-    // Con 1 reservado de 3, el fondo nunca pasa de 2 en vuelo y siempre queda
-    // un hueco libre para el juego. Subirlo protege mas al juego y frena mas el
-    // indexado; bajarlo a 0 vuelve al comportamiento anterior.
-    foregroundReserved: intFromEnv('UPSTREAM_FOREGROUND_RESERVED', 1),
-
     // Cola de espera del gate de concurrencia. Al llenarse se rechaza al
     // instante (503 + Retry-After) en vez de acumular miles de peticiones
     // colgadas: con miles de jugadores es preferible un "vuelve en 2s"
@@ -185,11 +157,10 @@ const upstream = {
     // predice otro intento barato y se reintenta; un timeout de 6 s predice otros
     // 6 s y se abandona. El jugador recibe el error a los ~6 s en vez de a los 37.
     //
-    // Solo lo abren las peticiones HTTP del juego, que son las que tienen a
-    // alguien esperando delante (ver api/requestBudget.js). El trabajo de fondo
-    // —indexado, busquedas del plugin— no abre presupuesto y conserva su
-    // comportamiento: ahi nadie mira la pantalla y terminar importa mas que
-    // terminar pronto.
+    // Lo abren las peticiones HTTP del juego (ver api/requestBudget.js), que
+    // son las que tienen a alguien esperando delante. Un camino que no abra
+    // presupuesto conserva el comportamiento de siempre: reintenta hasta
+    // agotar `maxRetries` sin mirar el reloj.
     requestBudgetMs: intFromEnv('UPSTREAM_REQUEST_BUDGET_MS', 8_000),
     maxRetries: intFromEnv('UPSTREAM_MAX_RETRIES', 2),
     retryBaseDelayMs: intFromEnv('UPSTREAM_RETRY_BASE_MS', 300),
@@ -214,11 +185,9 @@ const upstream = {
     // respuesta perfectamente correcta — y se relaja sola conforme las llamadas
     // vuelven a salir bien.
     //
-    // Existe por la busqueda del plugin, que es lo unico de este servicio que
-    // hace rafagas sostenidas: doce olas seguidas agotan la ventana de cuota del
-    // catalogo tan deprisa como la red lo permita. Es la diferencia entre
-    // gastarse la cuota en cinco segundos y repartirla a lo largo de la
-    // busqueda.
+    // Existe para las rafagas: un lote de veinticuatro outfits con precios
+    // puede agotar la ventana de cuota del catalogo tan deprisa como la red lo
+    // permita. Es la diferencia entre gastarsela de golpe y repartirla.
     pacerBaseMs: intFromEnv('UPSTREAM_PACER_BASE_MS', 120),
 
     // Techo de la separacion. Por encima, esperar mas no compra nada: el
@@ -360,544 +329,16 @@ const outfitsBatch = {
     // Cuantos outfits sin cachear se resuelven a la vez. Por encima del gate
     // global de salida no se gana nada — el limitador ya serializa — pero
     // mantener varios en vuelo evita que el gate se quede ocioso entre llamada
-    // y llamada. Es trafico de PRIMER PLANO: compite con prioridad frente al
-    // plugin y al worker (ver UPSTREAM_FOREGROUND_RESERVED).
+    // y llamada.
     concurrency: intFromEnv('OUTFITS_BATCH_CONCURRENCY', 4),
 };
 
-// ── Limites de POST /v1/catalog/batch ───────────────────────────────────────
-// Un outfit real ronda los 20 assets; estos topes dejan 3x de margen y a la
-// vez garantizan que UNA peticion nuestra nunca se parta en dos lotes de
-// Roblox: 80 items caben de sobra en los 120 que admite items/details
-// (comprobado en vivo: 121 -> 400 "Invalid count").
-// ── Busqueda de outfits para el plugin de Studio ─────────────────────────────
-//
-// `amount` SON OUTFITS VALIDOS, NO INTENTOS. Un candidato que no encaja no
-// gasta plaza: se sustituye por el siguiente de la comunidad. La busqueda tiene
-// que poder seguir recorriendo miembros y paginas hasta juntar lo pedido.
-//
-// DE AHI QUE HAYA DOS PRESUPUESTOS DE CANDIDATOS, Y NO UNO:
-//
-//   DESEADO (adaptativo)  cuantos candidatos ESPERAMOS necesitar ahora mismo.
-//                         Se recalcula en cada vuelta con la tasa de aceptacion
-//                         real de esta busqueda y con la EWMA historica del
-//                         grupo. Sirve para dimensionar, estimar y
-//                         diagnosticar; NO para terminar. Un grupo caro
-//                         simplemente sube el numero y se sigue buscando.
-//
-//   TECHO DURO (hard)     proteccion extrema contra bucles. Esta pensado para
-//                         NO alcanzarse en una busqueda sana: lo normal es
-//                         terminar por `amount` alcanzado, por vuelta completa
-//                         a la comunidad, por limite real de Roblox o por
-//                         presupuesto de tiempo.
-//
-// Un solo numero hacia las dos cosas, y por eso una busqueda de 10 outfits en
-// un grupo con un 3% de aceptacion moria en 60 candidatos con 2 resultados: el
-// SUELO del presupuesto (60) era tambien su TECHO.
-const pluginSearch = {
-    // ── Accesorios minimos de un candidato ───────────────────────────────────
-    //
-    // Un outfit candidato lleva MAS DE TRES accesorios reales (sombreros,
-    // accesorios clasicos, ropa por capas, cejas/pestañas; ver
-    // catalog/assetTypes.ACCESSORY_TYPES). Partes del cuerpo, cabezas, caras,
-    // ropa clasica, gear, animaciones, emotes y humores NO cuentan.
-    //
-    // Se decide con la respuesta del avatar en la mano, ANTES de tocar el
-    // catalogo: un avatar de dos accesorios no va a ser un outfit, y ponerle
-    // precio gastaria la cuota del catalogo en alguien que ya sabemos que no
-    // sirve. El valor es el minimo ACEPTADO ("mas de 3" = 4). 0 desactiva la
-    // regla; la suite lo usa para los mundos de prueba antiguos de un asset
-    // por usuario, que prueban precio y rotacion, no esta regla.
-    minAccessories: intFromEnv('PLUGIN_SEARCH_MIN_ACCESSORIES', 3),
 
-    // ── Techo ABSOLUTO de paginas de miembros por busqueda ───────────────────
-    //
-    // No es el limite normal: el normal sale del techo de candidatos (una
-    // pagina son 100 candidatos como mucho). Esto cubre el caso patologico en
-    // el que Roblox devuelve paginas indefinidamente y NINGUNA trae miembros
-    // nuevos — ahi los candidatos no crecen, asi que su techo no cortaria nunca.
-    maxMemberPages: intFromEnv('PLUGIN_SEARCH_MAX_MEMBER_PAGES', 400),
 
-    // Paginas de margen sobre las que exige el techo de candidatos. Cubre las
-    // que se gastan sin producir candidatos utiles: el solape del wrap-around y
-    // los miembros ya vistos en esta misma busqueda.
-    memberPageSlack: intFromEnv('PLUGIN_SEARCH_MEMBER_PAGE_SLACK', 10),
 
-    // ── Presupuesto DESEADO (adaptativo) ─────────────────────────────────────
 
-    // Coste asumido por resultado MIENTRAS NO HAY EVIDENCIA: ni tasa de
-    // aceptacion propia ni historial del grupo. En cuanto aparece cualquiera de
-    // las dos, este numero deja de usarse.
-    candidatesPerResult: intFromEnv('PLUGIN_SEARCH_CANDIDATES_PER_RESULT', 4),
 
-    // Suelo del deseado. Con `amount` bajo y un rango estrecho, cuatro
-    // candidatos por resultado no encontrarian nada; esto garantiza una muestra
-    // con sentido aunque se pida un solo outfit.
-    minCandidates: intFromEnv('PLUGIN_SEARCH_MIN_CANDIDATES', 60),
 
-    // Margen sobre el coste estimado. La estimacion es una media: sin margen,
-    // la mitad de las busquedas se quedarian cortas por definicion.
-    candidateBudgetMargin: Number(process.env.PLUGIN_SEARCH_CANDIDATE_MARGIN ?? 1.5),
-
-    // Techo de la ESTIMACION de coste por resultado. Una racha mala al principio
-    // (los diez primeros candidatos fallan) no puede proyectar un presupuesto
-    // absurdo para todo el resto.
-    maxCandidatesPerResult: intFromEnv('PLUGIN_SEARCH_MAX_CANDIDATES_PER_RESULT', 120),
-
-    // Candidatos examinados a partir de los cuales la evidencia VIVA de esta
-    // busqueda pesa el 100% y el historial del grupo deja de contar. Por debajo
-    // se mezclan proporcionalmente: con 10 candidatos la tasa propia es ruido y
-    // el historial estima mejor; con 100 ya no.
-    candidateFullWeightSample: intFromEnv('PLUGIN_SEARCH_CANDIDATE_FULL_WEIGHT_SAMPLE', 100),
-
-    // ── TECHO DURO de candidatos ─────────────────────────────────────────────
-    //
-    // El techo es `clamp(amount * hardCandidatesPerResult, min, max)`, asi que
-    // la tolerancia por resultado NO es constante: la constante de abajo solo
-    // manda en el TRAMO PROPORCIONAL, y en los extremos la cambian el suelo y
-    // el techo absoluto.
-    //
-    //   amount    techo    candidatos/resultado
-    //      1      1 500          1 500      <- suelo
-    //     10      1 500            150      <- suelo, justo al ras
-    //    100     15 000            150      <- proporcional
-    //    500     25 000             50      <- techo absoluto
-    //
-    // Por eso la busqueda publica `effectiveHardCandidatesPerResult` en stats:
-    // comparar la tasa de aceptacion observada contra "150" seria comparar
-    // contra un numero que en media busqueda no es el que se esta aplicando.
-    //
-    // Y alcanzar el techo NO demuestra que en la comunidad no haya outfits en
-    // el rango pedido: demuestra unicamente que no conseguimos encontrar los
-    // suficientes dentro de nuestros limites seguros. La rotacion continua
-    // donde quedo, asi que reintentar mira gente nueva y puede dar mas.
-    hardCandidatesPerResult: intFromEnv('PLUGIN_SEARCH_HARD_CANDIDATES_PER_RESULT', 150),
-
-    // Suelo del techo duro. Pedir 1 outfit tiene que poder recorrer una
-    // comunidad de tamaño normal entera antes de darse por vencido.
-    minHardCandidates: intFromEnv('PLUGIN_SEARCH_MIN_HARD_CANDIDATES', 1_500),
-
-    // Techo ABSOLUTO, pase lo que pase y se pida lo que se pida. Es lo que
-    // baja la tolerancia a 50 por resultado en un pedido de 500, y es
-    // deliberado: 25.000 candidatos ya son 25.000 llamadas de avatar — la unica
-    // etapa que no admite lote — y subirlo para conservar la proporcion
-    // cargaria la cuota de Roblox del servicio entero persiguiendo un caso que
-    // el presupuesto de tiempo cortaria igualmente antes.
-    maxCandidates: intFromEnv('PLUGIN_SEARCH_MAX_CANDIDATES', 25_000),
-
-    // Override explicito del techo duro. null = se calcula por `amount`. Existe
-    // para poder bajarlo en caliente sin redeploy si algo se desmadra.
-    hardCandidateLimit: process.env.PLUGIN_SEARCH_HARD_CANDIDATE_LIMIT === undefined
-        ? null
-        : intFromEnv('PLUGIN_SEARCH_HARD_CANDIDATE_LIMIT', 1_500),
-
-    // ── Presupuesto de TIEMPO ────────────────────────────────────────────────
-    //
-    // Es el tope que de verdad le importa a quien espera delante de Studio y el
-    // que sostiene el peor caso cuando Roblox va lento. Agotarlo devuelve lo
-    // encontrado, nunca un error.
-    //
-    // ESCALA CON `amount` porque el trabajo escala con `amount`: 25 s eran
-    // razonables para 10 outfits en modo sincrono y absurdamente cortos para
-    // 500. Ahora la busqueda es asincrona — nadie sostiene un socket — asi que
-    // el limite puede ser el que el trabajo necesita en vez del que aguanta una
-    // peticion HTTP.
-    //
-    //   10  ->  30 s     100 -> 100 s     500 -> 180 s (techo)
-    //
-    // El presupuesto NO empieza a correr mientras la busqueda espera turno del
-    // grupo: hacer cola no es buscar, y cobrarselo dejaba a la segunda busqueda
-    // de una comunidad sin tiempo antes de mirar a nadie.
-    timeBudgetMs: process.env.PLUGIN_SEARCH_TIME_BUDGET_MS === undefined
-        ? null // null = se calcula por `amount`; un valor explicito manda sobre todo
-        : intFromEnv('PLUGIN_SEARCH_TIME_BUDGET_MS', 30_000),
-
-    // ES UN PRESUPUESTO DE TRABAJO (maxWorking), no de reloj de pared: las
-    // pausas por limite de Roblox no lo consumen. Pero SI lo consume el ritmo
-    // al que Roblox deja preguntar: con la cuota del avatar repartida al ritmo
-    // sostenible por el marcapasos (del orden de una llamada por segundo), 300
-    // candidatos son cinco minutos de trabajo real. Y ESTO ES UNA PROTECCION
-    // EXTREMA, no el terminador normal: una busqueda de 10 tiene que poder
-    // recorrer cientos de candidatos malos al ritmo que Roblox deje sin que
-    // este reloj se cruce en medio.
-    //
-    //   10 -> 10 min     100 -> 55 min     500 -> 60 min (techo)
-    timeBudgetBaseMs: intFromEnv('PLUGIN_SEARCH_TIME_BUDGET_BASE_MS', 5 * 60_000),
-    timeBudgetPerResultMs: intFromEnv('PLUGIN_SEARCH_TIME_BUDGET_PER_RESULT_MS', 30_000),
-    timeBudgetMinMs: intFromEnv('PLUGIN_SEARCH_TIME_BUDGET_MIN_MS', 10 * 60_000),
-    timeBudgetMaxMs: intFromEnv('PLUGIN_SEARCH_TIME_BUDGET_MAX_MS', 60 * 60_000),
-
-    // Techo del presupuesto en modo SINCRONO. Ahi si hay un socket abierto al
-    // otro lado, y HttpService de Roblox tiene su propio plazo: prometer tres
-    // minutos seria prometer un timeout. El modo asincrono no tiene este techo.
-    timeBudgetSyncCeilingMs: intFromEnv('PLUGIN_SEARCH_TIME_BUDGET_SYNC_CEILING_MS', 25_000),
-
-    // ── Pausas por limite de Roblox (park / resume) ──────────────────────────
-    //
-    // Un cooldown de Roblox es una INSTRUCCION DE ESPERAR, no un "no hay
-    // outfits". La busqueda se ESTACIONA (checkpoint persistido, lease del
-    // grupo renovado, cero peticiones) y se reanuda al llegar resumeAt,
-    // exactamente donde se quedo. Puede atravesar varios cooldowns: eso es lo
-    // normal cuando la cuota del avatar es estrecha, no una anomalia.
-    //
-    // El presupuesto de espera es INDEPENDIENTE del de trabajo: estar
-    // estacionado no consume tiempo de buscar. Lo que acota el total es el
-    // reloj de pared (maxWallClock = trabajo + espera), que es la proteccion
-    // EXTREMA para que un trabajo no viva para siempre — no el final normal.
-    //
-    // PROTECCION EXTREMA, no terminador normal. Los Retry-After reales del
-    // avatar han rondado los 25-30 s, y sin cabecera el limitador espera 5-60 s
-    // escalonados. Quince minutos de espera acumulada son del orden de treinta
-    // cooldowns normales: una busqueda de 10 que necesite eso no esta
-    // "peleando con la cuota", esta en una situacion que merece el partial.
-    //
-    // CON SUELO. Es una proteccion extrema, y una variable de entorno heredada
-    // de una version anterior (45 s, 20 s por pausa) la convertia en el
-    // terminador normal: un Retry-After de 25 s no cabia y la busqueda acababa
-    // "2 de 10 · avatarRateLimit" a los 14 s. Por debajo del suelo se avisa
-    // por consola y se aplica el suelo.
-    rateLimitWaitBudgetMs: Math.max(
-        intFromEnv('PLUGIN_SEARCH_RATE_LIMIT_WAIT_BUDGET_MS', 15 * 60_000),
-        5 * 60_000
-    ),
-
-    // NO hay techo por pausa. Lo hubo (PLUGIN_SEARCH_RATE_LIMIT_SINGLE_WAIT_MS)
-    // y era la condicion exacta que terminaba una busqueda asincrona en su
-    // primera pausa. Una pausa, por larga que sea, cambia la fase del trabajo
-    // y se espera; lo unico que corta es el reloj de pared global.
-
-    // NO hay contador de pausas. Habia uno (ocho), y era la causa directa del
-    // ultimo 2 de 10: pausas de un segundo encadenadas por 429 sin cabecera lo
-    // agotaban en veinte segundos. Lo que acota el total es el reloj de pared;
-    // una pausa individual, por corta o larga que sea, no es motivo para
-    // terminar nada.
-
-    // Margen que se añade a lo que pide Roblox. Volver un milisegundo antes de
-    // que la ventana se reabra gasta el reintento y renueva el cooldown.
-    rateLimitWaitMarginMs: intFromEnv('PLUGIN_SEARCH_RATE_LIMIT_WAIT_MARGIN_MS', 500),
-
-    // Cada cuanto late un trabajo ESTACIONADO. Es lo que lo distingue de uno
-    // muerto: refresca el heartbeat del job y renueva el lease del grupo. Bien
-    // por debajo del plazo de adopcion (adoptAfterMs) para que una pausa de
-    // 30 s no se confunda nunca con un proceso caido.
-    rateLimitHeartbeatMs: intFromEnv('PLUGIN_SEARCH_RATE_LIMIT_HEARTBEAT_MS', 5_000),
-
-    // Candidatos cuyos avatares se piden en paralelo. Por encima del gate
-    // global de salida (UPSTREAM_MAX_CONCURRENT) no se gana nada — el limitador
-    // ya serializa —, pero mantener varios en vuelo evita que el gate se quede
-    // ocioso entre llamada y llamada.
-    concurrency: intFromEnv('PLUGIN_SEARCH_CONCURRENCY', 4),
-
-    // Candidatos por OLA. Es la pieza que hace que el catalogo no se dispare:
-    // se traen los avatares de una ola entera, se juntan TODOS sus assets y se
-    // resuelve el catalogo de una sola vez para los N candidatos, en lugar de
-    // una llamada por candidato (que es lo que provocaba los 429).
-    //
-    // 25 no es arbitrario: un avatar ronda los 10-20 assets, asi que una ola
-    // produce del orden de 250-500 assets con muchisima repeticion entre ellos,
-    // y lo que queda tras deduplicar cabe holgadamente en uno o dos lotes de
-    // MAX_CATALOG_BATCH_SIZE. Subirlo agranda el lote y la latencia de la ola
-    // sin reducir ya las llamadas; bajarlo devuelve llamadas al catalogo.
-    waveSize: intFromEnv('PLUGIN_SEARCH_WAVE_SIZE', 25),
-
-    // Busquedas inversas asset -> bundle por BUSQUEDA (no por ola). Es el
-    // unico endpoint de Roblox sin lote que toca esta ruta, asi que es el que
-    // hay que racionar: sirve para poner precio a las partes de bundle (unas
-    // piernas de Korblox valen 17.000 y sin esto se quedaban sin valorar).
-    //
-    // 12 cubre de sobra un caso normal: Korblox y Headless salen del registro
-    // curado sin gastar ninguna, la pertenencia asset -> bundle se cachea 24 h
-    // globalmente, y un avatar tipico no lleva mas de una o dos piezas de
-    // bundle. Agotado el presupuesto, las piezas restantes se quedan sin
-    // valorar en vez de seguir gastando cuota.
-    maxBundleLookups: intFromEnv('PLUGIN_SEARCH_MAX_BUNDLE_LOOKUPS', 12),
-};
-
-// ── Rotacion persistente por comunidad ───────────────────────────────────────
-//
-// Cada groupId recorre su comunidad EN ORDEN y recuerda por donde iba, de modo
-// que dos busquedas seguidas no devuelven a la misma gente. El estado vive en
-// Postgres (ver src/db/pluginRotationRepo.js) y sobrevive a redeploys.
-//
-// Sin DATABASE_URL todo esto se desactiva solo y la busqueda vuelve al muestreo
-// aleatorio de siempre: la API de outfits nunca ha dependido de la base y no va
-// a empezar ahora.
-const pluginRotation = {
-    // SUELO de la duracion de un lease sobre la rotacion de un grupo. El valor
-    // real lo pide cada busqueda al abrir la rotacion, y es su propio
-    // presupuesto de tiempo mas `leaseMarginMs`: un lease que expira a mitad
-    // deja que OTRA busqueda empiece a avanzar el mismo cursor, que es
-    // exactamente la corrupcion que el lease existe para impedir.
-    //
-    // Por que se pide por busqueda y no se fija aqui al maximo posible: con el
-    // presupuesto de tiempo escalando de 30 s a 180 s, un lease unico y
-    // dimensionado para el peor caso dejaria un grupo bloqueado tres minutos
-    // cada vez que un proceso muriese durante una busqueda de 10 outfits. Cada
-    // busqueda reserva lo que de verdad puede llegar a durar, y ni un ms mas.
-    leaseMs: intFromEnv('PLUGIN_ROTATION_LEASE_MS', 90_000),
-
-    // Margen del lease sobre el presupuesto de tiempo de la busqueda. Cubre lo
-    // que va entre la ultima renovacion (que ocurre al persistir, o sea una vez
-    // por segmento) y el cierre.
-    leaseMarginMs: intFromEnv('PLUGIN_ROTATION_LEASE_MARGIN_MS', 30_000),
-
-    // NO hay interruptor de "resume inclusivo". Lo hubo, y su efecto era que
-    // cada busqueda repitiera al ultimo miembro de la anterior. Ya no hace
-    // falta: la rotacion solo avanza DESPUES de que el veredicto este escrito
-    // (ver rotation.persistir), asi que adelantar no pierde a nadie.
-
-    // Miembros que entrega la rotacion por segmento. Es el tamaño de ola: se
-    // mantiene igual para que el lote de catalogo siga siendo el mismo de siempre
-    // y no cambie el perfil de trafico que ya esta estabilizado.
-    segmentSize: intFromEnv('PLUGIN_ROTATION_SEGMENT_SIZE', 25),
-
-    // Segmentos seguidos sin ningun miembro nuevo antes de dar la comunidad por
-    // agotada EN ESTA busqueda. Con 2 basta: el primero puede ser el solape del
-    // wrap-around, dos seguidos ya significan que se dio la vuelta entera.
-    emptySegmentsBeforeExhausted: intFromEnv('PLUGIN_ROTATION_EMPTY_SEGMENTS', 2),
-};
-
-// ── Trabajos de busqueda (modo asincrono) y estimacion de tiempo ─────────────
-// ── Cola por comunidad ───────────────────────────────────────────────────────
-//
-// UNA sola busqueda recorre un grupo a la vez. La segunda no adelanta ni va por
-// otro lado: espera su turno y arranca donde termino la anterior. Grupos
-// distintos no se estorban en absoluto — la cola es por groupId.
-const pluginQueue = {
-    // Busquedas que pueden estar esperando turno POR GRUPO. Pasado el tope se
-    // rechaza de inmediato en vez de acumular gente que no va a llegar a
-    // tiempo: una cola que crece sin limite solo sirve para que todos esperen
-    // mucho y se rindan.
-    maxWaiting: intFromEnv('PLUGIN_QUEUE_MAX_WAITING', 8),
-
-    // Espera maxima en cola antes de rendirse. Tiene que dar para que termine
-    // la busqueda de delante CON SU PRESUPUESTO MAXIMO, mas margen: si fuera
-    // menor, una busqueda de 500 outfits (hasta 180 s) expulsaria de la cola a
-    // todas las que llegasen detras, y el 'queue_timeout' que verian no diria
-    // nada de lo que en realidad paso.
-    //
-    // Esperar no cuesta nada aqui: el trabajo asincrono esta en `queued` y el
-    // plugin lo enseña como "esperando turno (2º)" en vez de fingir progreso.
-    //
-    // Se deriva del RELOJ DE PARED maximo (trabajo + pausas por Roblox), no
-    // solo del trabajo: una busqueda estacionada 25 s esperando a Roblox sigue
-    // teniendo el grupo reservado, y quien esta detras tiene que poder esperar
-    // eso tambien.
-    waitTimeoutMs: intFromEnv(
-        'PLUGIN_QUEUE_WAIT_TIMEOUT_MS',
-        pluginSearch.timeBudgetMaxMs + pluginSearch.rateLimitWaitBudgetMs + 30_000
-    ),
-
-    // Solo para el caso multi-instancia: si el lease del grupo lo tiene OTRO
-    // proceso, no se puede esperar a una promesa local. Se espera una vez hasta
-    // que ese lease caduque (mas este margen) y se reintenta. Un solo temporizador,
-    // nunca un bucle de sondeo.
-    foreignLeaseGraceMs: intFromEnv('PLUGIN_QUEUE_FOREIGN_LEASE_GRACE_MS', 250),
-};
-
-// ── WORKER DEL INDICE DE AVATARES (fase 1) ───────────────────────────────────
-//
-// El worker llena el indice en segundo plano. En la fase 1 NADIE LO LEE: el
-// POST del plugin sigue funcionando exactamente igual que antes, y el indice
-// solo se escribe. Por eso puede arrancar apagado y encenderse cuando se quiera
-// medir, sin que nada dependa de el.
-const indexWorker = {
-    // El interruptor de la fase. Apagado (el DEFECTO) = el servicio es bit a
-    // bit el de antes: ni un ciclo, ni una llamada, ni una escritura. Se
-    // enciende con INDEX_WORKER_ENABLED=true y se apaga borrando la variable,
-    // que es todo el plan de vuelta atras de la fase 1.
-    enabled: process.env.INDEX_WORKER_ENABLED === 'true',
-
-    // Cada cuanto corre UN ciclo. No se encadenan ciclos sin pausa a proposito:
-    // el objetivo es un goteo que no compita con las busquedas, no llenar el
-    // indice cuanto antes. Con 5 s y 10 usuarios por ciclo son ~2 usuarios por
-    // segundo como techo teorico, y bastante menos en la practica porque el
-    // marcapasos del limitador manda por encima de esto.
-    // GRUPOS FIJADOS. Van SIEMPRE los primeros al elegir a quien indexar, por
-    // delante de cualquier prioridad calculada.
-    //
-    // Por que no basta con subirle la prioridad a mano: `priority` sube por
-    // DEMANDA (una busqueda que se queda corta) y BAJA al servirse, asi que un
-    // valor puesto a dedo se erosiona solo en unas cuantas vueltas. Fijar el
-    // grupo es una decision de negocio — 'esta comunidad es la nuestra' — y no
-    // una medida que deba decaer.
-    //
-    // Lista separada por comas: INDEX_WORKER_PINNED_GROUPS=59218460,123456
-    pinnedGroups: (process.env.INDEX_WORKER_PINNED_GROUPS ?? '')
-        .split(',')
-        .map(id => id.trim())
-        .filter(id => /^[1-9][0-9]{0,19}$/.test(id)),
-
-    tickMs: intFromEnv('INDEX_WORKER_TICK_MS', 5_000),
-    usersPerCycle: intFromEnv('INDEX_WORKER_USERS_PER_CYCLE', 10),
-
-    // Lease del grupo que se esta recorriendo. Corto a proposito: si una
-    // instancia muere a mitad de ciclo, otra puede seguir ese grupo en menos de
-    // un minuto en vez de esperar a que caduque media hora.
-    leaseMs: intFromEnv('INDEX_WORKER_LEASE_MS', 60_000),
-
-    // ── LOS DOS RELOJES DEL INDICE ──────────────────────────────────────────
-    // Vencer NO borra ni invalida: solo coloca esa fila por delante en la cola
-    // de refresco (ver avatarIndexRepo.pendientes). Una fila vencida se sigue
-    // pudiendo servir; lo unico que se pierde es la certeza, y esa se recupera
-    // refrescando, no tirando el dato.
-    //
-    // El avatar aguanta mas que el precio porque la gente se cambia de ropa
-    // menos a menudo de lo que se mueve el mercado.
-    avatarTtlMs: intFromEnv('INDEX_WORKER_AVATAR_TTL_MS', 14 * 24 * 60 * 60_000),
-    priceTtlMs: intFromEnv('INDEX_WORKER_PRICE_TTL_MS', 3 * 24 * 60 * 60_000),
-
-    // Cada cuanto vuelve a recorrerse un grupo SIN demanda. Es lo que impide
-    // que el worker se lance sobre la whitelist entera: sin demanda y sin este
-    // plazo cumplido, un grupo no entra en la cola.
-    fullPassEveryMs: intFromEnv('INDEX_WORKER_FULL_PASS_EVERY_MS', 7 * 24 * 60 * 60_000),
-
-    // Version de la LOGICA de valoracion y de la lista de tipos de accesorio.
-    // Subirla manda las filas viejas al principio de la cola de refresco sin
-    // borrar nada y sin un UPDATE masivo: es como se corrige un cambio de
-    // criterio sin tirar el trabajo hecho.
-    pricingVersion: intFromEnv('INDEX_WORKER_PRICING_VERSION', 1),
-
-    // ── LAS TRES ETAPAS, cada una con su tamaño de tanda ────────────────────
-    //
-    // Son tres trabajos distintos con costes distintos y por eso se miden
-    // aparte. El crawler pagina miembros, que es barato. El resolutor de
-    // avatares gasta UNA llamada por usuario, que es lo caro y escaso. El de
-    // precios agrupa a MUCHOS usuarios en pocos lotes de catalogo, que es donde
-    // esta el ahorro grande: cien usuarios pueden compartir un solo lote.
-    crawlPagesPerCycle: intFromEnv('INDEX_WORKER_CRAWL_PAGES_PER_CYCLE', 1),
-    avatarsPerCycle: intFromEnv('INDEX_WORKER_AVATARS_PER_CYCLE', 25),
-
-    // Cuantos usuarios entran en UNA pasada de valoracion. Cuanto mas alto,
-    // mejor se amortiza cada lote de catalogo: los assets repetidos entre
-    // usuarios se piden una vez para todos.
-    pricingBatchUsers: intFromEnv('INDEX_WORKER_PRICING_BATCH_USERS', 60),
-
-    // TTL de una ficha de catalogo. Es el precio de un asset, que se mueve
-    // menos que un avatar entero pero mas que su existencia.
-    catalogTtlMs: intFromEnv('INDEX_WORKER_CATALOG_TTL_MS', 3 * 24 * 60 * 60_000),
-
-    // ── LIVENESS ────────────────────────────────────────────────────────────
-    //
-    // Cada cuanto se vuelve a mirar un grupo YA VISTO. Es la correccion del
-    // fallo que dejaba el indice clavado: un grupo a medio indexar y sin
-    // demanda registrada dejaba de ser elegible hasta la siguiente vuelta
-    // completa —siete dias— y el worker se quedaba devolviendo "sin trabajo"
-    // sin error, sin log y sin avanzar. Ahora se revisita solito; si no hay
-    // nada pendiente el ciclo es un no-op de dos consultas.
-    revisitEveryMs: intFromEnv('INDEX_WORKER_REVISIT_EVERY_MS', 30_000),
-
-    // Latido del worker: una linea cada minuto diciendo que sigue vivo, en que
-    // etapa esta y cuanto lleva sin progresar. Sin esto, "no pasa nada" y "esta
-    // muerto" se ven igual desde fuera.
-    heartbeatEveryMs: intFromEnv('INDEX_WORKER_HEARTBEAT_EVERY_MS', 60_000),
-
-    // Ciclos seguidos sin progreso REAL y sin cooldown que lo explique antes de
-    // avisar. No mata nada: deja constancia y sigue.
-    stallCycles: intFromEnv('INDEX_WORKER_STALL_CYCLES', 2),
-
-    // SOLO UN AVISO, nunca una autorizacion. Si una vuelta termina limpia pero
-    // habiendo visto pocos de los conocidos, se deja constancia y se marcan las
-    // bajas igualmente — la autorizacion la da la evidencia de vuelta completa
-    // (ver plugin_index_crawl.lap_clean), no una proporcion. Un 95% interrumpido
-    // sigue dejando fuera a usuarios activos, asi que un umbral no sirve para
-    // decidir esto.
-    leaverWarnRatio: Number(process.env.INDEX_WORKER_LEAVER_WARN_RATIO ?? 0.8),
-
-    // Vigilante del ciclo. Si un ciclo no termina en este plazo se le da por
-    // colgado y se deja pasar al siguiente: un await que no vuelve nunca
-    // dejaria el worker parado para siempre sin que nadie se enterara.
-    cycleTimeoutMs: intFromEnv('INDEX_WORKER_CYCLE_TIMEOUT_MS', 120_000),
-};
-
-// ── SERVIR DESDE EL INDICE (fase 3) ─────────────────────────────────────────
-//
-// Interruptor separado del worker A PROPOSITO: llenar el indice y servir desde
-// el indice son dos decisiones distintas, y la segunda solo tiene sentido
-// cuando la primera lleva tiempo funcionando.
-//
-// Con esto en true, POST /plugin/outfits/search NO LLAMA A ROBLOX. Ni al
-// avatar, ni al catalogo, ni como respaldo si el indice se queda corto: si
-// Postgres no puede responder, la respuesta es un 503 honesto y no una busqueda
-// en vivo que tardaria una hora. Ese respaldo automatico es exactamente el
-// fallo que toda esta arquitectura existe para eliminar.
-const indexServe = {
-    enabled: process.env.INDEX_SERVE_ENABLED === 'true',
-};
-
-const pluginJobs = {
-    // Cuanto se conserva un trabajo terminado para que el plugin recoja su
-    // resultado. Corto a proposito: son resultados de una busqueda, no un
-    // almacen. Pasado el plazo responde 'expired' y el plugin lanza otra, que es
-    // mas barato que guardar resultados que ya nadie va a mirar.
-    resultTtlMs: intFromEnv('PLUGIN_JOB_RESULT_TTL_MS', 120_000),
-
-    // Techo de trabajos vivos en memoria a la vez. Es una cota de RAM, no un
-    // limitador de carga: de eso ya se encargan el limitador por IP y los
-    // presupuestos de la propia busqueda.
-    maxLive: intFromEnv('PLUGIN_JOB_MAX_LIVE', 64),
-
-    // Cada cuanto conviene que el plugin vuelva a preguntar. Se devuelve en la
-    // respuesta para que el cliente no tenga que elegirlo (ni equivocarse).
-    pollIntervalMs: intFromEnv('PLUGIN_JOB_POLL_INTERVAL_MS', 700),
-
-    // Cada cuanto se vuelca a Postgres el estado de un trabajo en curso.
-    // NO se escribe en cada cambio: una busqueda cambia de progreso varias
-    // veces por segundo y eso convertiria la base en un stream de escrituras
-    // sin ganar nada. Se guarda por HITOS (cada vez que sube `found`) y, si
-    // no hay hitos, cada este intervalo — que ademas hace de latido.
-    snapshotMs: intFromEnv('PLUGIN_JOB_SNAPSHOT_MS', 2_000),
-
-    // ── Propiedad: latido y adopcion ─────────────────────────────────────────
-    //
-    // Cada trabajo vivo LATE por su cuenta, cada este intervalo, haga lo que
-    // haga: trabajar, esperar turno del grupo o estar estacionado por Roblox.
-    // El latido es independiente del progreso a proposito: antes solo se
-    // escribia al cerrar cada ola, y una ola lenta o una espera en cola se
-    // parecian a un proceso muerto.
-    heartbeatIntervalMs: intFromEnv('PLUGIN_JOB_HEARTBEAT_INTERVAL_MS', 5_000),
-
-    // Sin latido durante este tiempo, un trabajo se considera HUERFANO y otra
-    // instancia puede adoptarlo — sea cual sea su fase. Es la unica condicion
-    // de adopcion (ademas de que su dueño lo haya SOLTADO al apagarse), y la
-    // relacion con el intervalo es la tolerancia a fallos transitorios: con
-    // latidos cada 5 s, 90 s son dieciocho latidos fallidos seguidos. Un bache
-    // de Postgres de veinte segundos no le quita el trabajo a nadie; un
-    // proceso muerto se recupera en minuto y medio.
-    adoptAfterMs: intFromEnv('PLUGIN_JOB_ADOPT_AFTER_MS', 90_000),
-
-    // Cada cuanto pasa la recuperacion: adoptar lo soltado o huerfano y borrar
-    // lo vencido. Corto, porque tras un redeploy el trabajo soltado por la
-    // instancia vieja tiene que estar corriendo en la nueva en segundos.
-    recoveryIntervalMs: intFromEnv('PLUGIN_JOB_RECOVERY_INTERVAL_MS', 15_000),
-
-    // Un trabajo SOLTADO que ninguna instancia adopta en este plazo (no hay
-    // ninguna viva) se expira, para que nada quede 'running' para siempre.
-    releasedExpireMs: intFromEnv('PLUGIN_JOB_RELEASED_EXPIRE_MS', 60 * 60_000),
-
-    // Cuanto sobrevive un trabajo TERMINADO en la base, con sus resultados.
-    // Es lo que permite recoger el resultado tras un redeploy o desde otra
-    // instancia. Pasado el plazo se borra: son resultados de una busqueda, no
-    // un almacen.
-    retentionMs: intFromEnv('PLUGIN_JOB_RETENTION_MS', 30 * 60_000),
-};
-
-const pluginEta = {
-    // Peso del dato nuevo en la media exponencial. 0.3 se adapta en unas pocas
-    // busquedas sin dar bandazos por una sola rara. Una media aritmetica
-    // historica tardaria cientos de busquedas en reaccionar a un cambio real de
-    // la comunidad.
-    ewmaAlpha: Number(process.env.PLUGIN_ETA_EWMA_ALPHA ?? 0.3),
-
-    // Candidatos examinados por debajo de los cuales NO se da estimacion. Con dos
-    // o tres muestras la tasa de aceptacion es ruido, y una ETA inventada es peor
-    // que 'calculando': la primera se cree y la segunda no.
-    minSamples: intFromEnv('PLUGIN_ETA_MIN_SAMPLES', 8),
-
-    // Techo de la estimacion. Nunca se promete mas alla de lo que la propia
-    // busqueda va a durar, porque a esa hora se corta igualmente.
-    maxEstimateMs: intFromEnv('PLUGIN_ETA_MAX_MS', 120_000),
-};
 
 const catalogBatch = {
     maxAssetIds: intFromEnv('CATALOG_BATCH_MAX_ASSETS', 64),
@@ -957,47 +398,6 @@ if (!adminApiKey) {
     );
 }
 
-if (!pluginApiKey) {
-    console.warn(
-        '[config] PLUGIN_API_KEY no esta definida — POST /plugin/outfits/search respondera 503 ' +
-        'plugin_disabled. El resto del servicio no se ve afectado. Genera una con: ' +
-        'node -e "console.log(require(\'crypto\').randomBytes(32).toString(\'hex\'))"'
-    );
-} else if (pluginApiKey === apiKey || pluginApiKey === adminApiKey) {
-    console.error(
-        '[config] ERROR: PLUGIN_API_KEY coincide con OUTFIT_API_KEY o con ADMIN_API_KEY. Eso anula la ' +
-        'separacion entre los tres publicos: el plugin de Studio, el juego vendido y el panel de ' +
-        'administracion tienen que poder revocarse por separado. Cambiala.'
-    );
-}
-
-// Variables HEREDADAS de versiones anteriores. Se avisa para que no queden en
-// Railway creyendo que hacen algo.
-if (process.env.PLUGIN_ROTATION_RESUME_INCLUSIVE !== undefined) {
-    // eslint-disable-next-line no-console
-    console.warn(
-        "[config] PLUGIN_ROTATION_RESUME_INCLUSIVE ya no existe y se ignora: la rotacion guarda " +
-        "siempre el SIGUIENTE miembro a mirar, asi que dos busquedas seguidas no repiten a nadie " +
-        "mientras la comunidad no se haya recorrido entera. Borrala del entorno."
-    );
-}
-
-// Las dos siguientes convertian una pausa de Roblox en el final de la
-// busqueda; la primera se ignora y la segunda se acota.
-if (process.env.PLUGIN_SEARCH_RATE_LIMIT_SINGLE_WAIT_MS !== undefined) {
-    console.warn(
-        '[config] PLUGIN_SEARCH_RATE_LIMIT_SINGLE_WAIT_MS ya no existe y se ignora: una pausa de Roblox, ' +
-        'por larga que sea, ya no termina una busqueda. Borra la variable.'
-    );
-}
-if (process.env.PLUGIN_SEARCH_RATE_LIMIT_WAIT_BUDGET_MS !== undefined
-    && Number(process.env.PLUGIN_SEARCH_RATE_LIMIT_WAIT_BUDGET_MS) < pluginSearch.rateLimitWaitBudgetMs) {
-    console.warn(
-        `[config] PLUGIN_SEARCH_RATE_LIMIT_WAIT_BUDGET_MS=${process.env.PLUGIN_SEARCH_RATE_LIMIT_WAIT_BUDGET_MS} ` +
-        `esta por debajo del suelo: se usan ${pluginSearch.rateLimitWaitBudgetMs} ms. ` +
-        'Es una proteccion extrema, no el terminador normal de una busqueda.'
-    );
-}
 
 if (!database.url) {
     console.warn(
@@ -1017,7 +417,6 @@ module.exports = {
     port,
     apiKey,
     adminApiKey,
-    pluginApiKey,
     logLevel,
     cacheDriver,
     ttl,
@@ -1031,12 +430,5 @@ module.exports = {
     maxCatalogBatchSize,
     outfitsBatch,
     catalogBatch,
-    pluginSearch,
-    pluginRotation,
-    pluginQueue,
-    pluginJobs,
-    pluginEta,
-    indexWorker,
-    indexServe,
     serviceName: 'outfit-api',
 };

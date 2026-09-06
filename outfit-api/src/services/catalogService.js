@@ -93,11 +93,7 @@ function reventa(registro) {
 
 // ── Ola 1: ficha de catalogo de los assets ──────────────────────────────────
 
-// `trafico` decide POR QUE CUBO del limitador salen las llamadas: el del juego
-// (default) o el del trabajo de fondo. Es un parametro y no algo deducido del
-// contexto porque de el depende que un 429 del indexador no deje sin precios al
-// juego, y esa decision tiene que verse en el sitio donde se llama.
-async function resolverFichasDeAsset(assetIds, fallos, { trafico } = {}) {
+async function resolverFichasDeAsset(assetIds, fallos) {
     const fichas = new Map();
     const faltantes = [];
 
@@ -116,8 +112,7 @@ async function resolverFichasDeAsset(assetIds, fallos, { trafico } = {}) {
         const detalles = await singleFlight.run(
             `catalog:assets:${faltantes.join('.')}`,
             () => roblox.getCatalogItemDetails(
-                faltantes.map(id => ({ itemType: 'Asset', id: Number(id) })),
-                { trafico }
+                faltantes.map(id => ({ itemType: 'Asset', id: Number(id) }))
             )
         );
 
@@ -129,9 +124,7 @@ async function resolverFichasDeAsset(assetIds, fallos, { trafico } = {}) {
     } catch (err) {
         fallos.assetIds.push(...faltantes);
         logger.warn('No se pudo resolver la ficha de catalogo de un lote', {
-            // null cuando quien llama no abrio contexto de correlacion (el
-            // camino de /v1/catalog/batch); util cuando si lo abrio (la
-            // busqueda del plugin), que es donde hace falta cruzarlo.
+            // null cuando quien llama no abrio contexto de correlacion.
             requestId: requestContext.requestId(),
             assets: faltantes.length, detail: err?.message,
         });
@@ -448,22 +441,10 @@ async function resolveBatch({ assetIds = [], bundleIds = [], resolveBundles = tr
 module.exports = {
     resolveBatch,
 
-    // Exportada tal cual para que la busqueda del plugin ponga precio a un
-    // avatar sin reimplementar el patron "lee N claves de cache, agrupa las
-    // que falten en UN lote, guarda cada una por separado". Comparte con
-    // /v1/catalog/batch la misma clave de cache (v1:asset:catalog:<id>), el
-    // mismo single-flight y el mismo bucket del limitador: un asset que ya
-    // resolvio un juego lo lee el plugin gratis, y al reves.
-    //
-    // Contrato: (assetIds, fallos) -> Map<assetId, ficha>, con `fallos` un
-    // objeto { assetIds: [] } donde deja los ids que NO pudo resolver. No
-    // lanza: un fallo de Roblox se reporta ahi, no rompiendo al llamador.
-    resolverFichasDeAsset,
-
-    // La MISMA clave que usa este modulo, exportada para que la busqueda del
-    // plugin pueda mirar la cache compartida antes de pedir un lote y quedarse
-    // solo con los assets que de verdad faltan. Sin ella tendria que
-    // reconstruir el formato por su cuenta, y una tercera copia del mismo
-    // string es exactamente como se desalinean las caches.
+    // La MISMA clave que usa este modulo, exportada para que quien mire la
+    // cache compartida antes de pedir un lote se quede solo con los assets que
+    // de verdad faltan. Sin ella tendria que reconstruir el formato por su
+    // cuenta, y una segunda copia del mismo string es exactamente como se
+    // desalinean las caches.
     catalogCacheKey: catalogKey,
 };

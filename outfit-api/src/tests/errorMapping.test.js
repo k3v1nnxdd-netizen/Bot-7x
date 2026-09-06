@@ -89,7 +89,7 @@ module.exports = async function run() {
         assert.strictEqual(calls, 1, 'un 429 sin cabecera no puede provocar reintentos en linea');
         assert.strictEqual(rateLimiter.__buckets.outfitList.metrics.retries, 0);
 
-        const restante = rateLimiter.getThrottleState('outfitList').cooldownRemainingMs;
+        const restante = rateLimiter.__buckets.outfitList.cooldownUntil - Date.now();
         assert.ok(restante >= config.upstream.rateLimitFallbackBaseMs - 20,
             `el cooldown sin cabecera fue de solo ${restante} ms`);
     });

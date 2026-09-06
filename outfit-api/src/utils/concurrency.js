@@ -1,14 +1,7 @@
 'use strict';
 
-// Utilidades de concurrencia. NEUTRALES: no saben nada de outfits, de plugins
-// ni de Roblox, y por eso pueden usarlas tanto el camino del juego como el del
-// trabajo de fondo sin que uno dependa del otro.
-//
-// Vivian dentro de services/pluginSearch/ porque ahi nacieron, pero cuando el
-// lote de outfits —que es el camino del JUEGO— empezo a necesitarlas, eso dejo
-// de ser aceptable: un servicio de produccion no puede colgar de un modulo del
-// plugin de Studio. La dependencia habria sido invisible hasta el dia que
-// alguien reorganice o retire la carpeta del plugin.
+// Utilidades de concurrencia. NEUTRALES: no saben nada de outfits ni de
+// Roblox, y por eso puede usarlas cualquier camino sin arrastrar dependencias.
 
 // Pool de trabajo con tope fijo de tareas en vuelo.
 //

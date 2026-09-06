@@ -17,10 +17,10 @@ const requestContext = require('../observability/requestContext');
 // (usuario -> outfits), asi que lo que tarde la segunda se suma encima. Un
 // jugador con la pantalla delante ya se ha ido mucho antes.
 //
-// DONDE SE MONTA Y DONDE NO. Solo en las rutas que atiende el juego. El
-// indexado y las busquedas del plugin NO pasan por aqui a proposito: son
-// trabajos largos, sin nadie esperando, para los que abandonar a los ocho
-// segundos seria justo lo contrario de lo que se quiere.
+// DONDE SE MONTA. En las rutas que atiende el juego, que son las que tienen a
+// un jugador delante. Un trabajo largo y sin nadie esperando no deberia abrir
+// presupuesto: abandonar a los ocho segundos seria lo contrario de lo que
+// conviene ahi.
 //
 // Va ANTES de la comprobacion de licencia porque el tiempo de esa comprobacion
 // tambien lo espera el jugador: el presupuesto es del reloj de pared de la

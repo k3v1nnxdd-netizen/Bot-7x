@@ -7,7 +7,6 @@ const cacheStore = require('../../cache/cacheStore');
 const robloxRateLimiter = require('../../roblox/rateLimiter');
 const ownRateLimit = require('../../security/rateLimit');
 const db = require('../../db/pool');
-const indexWorker = require('../../services/indexWorker/worker');
 const dbSchema = require('../../db/schema');
 
 // Protegida por la misma API key que el resto de /v1: expone detalle
@@ -40,11 +39,6 @@ router.get('/', (req, res) => {
         ownRateLimit: ownRateLimit.getMetrics(),
         roblox: robloxRateLimiter.getMetrics(),
         db: { ...db.getMetrics(), ...dbSchema.getStatus() },
-        // Worker del indice: cobertura y frescura del ultimo grupo recorrido,
-        // velocidad, cuantas veces corto Roblox y cuanto se espero por ello.
-        // Es la unica forma de saber DESDE FUERA si el indice esta listo para
-        // empezar a servir busquedas.
-        indexWorker: indexWorker.metricas,
     });
 });
 

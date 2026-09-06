@@ -8,29 +8,20 @@ const { AsyncLocalStorage } = require('async_hooks');
 // EL PROBLEMA QUE RESUELVE. Cuando Roblox devuelve un 429, quien se entera es
 // el limitador (src/roblox/rateLimiter.js), que es deliberadamente generico: no
 // sabe quien le pidio la llamada ni por que. Para cruzar ese 429 con la
-// busqueda que lo provoco hace falta el requestId, y el camino entre los dos es
-// largo: ruta -> pluginSearchService -> catalogIndex -> catalogService ->
-// roblox/client -> rateLimiter. Enhebrar un parametro por esas seis capas
-// ensuciaria firmas que hoy estan limpias, y ademas obligaria a tocar el camino
-// que comparten /v1/outfits y /v1/catalog.
+// peticion que lo provoco hace falta el requestId, y el camino entre los dos es
+// largo: ruta -> servicio -> cliente -> limitador. Enhebrar un parametro por
+// esas capas ensuciaria firmas que hoy estan limpias.
 //
 // AsyncLocalStorage lo lleva por debajo: se abre el contexto una vez en el
-// borde de la busqueda y cualquier codigo que corra dentro de esa cadena
+// borde de la peticion y cualquier codigo que corra dentro de esa cadena
 // asincrona puede leerlo, incluido el limitador, sin que las capas de en medio
 // se enteren de que existe.
 //
-// NO ES UN CANAL DE DATOS DE NEGOCIO. Aqui solo entran los identificadores que
-// sirven para CORRELACIONAR lineas de log: el requestId y el searchId. Nunca
-// credenciales, nunca datos de usuario, nunca nada de lo que decida una
-// respuesta — un valor que viaja invisible es exactamente el sitio donde no
-// debe vivir la logica.
-//
-// POR QUE HACEN FALTA LOS DOS. El requestId identifica la peticion HTTP que
-// arranco la busqueda; el searchId es lo que el plugin tiene delante y lo unico
-// por lo que se puede preguntar despues. En modo asincrono la peticion HTTP
-// termina en milisegundos y la busqueda sigue durante minutos, asi que TODO lo
-// que se registre a partir de ahi — un 429 del avatar, un fallo de Postgres —
-// solo se puede cruzar con lo que ve el usuario a traves del searchId.
+// NO ES UN CANAL DE DATOS DE NEGOCIO. Aqui solo entran cosas de OBSERVABILIDAD
+// y de control transversal: el requestId, el acumulador de tiempos y la fecha
+// limite del presupuesto. Nunca credenciales, nunca datos de usuario, nunca
+// nada de lo que decida una respuesta — un valor que viaja invisible es
+// exactamente el sitio donde no debe vivir la logica.
 const almacen = new AsyncLocalStorage();
 
 // Ejecuta `fn` con `contexto` disponible para toda su cadena asincrona.
@@ -51,17 +42,6 @@ function actual() {
 // motivo para romper una peticion.
 function requestId() {
     return almacen.getStore()?.requestId ?? null;
-}
-
-function searchId() {
-    return almacen.getStore()?.searchId ?? null;
-}
-
-// El grupo que recorre la busqueda. Es un identificador de comunidad, no de
-// persona, y es lo que permite que un fallo de Postgres diga "en la rotacion
-// del grupo X" sin que nadie tenga que cruzarlo a mano con el searchId.
-function groupId() {
-    return almacen.getStore()?.groupId ?? null;
 }
 
 // Acumulador de tiempos de la peticion en curso, o null si no hay ninguno.
@@ -87,9 +67,9 @@ function medidor() {
 // presupuesto es de la PETICION entera —no de una llamada—, asi que tiene que
 // ser lo mismo para las dos llamadas encadenadas de un listado.
 //
-// Que devuelva null fuera de contexto es LA garantia de que esto no toca el
-// trabajo de fondo: el indexado y las busquedas del plugin no abren
-// presupuesto, leen null y se comportan exactamente igual que siempre.
+// Que devuelva null fuera de contexto es LA garantia de que esto solo aplica
+// donde se abre a proposito: quien no abre presupuesto lee null y se comporta
+// exactamente igual que siempre.
 function fechaLimite() {
     return almacen.getStore()?.fechaLimite ?? null;
 }
@@ -102,4 +82,4 @@ function nuevoMedidor() {
     return { esperaLimitadorMs: 0, robloxMs: 0, llamadasUpstream: 0 };
 }
 
-module.exports = { ejecutarCon, actual, requestId, searchId, groupId, medidor, nuevoMedidor, fechaLimite };
+module.exports = { ejecutarCon, actual, requestId, medidor, nuevoMedidor, fechaLimite };

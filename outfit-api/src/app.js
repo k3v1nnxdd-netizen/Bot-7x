@@ -8,11 +8,8 @@ const metricsRoute = require('./api/routes/metrics');
 const adminGroupsRoute = require('./api/routes/adminGroups');
 const licenseRoute = require('./api/routes/license');
 const catalogRoute = require('./api/routes/catalog');
-const pluginRoute = require('./api/routes/plugin');
-const pluginIndexRoute = require('./api/routes/pluginIndex');
 const { requireApiKey } = require('./security/apiKey');
 const { requireAdminKey } = require('./security/adminKey');
-const { requirePluginKey } = require('./security/pluginKey');
 const { requireLicenseTokenHeader, requireLicensedGame } = require('./security/licenseGuard');
 const { rateLimit } = require('./security/rateLimit');
 const { requestBudget } = require('./api/requestBudget');
@@ -124,44 +121,6 @@ function createApp() {
     // atiende al juego, y mezclarles unas pocas llamadas administrativas
     // ensuciaria los percentiles que sirven para vigilar la carga real.
     app.use('/admin/groups', rateLimit, requireAdminKey, adminGroupsRoute);
-
-    // Plugin privado de Roblox Studio (7x Outfit Importer). Fuera de /v1 por lo
-    // mismo que /admin: /v1 es el contrato que consume el juego vendido y se
-    // versiona para no romperlo, y esto es otra herramienta, con otro publico y
-    // otro ritmo de cambio.
-    //
-    // Comparte el limitador por IP con todo lo demas — el mismo guardia
-    // anti-abuso, sin tocarlo — y NO pasa por latencyMiddleware, por la misma
-    // razon que /admin/groups: los percentiles de /v1/metrics describen el
-    // trafico que atiende al juego, y mezclarles las llamadas de una
-    // herramienta interna ensuciaria justo la señal que sirve para vigilar la
-    // carga real.
-    //
-    // CREDENCIAL PROPIA Y EXCLUSIVA: `x-plugin-key` (PLUGIN_API_KEY). Ni la
-    // key del juego ni la de admin ni un token de licencia abren esto, y esta
-    // no abre nada de lo otro. Es lo que permite revocarle el acceso al plugin
-    // sin tocarle el juego a ningun cliente, y al reves.
-    //
-    // La comprobacion va DELANTE del router, o sea antes del parser de cuerpo
-    // que este monta dentro: una peticion sin credencial se rechaza sin leer ni
-    // un byte del body y sin acercarse a Roblox. Importa mas aqui que en
-    // ningun otro sitio — una sola peticion de esta ruta puede convertirse en
-    // cientos de llamadas salientes.
-    // El panel del indice va DELANTE de /plugin, y el orden no es cosmetico:
-    // Express casa por prefijo y en orden de registro, asi que montado despues
-    // nunca recibiria una peticion — /plugin se las quedaria todas y el panel
-    // solo veria 404 desde dentro del router de busqueda.
-    //
-    // Misma credencial y mismo limitador. Ninguna de sus rutas llama a Roblox:
-    // el panel se sondea cada pocos segundos mientras alguien tiene Studio
-    // abierto, y gastar de la cuota de avatares para pintar una pantalla
-    // competiria con el worker por el unico recurso escaso que hay.
-    // Cierra su prefijo con `notFoundHandler`, igual que /v1/license y los
-    // demas. Sin el, una ruta inexistente bajo /plugin/index caia al montaje de
-    // /plugin y volvia a pasar por el limitador: una sola peticion consumia dos
-    // del cubo de esa IP.
-    app.use('/plugin/index', rateLimit, requirePluginKey, pluginIndexRoute, notFoundHandler);
-    app.use('/plugin', rateLimit, requirePluginKey, pluginRoute);
 
     app.use(notFoundHandler);
     app.use(errorHandler);

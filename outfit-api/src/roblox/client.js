@@ -295,26 +295,11 @@ function normalizeCatalogItem(item) {
 
 const catalogKey = (itemType, id) => `${itemType}:${id}`;
 
-// Las dos rutas del limitador que atienden ESTE MISMO endpoint de Roblox.
-//
-// El endpoint es uno, pero los cubos son dos y estan separados a proposito: el
-// juego resuelve precios por `catalogDetails` y el trabajo de fondo (plugin de
-// Studio, worker del indice) por `catalogDetailsBackground`. Un 429 provocado
-// indexando una comunidad entera no puede dejar sin precios al juego, que es lo
-// que pasaba cuando compartian cubo.
-//
-// El default es el del JUEGO: si algun dia alguien añade una llamada y se
-// olvida de etiquetarla, se protege de mas y no de menos.
-const TRAFICO = Object.freeze({
-    JUEGO: 'catalogDetails',
-    FONDO: 'catalogDetailsBackground',
-});
-
-async function getCatalogItemDetails(items, { trafico = TRAFICO.JUEGO } = {}) {
+async function getCatalogItemDetails(items) {
     const details = new Map();
     if (items.length === 0) return details;
 
-    const response = await rateLimiter.run(trafico, () => postCatalogDetails(items), {
+    const response = await rateLimiter.run('catalogDetails', () => postCatalogDetails(items), {
         endpoint: 'catalog.roblox.com/v1/catalog/items/details',
     });
 
@@ -541,121 +526,8 @@ async function getUniverseOwner(universeId) {
     };
 }
 
-// ── 7. miembros de un grupo (comunidad) ──────────────────────────────────────
-
-// GET https://groups.roblox.com/v1/groups/{groupId}/users?limit=100&cursor=&sortOrder=
-//
-// PUBLICO y sin credenciales, como todo lo demas de este modulo. Es la unica
-// via oficial para enumerar una comunidad, y pagina POR CURSOR — no admite
-// offset ni salto a una pagina N. Eso condiciona el muestreo aguas arriba:
-// para variar la muestra hay que jugar con `sortOrder` y barajar lo que se
-// trae, porque "dame 100 miembros al azar" no existe en la API (ver
-// services/pluginSearchService.js).
-//
-// El maximo real de `limit` es 100; valores mayores los rechaza con 400.
-//
-// Cada elemento llega como { user: {userId, username, displayName,
-// hasVerifiedBadge}, role: {...} }. Se aplana a lo unico que necesita la
-// busqueda — id y nombre — y se descarta el resto: el rol no interesa y
-// arrastrarlo solo engordaria la cache.
-async function listGroupMembers(groupId, { limit = 100, cursor = null, sortOrder = 'Asc' } = {}) {
-    const params = { limit, sortOrder };
-    if (cursor) params.cursor = cursor;
-
-    const response = await rateLimiter.run('groupMembers', () => http_.get(
-        `https://groups.roblox.com/v1/groups/${groupId}/users`,
-        { params }
-    ), { endpoint: 'groups.roblox.com/v1/groups/{id}/users', notFoundCode: 'group_not_found' });
-
-    const data = Array.isArray(response.data?.data) ? response.data.data : [];
-    const next = response.data?.nextPageCursor;
-
-    return {
-        members: data
-            .map(entry => ({
-                userId: entry?.user?.userId ?? null,
-                username: entry?.user?.username ?? null,
-            }))
-            // Un miembro sin id no sirve para nada aguas abajo, y colarlo
-            // obligaria a cada consumidor a volver a comprobarlo.
-            .filter(m => m.userId != null),
-        // Roblox cierra el recorrido con null (a diferencia del listado de
-        // outfits, que manda cadena vacia). Se normaliza a null cualquiera de
-        // las dos formas para que quien pagine solo tenga que mirar una.
-        nextCursor: typeof next === 'string' && next.length > 0 ? next : null,
-    };
-}
-
-// ── 8. avatar ACTUAL de un usuario ───────────────────────────────────────────
-
-// GET https://avatar.roblox.com/v1/users/{userId}/avatar
-//
-// Lo que el jugador lleva puesto AHORA MISMO, que no es lo mismo que un outfit
-// guardado suyo (eso es el endpoint 2/3). Para la busqueda del plugin es
-// justo lo que hace falta: un avatar real, montado por una persona.
-//
-// Devuelve la misma forma que los detalles de un outfit — scales, bodyColors,
-// playerAvatarType y `assets`, cada uno { id, name, assetType{id,name} } — asi
-// que reconstruirlo mas adelante como HumanoidDescription no necesitara un
-// normalizador nuevo. Aqui solo se aplanan los assets, que es lo unico que se
-// usa hoy para poner precio al conjunto.
-//
-// Un usuario baneado o inexistente responde 404 y sale por NotFoundError, que
-// es lo que permite descartarlo y seguir con el siguiente candidato.
-// Aplanado del avatar tal y como lo manda Roblox. PURO, y exportado para que
-// las pruebas construyan sus mundos con EL MISMO aplanado que corre en
-// produccion en vez de inventarse la forma del objeto: el tipo de cada asset
-// llega anidado en `assetType.id`, y de el depende la regla de accesorios.
-// Un mundo de prueba que se saltara esto probaria una forma que no existe.
-function normalizeAvatarAssets(data) {
-    const assets = Array.isArray(data?.assets) ? data.assets : [];
-
-    return {
-        assets: assets
-            .map(asset => ({
-                id: asset?.id ?? null,
-                name: asset?.name ?? null,
-                assetTypeId: asset?.assetType?.id ?? null,
-                assetTypeName: asset?.assetType?.name ?? null,
-            }))
-            .filter(asset => asset.id != null),
-        playerAvatarType: data?.playerAvatarType ?? null,
-    };
-}
-
-// EL AVATAR POR v2, que es el camino del worker del indice.
-//
-// Misma forma de respuesta que v1 —`assets` con `assetType` anidado— y por eso
-// comparte el mismo aplanado: lo que sale de aqui es indistinguible de lo que
-// sale de `getCurrentAvatar`, y el resto del sistema no tiene que saber por
-// cual vino.
-//
-// Lo que cambia es la CUOTA. Medido desde Railway: v1 esta en seis por hora y
-// contesta 429; v2 aguanto doscientas llamadas a 3,59 por segundo sin una
-// sola. Por eso tiene bucket propio (`userAvatarV2`) y por eso NO hay respaldo
-// a v1: caer a v1 seria caer en la ruta que sabemos cerrada, gastando la unica
-// llamada por hora que da y encima marcando la ruta como limitada.
-async function getCurrentAvatarV2(userId) {
-    const response = await rateLimiter.run('userAvatarV2', () => http_.get(
-        `https://avatar.roblox.com/v2/avatar/users/${userId}/avatar`
-    ), { endpoint: 'avatar.roblox.com/v2/avatar/users/{id}/avatar', notFoundCode: 'user_not_found' });
-
-    return normalizeAvatarAssets(response.data);
-}
-
-async function getCurrentAvatar(userId) {
-    const response = await rateLimiter.run('userAvatar', () => http_.get(
-        `https://avatar.roblox.com/v1/users/${userId}/avatar`
-    ), { endpoint: 'avatar.roblox.com/v1/users/{id}/avatar', notFoundCode: 'user_not_found' });
-
-    return normalizeAvatarAssets(response.data);
-}
-
 module.exports = {
     lookupUserByUsername,
-    listGroupMembers,
-    getCurrentAvatar,
-    getCurrentAvatarV2,
     listOutfits,
     getOutfitDetailsRaw,
     getBundlesForAsset,
@@ -665,11 +537,9 @@ module.exports = {
     getUniverseIdForPlace,
     getUniverseOwner,
     normalizeOutfitList, // puro; exportado para los tests
-    normalizeAvatarAssets, // puro; exportado para los tests
     // puro; exportado para los tests. Es el que decide si un 4xx de Roblox es
     // "no existe" (definitivo) o "algo va mal" (reintentable), asi que merece
     // pruebas propias en vez de solo ejercitarse de refilon.
     esUniversoInexistente: UNIVERSO_INEXISTENTE,
     catalogKey,          // puro; la clave "Asset:123" / "Bundle:192"
-    TRAFICO,             // que cubo del limitador usa cada llamador de catalogo
 };

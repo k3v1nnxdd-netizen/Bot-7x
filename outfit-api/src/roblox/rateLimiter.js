@@ -29,7 +29,7 @@ const requestContext = require('../observability/requestContext');
 // cache; esto es lo que hace que un limite duela poco en vez de tumbar todo.
 
 const {
-    maxConcurrent, maxQueue, maxRetries, foregroundReserved,
+    maxConcurrent, maxQueue, maxRetries,
     retryBaseDelayMs, retryMaxDelayMs, inlineWaitCeilingMs,
     circuitFailureThreshold, circuitBaseCooldownMs, circuitMaxCooldownMs,
     pacerBaseMs, pacerMaxMs, pacerMinMs, pacerDecay,
@@ -44,71 +44,39 @@ function sleep(ms) {
 // ── Gate de concurrencia global ──────────────────────────────────────────────
 
 let active = 0;
-
-// Cola del trabajo de fondo, separada de la de produccion. Ver acquire().
-const queueFondo = [];
 const queue = [];
 
-// Techo de peticiones en vuelo para el trabajo de fondo. Siempre deja libres
-// `foregroundReserved` slots que el fondo NO puede ocupar, pase lo que pase.
-function techoDeFondo() {
-    return Math.max(1, maxConcurrent - foregroundReserved);
-}
-
-// DOS COLAS, no una. La de produccion (juego y licencias) se sirve entera antes
-// de mirar la de fondo: sin esto, una verificacion de licencia podia quedarse
-// detras de cincuenta avatares del indexador y esperar segundos por un trabajo
-// que a nadie le corre prisa.
-//
-// No hay inanicion del fondo aunque parezca: el trafico de produccion es a
-// rafagas cortas y deja huecos constantemente. Y si algun dia no los dejara,
-// que el indexado vaya lento es exactamente la decision correcta.
-function acquire(routeKey) {
-    const fondo = esDeFondo(routeKey);
-    const techo = fondo ? techoDeFondo() : maxConcurrent;
-
-    if (active < techo) {
+// UNA SOLA COLA. Hubo dos —produccion y fondo, con slots reservados para la
+// primera— mientras el proceso servia tambien la busqueda del plugin y el
+// worker del indice, que hacian rafagas largas contra Roblox y podian dejar una
+// verificacion de licencia esperando detras. Retirado el plugin, todo lo que
+// sale de aqui tiene a un jugador delante y no hay nada de lo que priorizar.
+function acquire() {
+    if (active < maxConcurrent) {
         active++;
         return Promise.resolve();
     }
 
-    const cola = fondo ? queueFondo : queue;
-
     // Cola llena: se rechaza AL INSTANTE en vez de acumular. Con miles de
     // jugadores, un "vuelve en 2 segundos" inmediato es infinitamente mejor
     // que un socket retenido medio minuto para acabar fallando igual.
-    if (cola.length >= maxQueue) {
+    if (queue.length >= maxQueue) {
         return Promise.reject(new UpstreamRateLimitedError(
             'Demasiadas consultas en cola hacia Roblox, reintenta en unos segundos',
             2
         ));
     }
-    return new Promise(resolve => cola.push(resolve));
+    return new Promise(resolve => queue.push(resolve));
 }
 
 function release() {
-    // Se libera y se reparte. Todo es SINCRONO — no hay await entre el
-    // decremento y el reparto — asi que ninguna peticion nueva puede colarse en
+    // Se libera y se entrega el hueco. Todo es SINCRONO — no hay await entre el
+    // decremento y la entrega — asi que ninguna peticion nueva puede colarse en
     // medio y adelantar a quien lleva esperando.
     active--;
-    repartirSlots();
-}
-
-// Reparte los slots libres: PRIMERO produccion, y solo despues fondo, y a este
-// unicamente hasta su techo. Es el punto donde se hace efectiva la prioridad.
-function repartirSlots() {
-    for (;;) {
-        if (queue.length > 0 && active < maxConcurrent) {
-            active++;
-            queue.shift()();
-            continue;
-        }
-        if (queueFondo.length > 0 && active < techoDeFondo()) {
-            active++;
-            queueFondo.shift()();
-            continue;
-        }
-        return;
+    if (queue.length > 0 && active < maxConcurrent) {
+        active++;
+        queue.shift()();
     }
 }
 
@@ -187,60 +155,8 @@ const buckets = {
     // aprieta uno de los dos, el otro sigue atendiendo.
     bundleDetails: makeBucket('bundleDetails'),
 
-    // Busqueda de outfits del plugin de Studio. Dos buckets propios y
-    // SEPARADOS de todo lo anterior a proposito: es el unico camino que hace
-    // rafagas (un avatar por candidato), y si Roblox le aprieta el limite, eso
-    // no puede dejar sin servicio a los juegos con licencia — que son los que
-    // pagan. Al reves tampoco: una tarde de mucho trafico de juego no puede
-    // congelar la herramienta interna.
-    groupMembers: makeBucket('groupMembers'),
-    userAvatar: makeBucket('userAvatar'),
-
-    // v2 del avatar, con bucket PROPIO y separado de userAvatar (v1) a
-    // proposito. Son cuotas distintas y se comprobo midiendo: en Railway v1
-    // esta en seis por HORA y devuelve 429, mientras v2 aguanto doscientas
-    // llamadas seguidas sin una sola. Compartir bucket haria que el cooldown
-    // de v1 —que esta permanentemente cerrado— congelara tambien a v2, que es
-    // justo el camino que ahora funciona.
-    userAvatarV2: makeBucket('userAvatarV2'),
-
-    // CATALOGO DEL TRABAJO DE FONDO (plugin de Studio e index worker).
-    //
-    // Mismo endpoint de Roblox que `catalogDetails`, pero bucket SEPARADO, y es
-    // la separacion que mas importa de todo el archivo. Los dos caminos pedian
-    // precios por el mismo cubo, asi que un 429 provocado por el worker
-    // indexando una comunidad entera ponia en cooldown —y abria el breaker de—
-    // la ruta con la que el JUEGO resuelve los precios de un outfit. El juego
-    // no fallaba con estruendo: `attachCatalogStatus` se traga el error y
-    // devuelve el outfit sin precios (ver services/outfitService.js), asi que
-    // el sintoma era "no cargan los precios" sin una sola linea de error del
-    // lado del cliente.
-    //
-    // Con dos cubos, el fondo se come sus propios 429 y el juego sigue
-    // resolviendo catalogo. Comparten la CACHE por asset, que es lo que se
-    // quiere compartir: lo que el worker ya resolvio se lo encuentra el juego
-    // hecho, sin gastar cuota.
-    catalogDetailsBackground: makeBucket('catalogDetailsBackground'),
 };
 
-// Rutas que atienden TRABAJO DE FONDO. Se listan aqui, en un solo sitio, y no
-// se deducen de quien llama: el gate las trata distinto y esa decision tiene
-// que poder leerse de un vistazo.
-//
-// Son las tres que hacen rafagas largas (indexar una comunidad, recorrer
-// avatares, poner precio a miles de assets). Todo lo demas —incluida cualquier
-// ruta nueva que alguien añada— cuenta como produccion por defecto, que es el
-// lado seguro: como mucho se protege de mas, nunca de menos.
-const RUTAS_DE_FONDO = new Set([
-    'catalogDetailsBackground',
-    'groupMembers',
-    'userAvatar',
-    'userAvatarV2',
-]);
-
-function esDeFondo(routeKey) {
-    return RUTAS_DE_FONDO.has(routeKey);
-}
 
 // ── Diagnostico de limitacion ────────────────────────────────────────────────
 //
@@ -302,16 +218,9 @@ function diagnostico(bucket, { endpoint = null, status = null, headers = null, u
         cooldownRemainingMs: Math.max(0, bucket.cooldownUntil - now),
         circuitState: estadoDelCircuito(bucket, now),
         consecutiveFailures: bucket.consecutiveFailures,
-        // Correlacion con la busqueda que provoco la llamada. null cuando quien
-        // llama no abrio contexto (las rutas del juego), que no es un problema.
-        //
-        // El searchId va ADEMAS del requestId y no en su lugar: el requestId
-        // ata la linea a la peticion HTTP y el searchId al trabajo que el
-        // plugin esta siguiendo, que en modo asincrono le sobrevive por
-        // minutos. Con solo el primero, un 429 emitido a mitad de una busqueda
-        // asincrona no se podia cruzar con el `searchId` que devolvio el POST.
+        // Correlacion con la peticion que provoco la llamada. null cuando
+        // quien llama no abrio contexto, que no es un problema.
         requestId: requestContext.requestId(),
-        searchId: requestContext.searchId(),
     };
 }
 
@@ -511,18 +420,16 @@ function releaseRouteSlot(bucket) {
 // deja de insistir y el gate acota cuantas van a la vez. Ninguno evita el 429;
 // solo hacen que duela menos.
 //
-// El marcapasos si lo evita, y hacia falta por una razon concreta: la busqueda
-// del plugin es la unica cosa de este servicio que hace RAFAGAS sostenidas
-// contra una misma ruta. Doce olas seguidas de catalogo agotan la ventana de
-// cuota, Roblox contesta 'remaining: 0' con su reset, y la busqueda se quedaba
-// a medias — no porque no hubiera outfits, sino porque habiamos gastado la
-// cuota tan deprisa como se podia.
+// El marcapasos si lo evita, y hace falta cuando algo hace RAFAGAS sostenidas
+// contra una misma ruta: un lote de veinticuatro outfits con precios puede
+// agotar la ventana de cuota del catalogo, y entonces Roblox contesta
+// 'remaining: 0' con su reset y lo que quedaba se queda a medias — no porque no
+// hubiera datos, sino porque habiamos gastado la cuota tan deprisa como se podia.
 //
 // AIMD (aumento agresivo, reduccion suave), y arranca EN CERO a proposito:
 // mientras Roblox no se queje no hay separacion ninguna y el comportamiento es
-// exactamente el de siempre — lo que importa porque estos buckets los comparte
-// el trafico del juego, que no puede pagar por las rafagas del plugin. En
-// cuanto Roblox señala presion (un 429, o 'remaining: 0' en una respuesta
+// exactamente el de siempre, que es lo que importa: el trafico normal del juego
+// no puede pagar por una rafaga puntual. En cuanto Roblox señala presion (un 429, o 'remaining: 0' en una respuesta
 // buena) la separacion salta y se va relajando sola conforme las llamadas
 // vuelven a salir bien.
 function apretarMarcapasos(bucket) {
@@ -732,7 +639,7 @@ async function callOnce(bucket, fn) {
             );
         }
 
-        await acquire(bucket.name);
+        await acquire();
         try {
             // `calls` se cuenta AQUI, en el punto exacto en que la peticion
             // sale, y no al entrar en run(): entre la entrada y este punto hay
@@ -929,46 +836,6 @@ async function run(routeKey, fn, { notFoundCode = 'not_found', notFoundWhen = nu
     }
 }
 
-// ¿Esta ruta esta frenada AHORA MISMO? Consulta de solo lectura: no reserva
-// slot, no toca contadores y no espera.
-//
-// Existe porque quien va a lanzar una rafaga cara necesita poder preguntar
-// antes de empezar, en vez de enterarse a base de 429. El limitador es el
-// unico que conoce este estado (cooldown impuesto por Roblox y breaker), asi
-// que preguntarselo es mas barato y mas honesto que deducirlo de los errores.
-// Lo usa la busqueda del plugin para dejar de pedir lotes de catalogo en
-// cuanto Roblox aprieta, en lugar de seguir chocando contra la pared.
-function getThrottleState(routeKey) {
-    const bucket = buckets[routeKey];
-    if (!bucket) throw new Error(`routeKey desconocido: ${routeKey}`);
-
-    const now = Date.now();
-    const circuitOpen = bucket.circuitOpenUntil > now;
-    // Lo que falta para poder llamar, venga el freno del cooldown de Roblox o
-    // del breaker nuestro. Antes solo contaba el primero, y con el breaker
-    // abierto quien preguntaba veia "0 ms" — estacionaba solo su margen,
-    // volvia, seguia cerrado, y asi hasta agotar sus pausas.
-    const cooldownRemainingMs = Math.max(0, Math.max(bucket.cooldownUntil, bucket.circuitOpenUntil) - now);
-
-    return {
-        // `true` = una llamada nueva o se hace esperar o se rechaza de plano.
-        throttled: cooldownRemainingMs > 0 || circuitOpen,
-        cooldownRemainingMs,
-        circuitOpen,
-        // Separacion vigente del marcapasos. No implica `throttled`: la ruta
-        // sigue atendiendo, solo que a un ritmo mas espaciado.
-        spacingMs: Math.round(bucket.spacingMs),
-        // Instante ABSOLUTO en el que la ruta vuelve a estar disponible. Es lo
-        // que un trabajo persiste como resumeAt para poder estacionarse de
-        // forma durable y reanudar despues de un reinicio.
-        resumeAt: Math.max(bucket.cooldownUntil, bucket.circuitOpenUntil) || null,
-        inFlight: bucket.inFlight,
-        maxInFlight: bucket.maxInFlight,
-        quota: { ...bucket.quota },
-        // Motivo, para poder decir en el log POR QUE se corto.
-        reason: circuitOpen ? 'circuit_open' : cooldownRemainingMs > 0 ? 'cooldown' : null,
-    };
-}
 
 function getMetrics() {
     const now = Date.now();
@@ -989,13 +856,7 @@ function getMetrics() {
         concurrency: {
             active,
             queued: queue.length,
-            // En vuelo y en espera del trabajo de fondo, por separado: es lo que
-            // permite ver de un vistazo si el indexado esta comiendose la
-            // concurrencia o si el juego esta esperando por su culpa.
-            queuedBackground: queueFondo.length,
             maxConcurrent,
-            maxBackground: techoDeFondo(),
-            foregroundReserved,
             maxQueue,
         },
         byRoute,
@@ -1006,12 +867,11 @@ function getMetrics() {
 function reset() {
     active = 0;
     queue.length = 0;
-    queueFondo.length = 0;
     for (const routeKey of Object.keys(buckets)) buckets[routeKey] = makeBucket(routeKey);
 }
 
 module.exports = {
-    run, getMetrics, getThrottleState, imponerCooldown, reset,
+    run, getMetrics, imponerCooldown, reset,
     __buckets: buckets,
     // Puros; exportados SOLO para los tests. Deciden que sale en el log cuando
     // Roblox nos frena, asi que merecen pruebas propias en vez de ejercitarse

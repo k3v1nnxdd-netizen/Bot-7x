@@ -21,6 +21,17 @@ if (!process.env.STORAGE_DIR) {
     process.env.STORAGE_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'bot7x-test-storage-'));
 }
 
+// Lo mismo para el estado persistido de utils/dataDir.js (cupones, reseñas,
+// ranking de Robux, el interruptor de la venta del Headless, ...). Y por la
+// MISMA razón que arriba: dataDir.js lee DATA_DIR una sola vez, al requerirse,
+// así que ponerlo dentro de un fichero de test llega tarde en cuanto otro test
+// anterior ya lo haya importado — y entonces el test escribe en el ./data real
+// del proyecto. Eso no es teórico: dejar ahí un headlessSale.json con la venta
+// abierta es abrirle la venta al bot de esta máquina desde `npm test`.
+if (!process.env.DATA_DIR) {
+    process.env.DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'bot7x-test-data-'));
+}
+
 (async () => {
     const files = fs.readdirSync(__dirname).filter(f => f.endsWith('.test.js')).sort();
     console.log(`Running ${files.length} test file(s): ${files.join(', ')}\n`);

@@ -25,23 +25,23 @@
 //      vez de duplicarlo.
 
 const fs = require('fs');
-const os = require('os');
 const path = require('path');
-
-// El interruptor escribe en DATA_DIR al cargarse utils/dataDir.js, así que se
-// redirige a un directorio temporal ANTES de requerir nada: un `npm test` no
-// puede tocar el estado real de la venta.
-process.env.DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'bot7x-headless-'));
 
 const { createSuite } = require('./testHarness');
 const config = require('../../config');
 const v2 = require('../../utils/panelV2');
+const { dataPath } = require('../../utils/dataDir');
 const headlessSale = require('../../utils/headlessSale');
 const { __test: panel } = require('../../headless');
 const { __test: flujo } = require('../../handlers/headlessFlow');
 
 const H = config.HEADLESS;
-const ESTADO_FILE = path.join(process.env.DATA_DIR, 'headlessSale.json');
+
+// Quién redirige DATA_DIR a un temporal es run.js, no este fichero: dataDir.js
+// lo lee UNA vez, al requerirse, así que ponerlo aquí llegaría tarde en cuanto
+// otro test lo hubiera importado antes — y el test acabaría escribiendo en el
+// ./data real. Por eso la ruta se pregunta, no se construye.
+const ESTADO_FILE = dataPath('headlessSale.json');
 
 // Todos los nodos de un contenedor ya serializado, en plano. walk() no se
 // exporta desde panelV2, así que se recorre aquí igual que hace él.
@@ -82,6 +82,17 @@ module.exports = async function run() {
     }
 
     // ── 3. La venta empieza y falla en CERRADA ───────────────────────────────
+    // Antes de nada, la salvaguarda: este bloque abre y cierra la venta, así
+    // que si corriera contra el ./data real dejaría el interruptor del bot de
+    // esta máquina donde lo dejara la última aserción. run.js redirige DATA_DIR
+    // a un temporal; esto comprueba que de verdad lo hizo.
+    const dataDelProyecto = path.resolve(__dirname, '..', '..', 'data');
+    assert(
+        !path.resolve(ESTADO_FILE).startsWith(dataDelProyecto),
+        'el estado de prueba va a un DATA_DIR temporal, nunca al ./data del proyecto'
+    );
+
+    if (fs.existsSync(ESTADO_FILE)) fs.unlinkSync(ESTADO_FILE);
     assert(headlessSale.isOpen() === false, 'sin fichero de estado, la venta está cerrada');
 
     fs.writeFileSync(ESTADO_FILE, '{ esto no es json', 'utf8');
@@ -164,5 +175,119 @@ module.exports = async function run() {
     assert(inputs.length === 1, 'el formulario pide un único dato');
     assert(inputs[0].custom_id === 'usuario_roblox', 'y ese dato es el usuario de Roblox');
 
+    // ── 8. Reiniciar el bot NO republica el panel ────────────────────────────
+    // Lo que protege: cada arranque llama a ensureHeadlessPanel. Si la búsqueda
+    // del panel existente falla, el canal se llena de paneles duplicados, cada
+    // uno con su botón de comprar. El caso que se escapaba —y por el que la
+    // búsqueda mira los FIJADOS y no sólo los últimos 100 mensajes— es el canal
+    // con más de 100 mensajes por encima del panel.
+    for (const escenario of await simularReinicios()) {
+        assert(escenario.ok, escenario.msg);
+    }
+
     return finish();
 };
+
+// Canal de Discord falso: lo justo para que ensureHeadlessPanel funcione.
+function canalFalso(BOT_ID) {
+    const mensajes = [];
+    let n = 0;
+    const canal = {
+        id: config.CHANNELS.HEADLESS,
+        enviados: 0,
+        editados: 0,
+        sinFetchPins: false,
+        messages: {
+            // Como Discord: los fijados no dependen de cuántos mensajes haya encima.
+            fetchPins: async () => {
+                if (canal.sinFetchPins) throw new Error('403 Missing Access');
+                return { items: mensajes.filter(m => m.pinned).map(message => ({ message })), hasMore: false };
+            },
+            fetch: async ({ limit }) => {
+                const recientes = mensajes.slice(-limit).reverse();  // más nuevos primero
+                const col = new Map(recientes.map(m => [m.id, m]));
+                col.find = fn => recientes.find(fn);
+                return col;
+            },
+        },
+        send: async payload => {
+            canal.enviados++;
+            const msg = {
+                id: `m${++n}`,
+                pinned: false,
+                author: { id: BOT_ID },
+                content: payload.content ?? '',
+                embeds: [],
+                components: payload.components.map(c => c.toJSON()),
+                channel: canal,
+                pin: async () => { msg.pinned = true; },
+                edit: async p => { canal.editados++; msg.components = p.components.map(c => c.toJSON()); return msg; },
+                delete: async () => {},
+            };
+            mensajes.push(msg);
+            return msg;
+        },
+        ruido: cantidad => {
+            for (let i = 0; i < cantidad; i++) {
+                mensajes.push({ id: `r${++n}`, pinned: false, author: { id: 'humano' }, content: 'hola', embeds: [], components: [] });
+            }
+        },
+        despinnear: () => mensajes.forEach(m => { m.pinned = false; }),
+    };
+    return canal;
+}
+
+async function simularReinicios() {
+    const { ensureHeadlessPanel } = require('../../headless');
+    const BOT_ID = 'bot-de-prueba';
+    const nuevo = () => {
+        const canal = canalFalso(BOT_ID);
+        const client = { user: { id: BOT_ID }, channels: { cache: new Map([[canal.id, canal]]), fetch: async () => canal } };
+        return { canal, client };
+    };
+
+    const out = [];
+
+    // Cuatro arranques seguidos sin cambiar nada: un panel y ni un edit (que
+    // resubiría la imagen en cada arranque para nada).
+    const a = nuevo();
+    for (let i = 0; i < 4; i++) await ensureHeadlessPanel(a.client);
+    out.push({ ok: a.canal.enviados === 1, msg: `4 arranques seguidos publican UN panel (fueron ${a.canal.enviados})` });
+    out.push({ ok: a.canal.editados === 0, msg: 'y no reeditan nada si el panel ya está al día' });
+
+    // El panel enterrado bajo mensajes de gente. 150 y 400 son justo los casos
+    // que se escapaban al mirar sólo los últimos 100 mensajes.
+    for (const ruido of [99, 150, 400]) {
+        const { canal, client } = nuevo();
+        await ensureHeadlessPanel(client);
+        canal.ruido(ruido);
+        await ensureHeadlessPanel(client);
+        out.push({ ok: canal.enviados === 1, msg: `con ${ruido} mensajes encima del panel, el reinicio no lo duplica` });
+    }
+
+    // Sin poder leer los fijados (permisos, versión de discord.js): tiene que
+    // caer al barrido de los últimos 100 y seguir encontrándolo.
+    const b = nuevo();
+    await ensureHeadlessPanel(b.client);
+    b.canal.sinFetchPins = true;
+    b.canal.ruido(20);
+    await ensureHeadlessPanel(b.client);
+    out.push({ ok: b.canal.enviados === 1, msg: 'sin acceso a los fijados, el respaldo de 100 mensajes lo encuentra igual' });
+
+    // Alguien desfija el panel a mano: se reaprovecha y se vuelve a fijar.
+    const c = nuevo();
+    await ensureHeadlessPanel(c.client);
+    c.canal.despinnear();
+    await ensureHeadlessPanel(c.client);
+    out.push({ ok: c.canal.enviados === 1, msg: 'un panel desfijado a mano se reaprovecha en vez de duplicarse' });
+
+    // Cambiar el estado de la venta edita el panel existente, no publica otro.
+    const d = nuevo();
+    headlessSale.setOpen(false);
+    await ensureHeadlessPanel(d.client);
+    headlessSale.setOpen(true);
+    await ensureHeadlessPanel(d.client);
+    out.push({ ok: d.canal.enviados === 1 && d.canal.editados === 1, msg: '/headless on edita el panel existente en vez de publicar otro' });
+
+    return out;
+}

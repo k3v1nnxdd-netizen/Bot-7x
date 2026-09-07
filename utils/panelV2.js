@@ -43,6 +43,43 @@ function rawComponents(msg) {
     return (msg.components ?? []).map(c => (typeof c.toJSON === 'function' ? c.toJSON() : c));
 }
 
+// Los mensajes FIJADOS del canal, como array plano.
+//
+// Existe porque buscar el panel en los últimos 100 mensajes tiene un fondo
+// falso: en cuanto se acumulan más de 100 mensajes por encima, el panel deja de
+// aparecer en esa ventana y el siguiente arranque publica un DUPLICADO. Los
+// fijados no dependen de cuántos mensajes haya encima, así que son la búsqueda
+// fiable; el barrido de 100 se queda como respaldo (cubre un panel que alguien
+// haya desfijado).
+//
+// discord.js cambió la API a mitad de la v14 y por eso esto no llama a una sola
+// función: fetchPins() devuelve { items: [{ message }] } y fetchPinned() —ya
+// deprecado— devuelve una Collection. Se aceptan las dos formas.
+//
+// Cualquier fallo devuelve un array vacío en vez de propagarse: sin fijados el
+// llamante cae al barrido de siempre, que es exactamente lo que hacía antes.
+async function fetchPinnedMessages(channel) {
+    const manager = channel?.messages;
+    if (!manager) return [];
+
+    try {
+        if (typeof manager.fetchPins === 'function') {
+            const res = await manager.fetchPins();
+            if (Array.isArray(res?.items)) return res.items.map(i => i?.message).filter(Boolean);
+            if (typeof res?.values === 'function') return [...res.values()];
+            return [];
+        }
+        if (typeof manager.fetchPinned === 'function') {
+            const col = await manager.fetchPinned();
+            return typeof col?.values === 'function' ? [...col.values()] : [];
+        }
+    } catch (err) {
+        console.warn('[panelV2] No se pudieron leer los mensajes fijados:', err.message);
+    }
+
+    return [];
+}
+
 // `accessory` es la otra rama por la que cuelgan componentes: lo que va a la
 // derecha de una Section (la miniatura del panel del Headless, por ejemplo) no
 // está en `components`, sino ahí. Sin recorrerla, un cambio de imagen sería
@@ -120,6 +157,7 @@ module.exports = {
     payload,
     editPayload,
     rawComponents,
+    fetchPinnedMessages,
     collectButtons,
     panelText,
     mediaName,

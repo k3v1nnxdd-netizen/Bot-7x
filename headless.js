@@ -230,18 +230,26 @@ async function ensureHeadlessPanel(client) {
 
     const container = buildContainer();
 
+    // 1. Los FIJADOS primero. Es la única búsqueda que no depende de cuánta
+    //    gente haya escrito en el canal desde que se publicó el panel: con más
+    //    de 100 mensajes encima, el barrido de abajo ya no lo encontraría y el
+    //    arranque publicaría un duplicado.
+    const fijados = await v2.fetchPinnedMessages(channel);
+    const pinned = fijados.find(m => isHeadlessMsg(m, client.user.id));
+    if (pinned) {
+        if (v2.isUpToDate(pinned, container)) {
+            console.log('[headless] Panel fijado ya actualizado — nada que hacer.');
+            return pinned;
+        }
+        const msg = await v2.editOrRecreate(pinned, container, IMAGEN, 'headless');
+        console.log('[headless] Panel fijado actualizado.');
+        return msg;
+    }
+
+    // 2. Respaldo: los últimos 100 mensajes. Cubre el panel que alguien haya
+    //    desfijado y el caso en el que Discord no deje leer los fijados.
     const messages = await channel.messages.fetch({ limit: 100 }).catch(() => null);
     if (messages) {
-        const pinned = messages.find(m => m.pinned && isHeadlessMsg(m, client.user.id));
-        if (pinned) {
-            if (v2.isUpToDate(pinned, container)) {
-                console.log('[headless] Panel fijado ya actualizado — nada que hacer.');
-                return pinned;
-            }
-            const msg = await v2.editOrRecreate(pinned, container, IMAGEN, 'headless');
-            console.log('[headless] Panel fijado actualizado.');
-            return msg;
-        }
         const existing = messages.find(m => isHeadlessMsg(m, client.user.id));
         if (existing) {
             const msg = v2.isUpToDate(existing, container)

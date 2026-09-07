@@ -24,6 +24,7 @@ module.exports = {
         CHECKGROUP_RESULTS: '1534758835531808869',
         ORDER_LOG:          '1537756329131647018',
         ROBUX_TOP:          '1537754184076627978',
+        HEADLESS:           '1546348969255370762',
     },
 
     ROBLOX_GROUP_ID:       282134403,
@@ -78,6 +79,34 @@ module.exports = {
         COOLDOWN_MS:    15_000,
         MAX_PER_WINDOW: 6,
         WINDOW_MS:      10 * 60_000,
+    },
+
+    // ── Headless Horseman ────────────────────────────────────────────────────
+    // La oferta cerrada del Headless: un paquete fijo, sin calculadora y sin
+    // cupones. Estos números son la ÚNICA fuente de verdad de la promoción — el
+    // panel (headless.js), el resumen del ticket y el aviso de venta cerrada
+    // (handlers/headlessFlow.js) los leen todos de aquí, así que subir el precio
+    // o cambiar la cantidad de Robux es tocar UNA línea y nada más.
+    //
+    // AHORRO no se escribe a mano: se calcula desde PRECIO_MXN y
+    // PRECIO_ROBLOX_MXN cada vez que se pinta el panel, para que no pueda
+    // quedarse desfasado respecto al precio real (ver headless.js).
+    //
+    // DIAS_REQ es el requisito de ESTA promoción y va aparte a propósito: no es
+    // MIN_GROUP_DAYS (los 14 días que exige Roblox para pagar) ni
+    // ROBLOX_GROUP_DAYS_REQ (el del canal de verificación).
+    HEADLESS: {
+        ROBUX:             31000,
+        PRECIO_MXN:        3579,
+        PRECIO_ROBLOX_MXN: 8000,
+        PRECIO_ROBLOX_USD: 380,
+        DIAS_REQ:          15,
+        // Las dos comunidades en las que hay que llevar DIAS_REQ días antes de
+        // poder recibir el envío. Se listan en el panel en este mismo orden.
+        COMUNIDADES: [
+            { label: "7x Community's", link: 'https://www.roblox.com/es/communities/59218460/7x-Community-s#!/about' },
+            { label: 'Noctraa',        link: 'https://www.roblox.com/es/communities/679239229/Noctraa#!/about' },
+        ],
     },
 
     // Cumulative Robux purchased (all-time) to qualify for the Rich Client role

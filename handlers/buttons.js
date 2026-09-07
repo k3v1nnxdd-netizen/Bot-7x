@@ -16,6 +16,7 @@ const { requestReview }  = require('../utils/reviewFlow');
 const { sendOrderCompletionSummary } = require('../utils/orderNotify');
 const { startSeguidoresTicket, handleSeguidoresButton } = require('./seguidoresFlow');
 const { handleCheckGroupButton } = require('./checkGroupFlow');
+const { handleHeadlessButton } = require('./headlessFlow');
 const { handleGroupsPageButton } = require('./groupLicenses');
 const config             = require('../config');
 
@@ -44,6 +45,7 @@ function buildAutoCloseEmbed(minutes) {
 
 const PANEL_BUTTONS  = new Set(['comprar', 'otra_cosa', 'duels', 'seguidores']);
 const CALC_BUTTONS   = new Set(['calc_dinero', 'calc_robux']);
+const HEADLESS_BUTTONS = new Set(['headless_comprar']);
 const VERIF_BUTTONS  = new Set(['verif_check']);
 const TICKET_BUTTONS = new Set(['confirmar_pago', 'cerrar_ticket', 'confirmar_cerrar', 'cancelar_cerrar']);
 // Derivado de config.CHECK_GROUPS en vez de escrito a mano: el customId de
@@ -83,6 +85,12 @@ async function guardButton(interaction) {
     // Calc buttons must come from the calc channel
     if (CALC_BUTTONS.has(interaction.customId) && interaction.channelId !== config.CHANNELS.CALC) {
         await safeReply(interaction, { content: 'Usa los botones del canal de calculadora.', ephemeral: true });
+        return false;
+    }
+
+    // Headless buttons must come from the headless sale channel
+    if (HEADLESS_BUTTONS.has(interaction.customId) && interaction.channelId !== config.CHANNELS.HEADLESS) {
+        await safeReply(interaction, { content: 'Usa el botón del panel oficial del Headless Horseman.', ephemeral: true });
         return false;
     }
 
@@ -393,6 +401,7 @@ const HANDLERS = {
     otra_cosa:        onOtraCosa,
     duels:            onDuels,
     seguidores:       startSeguidoresTicket,
+    headless_comprar: handleHeadlessButton,
     verif_check:      onVerifCheck,
     calc_dinero:      onCalcDinero,
     calc_robux:       onCalcRobux,

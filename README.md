@@ -269,6 +269,49 @@ verdad cambia:
 | Icono de la comunidad | 12 h | Practicamente nunca cambia, y solo hay 3 comunidades: ~3 peticiones al dia |
 | Imagen que Roblox no dio | 5 min (avatar) / 30 min (icono) | Tambien se cachea el "no hay", pero poco: suele ser un render pendiente que se resuelve solo |
 
+## Headless Horseman
+
+Venta de un paquete cerrado: **31,000 Robux por $3,579 MXN** para comprar el Headless Horseman. Panel propio, ticket propio e interruptor de venta.
+
+### Las cifras
+
+Todas viven en `config.HEADLESS` y en ningun sitio mas — precio, Robux, precio de referencia en Roblox, dias de antiguedad y las dos comunidades. Cambiar el precio es cambiar **una linea**: el panel, el resumen del ticket y el aviso de pago lo leen de ahi.
+
+El porcentaje de ahorro **no se escribe**: se calcula desde `PRECIO_MXN` y `PRECIO_ROBLOX_MXN` cada vez que se pinta el panel, para que no pueda quedarse anunciando el descuento de ayer.
+
+### El panel
+
+Se publica y se fija solo en `CHANNELS.HEADLESS` al arrancar el bot (`headless.js`). Es un Container de Components V2, igual que el panel de tickets: barra naranja, la imagen del Headless como miniatura a la derecha y **los dos botones dentro del bloque**.
+
+- **Comprar** — abre el formulario y crea el ticket.
+- **Verificar** — enlace al canal de Check Group's, para comprobar la antiguedad antes de pagar.
+
+La imagen se busca como `headless.png` y, si no esta, `transparent (1).png`. Se sube como adjunto con el hash del contenido en el nombre, asi que reemplazar el archivo hace que el panel se reedite solo en el siguiente arranque.
+
+### El ticket
+
+Un ticket de compra de Robux normal: mismos mensajes, mismos metodos de pago, mismo boton de "PAGO REALIZADO" del owner. Dos diferencias:
+
+1. Solo se pregunta el **usuario de Roblox**. La cantidad y el precio son fijos.
+2. El canal se llama `headless-0001`.
+
+Internamente el tipo de ticket es `comprar`, no `headless`, y es a proposito: de ese tipo cuelgan el boton de pago del owner, el "PAGO EXITOSO" del cliente, el registro en el canal de pedidos y el ranking de compradores. Un tipo nuevo dejaria el ticket a medio funcionar. Por lo mismo, el resumen usa las mismas etiquetas que el de compra normal ("Usuario de Roblox", "Robux a recibir", "Precio a pagar"): es de ahi de donde `utils/orderNotify.js` saca los datos del ranking.
+
+### /headless on|off (solo owner)
+
+Abre o cierra la venta.
+
+| Comando | Boton Comprar | Panel |
+|---|---|---|
+| `/headless on` | abre el ticket | "Venta abierta" |
+| `/headless off` | responde que todavia no esta a la venta | "Venta cerrada" |
+
+El boton sigue pulsable con la venta cerrada **a proposito**: quien llega lee por que no puede comprar todavia, en vez de encontrarse un boton gris sin explicacion.
+
+El estado se guarda en `DATA_DIR/headlessSale.json`, no en memoria: un reinicio del bot no puede abrir una venta que estaba cerrada. Por defecto **cerrada** — un fichero que no existe, corrupto o a medias significa cerrada, nunca abierta. Sin un Volume montado en `DATA_DIR`, un redeploy vuelve a dejarla cerrada.
+
+Cada cambio repinta el panel al momento; si el repintado falla, el estado ya esta guardado y la respuesta lo dice.
+
 ## Ejecutar
 
 ```bash

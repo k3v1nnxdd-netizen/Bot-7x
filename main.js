@@ -39,12 +39,13 @@ if (RUN_BOT) {
     const { ensureRolesPanel, EMOJI_ROLE_MAP, getRolesMsgId } = require('./roles');
     const { ensureSeguidoresPanel } = require('./seguidores');
     const { ensureCheckGroupPanel } = require('./checkGroup');
+    const { ensureHeadlessPanel }   = require('./headless');
     const { updateLeaderboardMessage } = require('./utils/robuxLeaderboardPanel');
     const { backfillFromOrderLog } = require('./utils/robuxLeaderboardBackfill');
     const tickets             = require('./utils/tickets');
     const { handleButton, clearTimers } = require('./handlers/buttons');
     const { handleModal }     = require('./handlers/modals');
-    const { handleOutfit, handlePagos, handlePagoVerified, handleOffer, handleClose, handleTopCompradores } = require('./handlers/commands');
+    const { handleOutfit, handlePagos, handlePagoVerified, handleOffer, handleClose, handleHeadless, handleTopCompradores } = require('./handlers/commands');
     const {
         handleAddGroup, handleRegenerateToken, handleDeleteGroup, handleCheckGroup, handleGroups,
     } = require('./handlers/groupLicenses');
@@ -151,6 +152,17 @@ if (RUN_BOT) {
             {
                 name: 'topcompradores',
                 description: 'Muestra el ranking de los mayores compradores de Robux',
+            },
+
+            // El gate real es el chequeo de OWNER_ID dentro de handleHeadless,
+            // igual que /offer: el registro del comando no decide permisos.
+            {
+                name: 'headless',
+                description: 'Abre o cierra la venta del Headless Horseman (solo owner)',
+                options: [
+                    { name: 'on',  type: 1, description: 'Abre la venta: cualquiera puede abrir su ticket del Headless' },
+                    { name: 'off', type: 1, description: 'Cierra la venta: nadie puede abrir tickets del Headless' },
+                ],
             },
 
             // ── Licencias de grupos (outfit-api /admin/groups, solo owner) ──
@@ -263,6 +275,10 @@ if (RUN_BOT) {
             console.error('[bot] ensureCheckGroupPanel failed:', err)
         );
 
+        await ensureHeadlessPanel(client).catch(err =>
+            console.error('[bot] ensureHeadlessPanel failed:', err)
+        );
+
         await backfillFromOrderLog(client).catch(err =>
             console.error('[bot] backfillFromOrderLog failed:', err)
         );
@@ -288,6 +304,7 @@ if (RUN_BOT) {
             else if (interaction.isChatInputCommand() && interaction.commandName === 'offer')        await handleOffer(interaction);
             else if (interaction.isChatInputCommand() && interaction.commandName === 'connect')      await handleConnect(interaction);
             else if (interaction.isChatInputCommand() && interaction.commandName === 'topcompradores') await handleTopCompradores(interaction);
+            else if (interaction.isChatInputCommand() && interaction.commandName === 'headless')      await handleHeadless(interaction);
             else if (interaction.isChatInputCommand() && interaction.commandName === 'addgroup')      await handleAddGroup(interaction);
             else if (interaction.isChatInputCommand() && interaction.commandName === 'regeneratetoken') await handleRegenerateToken(interaction);
             else if (interaction.isChatInputCommand() && interaction.commandName === 'deletegroup')   await handleDeleteGroup(interaction);

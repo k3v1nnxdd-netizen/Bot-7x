@@ -10,6 +10,8 @@ const tickets = require('../utils/tickets');
 const { requestReview } = require('../utils/reviewFlow');
 const { sendOrderCompletionSummary } = require('../utils/orderNotify');
 const { buildLeaderboardEmbed } = require('../utils/robuxLeaderboardPanel');
+const headlessSale = require('../utils/headlessSale');
+const { ensureHeadlessPanel } = require('../headless');
 const {
     buildTransferenciaEmbed, buildTransferenciaRow,
     buildOxxoEmbed, buildGiftCardEmbed,
@@ -246,6 +248,50 @@ async function handleClose(interaction) {
     await startAutoClose(channel);
 }
 
+// ── /headless on|off ──────────────────────────────────────────────────────────
+// Abre o cierra la venta del Headless. Sólo el owner, igual que /offer o
+// /pagoverified: el gate real es este chequeo, no el registro del comando.
+//
+// Además de mover el interruptor, repinta el panel para que la línea de estado
+// diga la verdad sin esperar a un reinicio. Si el repintado falla (canal
+// borrado, permisos), el estado YA está guardado: se avisa en la respuesta en
+// vez de dejar creer que no se aplicó nada.
+
+async function handleHeadless(interaction) {
+    if (interaction.user.id !== config.OWNER_ID) {
+        return safeReply(interaction, { content: '❌ No tienes permiso para usar este comando.', ephemeral: true });
+    }
+
+    const ok = await safeDeferReply(interaction, { ephemeral: true });
+    if (!ok) return;
+
+    const abrir = interaction.options.getSubcommand() === 'on';
+    const { changed } = headlessSale.setOpen(abrir, interaction.user.id);
+
+    // ensureHeadlessPanel devuelve el mensaje del panel, o null si no llegó a
+    // tocarlo (canal sin configurar o inaccesible). Las dos cosas cuentan como
+    // "no se repintó": no se le dice al owner que el panel está al día si no lo
+    // está.
+    let panelMsg = null;
+    try {
+        panelMsg = await ensureHeadlessPanel(interaction.client);
+    } catch (err) {
+        console.error('[headless] No se pudo repintar el panel tras el cambio de estado:', err);
+    }
+    const panelOk = Boolean(panelMsg);
+
+    const estado = abrir
+        ? '<a:add:1540603311890104321> **Venta ABIERTA** — cualquiera puede abrir su ticket del Headless.'
+        : '<a:remove:1540604743234228364> **Venta CERRADA** — nadie puede abrir tickets del Headless.';
+
+    const nota = changed ? '' : '\n-# Ya estaba así: no ha cambiado nada.';
+    const aviso = panelOk
+        ? `\n-# Panel actualizado en <#${config.CHANNELS.HEADLESS}>.`
+        : `\n<:alert:1501220021035204658> El estado se guardó, pero no se pudo actualizar el panel de <#${config.CHANNELS.HEADLESS}>. Revisa la consola.`;
+
+    await safeEditReply(interaction, { content: `${estado}${nota}${aviso}` });
+}
+
 async function handleTopCompradores(interaction) {
     const ok = await safeDeferReply(interaction);
     if (!ok) return;
@@ -253,4 +299,4 @@ async function handleTopCompradores(interaction) {
     await safeEditReply(interaction, { embeds: [buildLeaderboardEmbed()] });
 }
 
-module.exports = { handleOutfit, handlePagos, handlePagoVerified, handleOffer, handleClose, handleTopCompradores, refreshCouponEmbed };
+module.exports = { handleOutfit, handlePagos, handlePagoVerified, handleOffer, handleClose, handleHeadless, handleTopCompradores, refreshCouponEmbed };

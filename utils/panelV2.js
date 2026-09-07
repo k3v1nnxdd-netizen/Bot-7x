@@ -43,6 +43,10 @@ function rawComponents(msg) {
     return (msg.components ?? []).map(c => (typeof c.toJSON === 'function' ? c.toJSON() : c));
 }
 
+// `accessory` es la otra rama por la que cuelgan componentes: lo que va a la
+// derecha de una Section (la miniatura del panel del Headless, por ejemplo) no
+// está en `components`, sino ahí. Sin recorrerla, un cambio de imagen sería
+// invisible para signature() y el panel se quedaría con la miniatura vieja.
 function walk(node, visit) {
     if (Array.isArray(node)) {
         for (const child of node) walk(child, visit);
@@ -51,6 +55,7 @@ function walk(node, visit) {
     if (!node || typeof node !== 'object') return;
     visit(node);
     walk(node.components, visit);
+    walk(node.accessory, visit);
 }
 
 function collectButtons(msg) {
@@ -83,6 +88,7 @@ function signature(node) {
         switch (n.type) {
             case 17: out.push(`accent:${n.accent_color ?? ''}`); break;
             case 10: out.push(`text:${n.content}`); break;
+            case 11: out.push(`thumb:${mediaName(n.media?.url)}`); break;
             case 12: out.push(`media:${(n.items ?? []).map(i => mediaName(i.media?.url)).join(',')}`); break;
             case 2:  out.push(`btn:${n.custom_id ?? n.url}|${n.label}|${n.style}|${n.emoji?.id ?? n.emoji?.name ?? ''}`); break;
         }

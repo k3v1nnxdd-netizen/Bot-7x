@@ -19,6 +19,7 @@ const config                                               = require('../config'
 const { buildMetodosEmbed, buildMetodosRow }               = require('../metodos');
 const { handleSeguidoresModal }                             = require('./seguidoresFlow');
 const { handleCheckGroupModal }                             = require('./checkGroupFlow');
+const { handleHeadlessModal }                               = require('./headlessFlow');
 
 // ── Modal builders ────────────────────────────────────────────────────────────
 // These are exported so buttons.js can pass them to safeShowModal().
@@ -635,6 +636,7 @@ const HANDLERS = {
     calc_dinero_modal: handleCalcDineroModal,
     calc_robux_modal:  handleCalcRobuxModal,
     verif_modal:       handleVerifModal,
+    headless_modal:    handleHeadlessModal,
 };
 
 async function handleModal(interaction) {

@@ -541,6 +541,15 @@ El icono y el nombre de la comunidad van los dos en el VALUE del field, y el
 nombre del field va vacio (un espacio de ancho cero), porque Discord no renderiza
 los emojis del servidor en el nombre de un field.
 
+Lo usan **los dos tickets de Robux**: la compra normal y el del Headless. La
+diferencia es el umbral de dias con el que se juzga la elegibilidad, que es un
+parametro: la compra normal se mide contra los dias que exige Roblox para pagar
+(`MIN_GROUP_DAYS`, 14) y el Headless contra los suyos (`HEADLESS.DIAS_REQ`, 15).
+Sin eso, una cuenta con 14 dias saldria elegible en un ticket de Headless que
+pide 15 — prometiendole una entrega que todavia no puede recibir. Por eso la
+elegibilidad se recalcula desde los dias en vez de usar el `eligible` que trae
+`checkMembership`, que siempre viene medido contra MIN_GROUP_DAYS.
+
 Las cinco consultas salen **a la vez** (`Promise.allSettled`) y comparten la
 cache de `resolveRobloxUser`, asi que el username se resuelve una sola vez; lo
 unico que se paga son las membresias, cacheadas 5 minutos.

@@ -11,6 +11,7 @@ const headlessSale = require('../utils/headlessSale');
 const tickets = require('../utils/tickets');
 const config = require('../config');
 const { buildMetodosEmbed, buildMetodosRow } = require('../metodos');
+const { buildCommunitySummary } = require('../utils/communityStatus');
 
 // ── Ticket del Headless Horseman ──────────────────────────────────────────────
 // Es un ticket de compra de Robux normal, con dos diferencias y sólo dos:
@@ -111,10 +112,10 @@ function confirmBtnRow() {
     );
 }
 
-function buildResumenEmbed(robloxUser, avatarURL) {
+function buildResumenEmbed(robloxUser, avatarURL, estado = { fields: [], avatarURL: null }) {
     const comunidades = H.COMUNIDADES.map(c => `<:followers7x:1525326777071960124> [**${c.label}**](${c.link})`).join('\n');
 
-    return new EmbedBuilder()
+    const embed = new EmbedBuilder()
         .setColor(ACCENT_NARANJA)
         .setTitle('Resumen de tu compra — Headless Horseman')
         .setThumbnail(avatarURL)
@@ -127,6 +128,19 @@ function buildResumenEmbed(robloxUser, avatarURL) {
         )
         .setFooter({ text: '7x Community • Proceso automático' })
         .setTimestamp();
+
+    // El avatar de la cuenta de ROBLOX en la línea de autor: identifica a quién
+    // van los Robux. El thumbnail sigue siendo el de Discord, que identifica a
+    // quién abrió el ticket.
+    if (estado.avatarURL) {
+        embed.setAuthor({ name: robloxUser.slice(0, 256), iconURL: estado.avatarURL });
+    }
+
+    // Y la rejilla con su antigüedad en cada comunidad, medida contra los días
+    // que exige ESTA promoción, no contra el mínimo de Roblox.
+    if (estado.fields.length) embed.addFields(...estado.fields);
+
+    return embed;
 }
 
 function buildPasosEmbed() {
@@ -177,10 +191,17 @@ async function handleHeadlessModal(interaction) {
 
         const channel = await tickets.createTicket(interaction.guild, userId, 'comprar', `headless-${pad(headlessN++)}`);
 
+        // El estado del comprador en cada comunidad, medido contra los días que
+        // exige ESTA promoción (15) y no contra el mínimo de Roblox (14): si no,
+        // el resumen diría "elegible" a quien todavía no cumple el requisito del
+        // Headless. Va después de crear el canal: si Roblox tarda o falla, el
+        // ticket ya existe y el resumen sale sin esa parte.
+        const estado = await buildCommunitySummary(interaction.client, robloxUser, { minDias: H.DIAS_REQ });
+
         // ── Mensaje 1: resumen del pedido ─────────────────────────────────────
         await channel.send({
             content: `<@${userId}>`,
-            embeds: [buildResumenEmbed(robloxUser, interaction.user.displayAvatarURL({ size: 256 }))],
+            embeds: [buildResumenEmbed(robloxUser, interaction.user.displayAvatarURL({ size: 256 }), estado)],
             components: [closeBtnRow()],
         });
 

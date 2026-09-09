@@ -133,6 +133,39 @@ module.exports = async function run() {
     assert(parseInt((robuxLeido ?? '').replace(/[^\d]/g, ''), 10) === H.ROBUX, `orderNotify leería ${H.ROBUX} Robux del resumen`);
     assert(parseFloat((precioLeido ?? '').replace(/[^\d.]/g, '')) === H.PRECIO_MXN, `orderNotify leería $${H.PRECIO_MXN} del resumen`);
 
+    // ── 5b. El resumen de comunidades también llega al ticket del Headless ───
+    // Lo que se protege: que el ticket del Headless mida la elegibilidad con SUS
+    // días (DIAS_REQ), no con el mínimo de Roblox. Con 14 días una compra normal
+    // ya es elegible, pero esta promoción pide 15 — enseñar "elegible" ahí sería
+    // prometerle una entrega que todavía no puede recibir.
+    const fuenteHeadless = fs.readFileSync(path.join(__dirname, '..', '..', 'handlers', 'headlessFlow.js'), 'utf8');
+    assert(fuenteHeadless.includes('buildCommunitySummary'), 'el ticket del Headless monta el resumen de comunidades');
+    assert(
+        /buildCommunitySummary\([^)]*minDias:\s*H\.DIAS_REQ/.test(fuenteHeadless),
+        'y lo mide contra los días de la promoción, no contra el mínimo de Roblox'
+    );
+
+    const estadoFalso = {
+        avatarURL: 'https://tr.rbxcdn.com/avatar/150/150/',
+        fields: [
+            { name: '​', value: '<:cg_x:1> **7x Community\'s**\n<a:remove:1540604743234228364> 14 días · faltan 1', inline: true },
+            { name: 'Envío de Robux', value: 'lo que sea', inline: false },
+        ],
+    };
+    const conEstado = flujo.buildResumenEmbed('PlayerName123', 'https://cdn.discordapp.com/x.png', estadoFalso).toJSON();
+
+    assert(conEstado.author?.icon_url === estadoFalso.avatarURL, 'el avatar de ROBLOX va en la línea de autor');
+    assert(conEstado.thumbnail?.url === 'https://cdn.discordapp.com/x.png', 'y el de Discord sigue de thumbnail: son dos personas distintas de identificar');
+    assert(conEstado.fields?.length === 2, 'los campos de comunidades se añaden al resumen');
+    assert(JSON.stringify(conEstado).length < 6000, 'y el embed entero cabe en el límite de Discord');
+
+    // Sin estado —Roblox caído— el resumen sale igual, como antes de que
+    // existiera esta parte.
+    const sinEstado = flujo.buildResumenEmbed('PlayerName123', null).toJSON();
+    assert(!sinEstado.fields?.length, 'sin datos de comunidades, el resumen sale sin esos campos');
+    assert(!sinEstado.author, 'y sin línea de autor, en vez de una vacía');
+    assert(sinEstado.description.includes('Robux a recibir'), 'pero con todo lo demás intacto');
+
     // ── 6. El panel: botones dentro del contenedor, imagen y estado ──────────
     const json = panel.buildContainer(true).toJSON();
     const todos = nodos([json]);

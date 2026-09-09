@@ -42,7 +42,17 @@ const NOMBRE_VACIO = '​';
 // Una consulta por comunidad, TODAS a la vez. Comparten la caché de
 // resolveRobloxUser, así que el username se resuelve una sola vez aunque haya
 // cinco comprobaciones; lo que se paga son las membresías, cacheadas 5 min.
-async function resolverComunidades(username) {
+//
+// `minDias` es el umbral con el que se juzga la elegibilidad, y es un parámetro
+// porque no siempre es el mismo: una compra normal se mide contra los días que
+// exige Roblox para pagar (config.MIN_GROUP_DAYS), pero la promo del Headless
+// pide los suyos (config.HEADLESS.DIAS_REQ). Sin esto, un ticket de Headless
+// enseñaría "elegible" a quien todavía no cumple SU requisito.
+//
+// Por eso la elegibilidad se recalcula aquí desde los días en vez de usar el
+// `eligible` que trae checkMembership: ese siempre viene medido contra
+// MIN_GROUP_DAYS.
+async function resolverComunidades(username, minDias = config.MIN_GROUP_DAYS) {
     const claves = Object.keys(config.CHECK_GROUPS);
 
     const resultados = await Promise.allSettled(
@@ -56,21 +66,29 @@ async function resolverComunidades(username) {
         if (r.status === 'rejected') {
             const code = r.reason instanceof GroupCheckError ? r.reason.code : 'unexpected';
             console.warn(`[communityStatus] No se pudo comprobar ${clave} para "${username}": ${code}`);
-            return { clave, label, estado: 'error', dias: null, robloxUserId: null };
+            return { clave, label, estado: 'error', dias: null, minDias, robloxUserId: null };
         }
 
         const v = r.value;
         return {
             clave,
             label,
-            estado: !v.isMember ? 'no_miembro' : v.eligible ? 'elegible' : 'no_elegible',
+            estado: !v.isMember ? 'no_miembro' : v.days >= minDias ? 'elegible' : 'no_elegible',
             dias: v.days,
+            minDias,
             robloxUserId: v.robloxUserId,
         };
     });
 }
 
 // ── Textos ────────────────────────────────────────────────────────────────────
+
+// Los días que hacen falta en ESTA comprobación: los lleva cada comunidad desde
+// que se resolvió, para que el mismo texto valga para una compra normal y para
+// la promo del Headless.
+function umbral(c) {
+    return c.minDias ?? config.MIN_GROUP_DAYS;
+}
 
 function textoDias(c) {
     if (c.estado === 'error')      return 'No se pudo comprobar';
@@ -79,7 +97,7 @@ function textoDias(c) {
     const dias = `${c.dias} día${c.dias === 1 ? '' : 's'}`;
     if (c.estado === 'elegible') return `${dias} · elegible`;
 
-    const faltan = Math.max(0, config.MIN_GROUP_DAYS - c.dias);
+    const faltan = Math.max(0, umbral(c) - c.dias);
     return `${dias} · faltan ${faltan}`;
 }
 
@@ -98,7 +116,7 @@ function resumenEnvio(c) {
     const dias = `**${c.dias}** día${c.dias === 1 ? '' : 's'}`;
     if (c.estado === 'elegible') return `${dias} · ${EMOJI.si} puedes recibir aquí`;
 
-    const faltan = Math.max(0, config.MIN_GROUP_DAYS - c.dias);
+    const faltan = Math.max(0, umbral(c) - c.dias);
     return `${dias} · ${EMOJI.no} te faltan ${faltan}`;
 }
 
@@ -132,7 +150,7 @@ function buildEnvio(comunidades, emojis = {}) {
     if (!activas.some(c => c.estado === 'elegible')) {
         lineas.push(
             '',
-            `${EMOJI.alert} Aún no puedes recibir desde ninguna comunidad activa. Únete y espera los **${config.MIN_GROUP_DAYS} días** que exige Roblox.`
+            `${EMOJI.alert} Aún no puedes recibir desde ninguna comunidad activa. Únete y espera los **${umbral(activas[0])} días** necesarios.`
         );
     }
 
@@ -143,10 +161,10 @@ function buildEnvio(comunidades, emojis = {}) {
 // Devuelve los fields ya montados y el avatar de Roblox del comprador. Nunca
 // lanza: si todo falla, `fields` sale vacío y el resumen se envía sin esta
 // parte, igual que antes de que existiera.
-async function buildCommunitySummary(client, username) {
+async function buildCommunitySummary(client, username, { minDias } = {}) {
     try {
         const [comunidades, emojis] = await Promise.all([
-            resolverComunidades(username),
+            resolverComunidades(username, minDias ?? config.MIN_GROUP_DAYS),
             groupEmojis.ensureGroupEmojis(client).catch(() => ({})),
         ]);
 
@@ -168,5 +186,5 @@ async function buildCommunitySummary(client, username) {
 
 module.exports = {
     buildCommunitySummary,
-    __test: { resolverComunidades, buildFields, buildEnvio, textoDias, marca, resumenEnvio, EMOJI, NOMBRE_VACIO },
+    __test: { resolverComunidades, buildFields, buildEnvio, textoDias, marca, resumenEnvio, umbral, EMOJI, NOMBRE_VACIO },
 };

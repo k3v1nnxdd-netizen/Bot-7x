@@ -136,6 +136,35 @@ module.exports = async function run() {
             'si no puede recibir por ninguna de las activas, se le avisa'
         );
 
+        // ── 4b. El umbral de días es un parámetro ────────────────────────────
+        // Una compra normal se mide contra los días que exige Roblox para pagar
+        // (MIN_GROUP_DAYS = 14); la promo del Headless, contra los suyos
+        // (HEADLESS.DIAS_REQ = 15). Sin esto, un ticket de Headless enseñaría
+        // "elegible" a quien todavía no cumple SU requisito.
+        const HL = config.HEADLESS.DIAS_REQ;
+        assert(HL > MIN, `la promo del Headless pide más días (${HL}) que el mínimo de Roblox (${MIN})`);
+
+        simularRoblox(Object.fromEntries(claves.map(k => [k, MIN])));   // justo en el mínimo de Roblox
+
+        const normal = await buildCommunitySummary({}, USERNAME);
+        assert(
+            normal.fields[0].value.includes(`${__test.EMOJI.si} ${MIN} días · elegible`),
+            `con ${MIN} días, en una compra normal ya es elegible`
+        );
+
+        const headless = await buildCommunitySummary({}, USERNAME, { minDias: HL });
+        assert(
+            headless.fields[0].value.includes(`${__test.EMOJI.no} ${MIN} días · faltan ${HL - MIN}`),
+            `y con los mismos ${MIN} días, en el Headless le faltan ${HL - MIN}`
+        );
+        assert(!headless.fields[0].value.includes(__test.EMOJI.si), 'no se le marca como elegible en el Headless');
+
+        // Y el aviso final cuenta con el umbral correcto, no con el global.
+        groupActive.setActive(claves[0], true, 'owner');
+        const avisoHl = (await buildCommunitySummary({}, USERNAME, { minDias: HL })).fields.find(f => !f.inline);
+        assert(avisoHl.value.includes(`**${HL} días**`), `el aviso habla de los ${HL} días de la promo, no de los ${MIN}`);
+        groupActive.setActive(claves[0], false, 'owner');
+
         // ── 5. Nada de esto puede tumbar el ticket ───────────────────────────
         simularRoblox(Object.fromEntries(claves.map(k => [k, 'error'])));
         const todoRoto = await buildCommunitySummary({}, USERNAME);

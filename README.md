@@ -492,7 +492,18 @@ lo envia y lo fija al arrancar el bot (y tambien si el comando se ejecuta y el
 panel no existiera todavia). `/groupactive` no publica uno nuevo cada vez: edita
 ese mismo mensaje.
 
-### Dos detalles del panel
+### El boton
+
+Dentro del bloque va un boton de enlace **Verificar elegibilidad** que abre el
+canal de Check Groups. Es el mismo patron que el del panel de comunidades: al
+ser Link no lleva customId, asi que no pasa por `handlers/buttons.js` y no hay
+nada que enrutar ni que pueda fallar.
+
+Ese boton es la razon de que el panel sea un **Container de Components V2** y no
+un embed clasico: un embed no admite botones — en un mensaje clasico quedarian
+colgando debajo, fuera del marco de color.
+
+### Tres detalles del panel
 
 - **El titulo va en la DESCRIPCION**, como encabezado markdown, no en
   `setTitle()`. No es una preferencia: Discord no renderiza los emojis del
@@ -502,6 +513,10 @@ ese mismo mensaje.
 - **Con todas apagadas el panel se pone rojo** y lo dice con una linea. Un
   "se estan enviando desde estos grupos" en verde seguido de cinco cruces seria
   lo contrario de informar.
+- **La hora del pie sale del fichero de estado, no del reloj.** El panel se
+  repinta en cada arranque: una hora calculada al vuelo cambiaria el texto cada
+  vez —reeditando el mensaje en cada reinicio— y ademas mentiria sobre cuando
+  cambio el estado de verdad.
 
 ## Ejecutar
 

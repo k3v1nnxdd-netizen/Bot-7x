@@ -1,6 +1,14 @@
 'use strict';
 
-const { EmbedBuilder } = require('discord.js');
+const {
+    ActionRowBuilder,
+    ButtonBuilder,
+    ButtonStyle,
+    ContainerBuilder,
+    SeparatorBuilder,
+    SeparatorSpacingSize,
+    TextDisplayBuilder,
+} = require('discord.js');
 const config = require('./config');
 const v2 = require('./utils/panelV2');
 const groupActive = require('./utils/groupActive');
@@ -9,9 +17,15 @@ const groupActive = require('./utils/groupActive');
 // Dice, de un vistazo, desde qué comunidades se están enviando Robux ahora
 // mismo. Lo mueve el owner con /groupactive, y se repinta al instante.
 //
+// Es un Container de Components V2 y no un embed clásico por una razón
+// concreta: el botón de "Verificar elegibilidad" tiene que ir DENTRO del
+// bloque. Un embed no admite botones — en un mensaje clásico quedan colgando
+// debajo, fuera del marco de color.
+//
 // Las comunidades no están escritas aquí: salen de config.CHECK_GROUPS, la
 // misma lista de la que viven Check Group's y el panel de comunidades. Añadir
-// una comunidad la hace aparecer también en este panel, activa por defecto.
+// una comunidad la hace aparecer también en este panel, apagada, y en el
+// desplegable del comando.
 
 const VERDE = 0x57F287;
 const ROJO  = 0xED4245;
@@ -25,11 +39,10 @@ const E = {
 
 const TITULO = 'Estado de entrega de Robux';
 
-// El título va DENTRO de la descripción, como encabezado markdown, y no en
-// setTitle(). No es una preferencia: Discord no renderiza los emojis del
-// servidor en el título de un embed — ni en el nombre de un field, ni en el
-// footer. Ahí `<a:active:1529…>` se imprime crudo, tal cual. En la descripción
-// sí se pintan.
+// El título va como encabezado markdown dentro del texto, no en un setTitle().
+// No es una preferencia: Discord no renderiza los emojis del servidor en el
+// título de un embed —ni en el nombre de un field, ni en el footer—, ahí
+// `<a:active:1529…>` se imprime crudo. En el cuerpo sí se pintan.
 function buildDescripcion(estado) {
     const lineas = [
         `## ${E.activo} ${TITULO}`,
@@ -52,35 +65,60 @@ function buildDescripcion(estado) {
     return lineas.join('\n');
 }
 
-function buildEmbed(estado = groupActive.getState()) {
-    const hayActivas = estado.some(g => g.activa);
+// El pie hace de footer: un Container no tiene footer ni timestamp propios.
+//
+// La hora sale del fichero de estado, NO de Date.now(): el panel se repinta en
+// cada arranque, así que una hora calculada al vuelo cambiaría el texto cada
+// vez —obligando a reeditar el mensaje en cada reinicio— y además mentiría
+// sobre cuándo cambió el estado de verdad.
+function buildPie(actualizado = groupActive.getUpdatedAt()) {
+    if (!actualizado) return '-# 7x Community • Estado de entrega';
 
-    return new EmbedBuilder()
-        .setColor(hayActivas ? VERDE : ROJO)
-        .setDescription(buildDescripcion(estado))
-        .setFooter({ text: '7x Community • Estado de entrega' })
-        .setTimestamp();
+    const unix = Math.floor(Date.parse(actualizado) / 1000);
+    return `-# 7x Community • Estado de entrega • última actualización <t:${unix}:R>`;
 }
 
-// ── Identificación y comparación ──────────────────────────────────────────────
-// El panel se reconoce por su título, que es lo único que no cambia al
-// encender o apagar una comunidad.
+// ── El botón ──────────────────────────────────────────────────────────────────
+// Mismo patrón que el del panel de comunidades: un botón de enlace a un canal
+// del propio servidor. Discord no tiene un botón que "navegue a un canal", pero
+// una URL discord.com/channels/<guild>/<canal> abre ese canal en el cliente. Al
+// ser Link no lleva customId y no pasa por handlers/buttons.js: no hay nada que
+// enrutar ni que pueda fallar.
+function buildRow() {
+    return new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+            .setLabel('Verificar elegibilidad')
+            .setEmoji({ id: '1182888883344642180', name: 'rro', animated: true })
+            .setStyle(ButtonStyle.Link)
+            .setURL(`https://discord.com/channels/${config.GUILD_ID}/${config.CHANNELS.CHECKGROUP}`),
+    );
+}
+
+function buildContainer(estado = groupActive.getState(), actualizado = groupActive.getUpdatedAt()) {
+    return new ContainerBuilder()
+        .setAccentColor(estado.some(g => g.activa) ? VERDE : ROJO)
+        .addTextDisplayComponents(new TextDisplayBuilder().setContent(buildDescripcion(estado)))
+        .addSeparatorComponents(
+            new SeparatorBuilder().setDivider(true).setSpacing(SeparatorSpacingSize.Small)
+        )
+        .addTextDisplayComponents(new TextDisplayBuilder().setContent(buildPie(actualizado)))
+        .addSeparatorComponents(
+            new SeparatorBuilder().setDivider(false).setSpacing(SeparatorSpacingSize.Small)
+        )
+        .addActionRowComponents(buildRow());
+}
+
+// El panel no lleva ningún adjunto.
+const SIN_ADJUNTO = { exists: false, path: null, name: '' };
+
+// ── Identificación ────────────────────────────────────────────────────────────
+// Por el texto, que es lo único estable: el botón es de enlace y no tiene
+// customId, y el color cambia al encender o apagar una comunidad. panelText()
+// lee tanto el panel nuevo (TextDisplay) como el ANTIGUO (embed clásico), que
+// es lo que permite convertirlo en su sitio en vez de dejarlo huérfano.
 
 function isStatusMsg(msg, botId) {
-    return msg.author.id === botId && (msg.embeds?.[0]?.description ?? '').includes(TITULO);
-}
-
-// Se comparan sólo color y descripción, NO el timestamp: el timestamp cambia en
-// cada construcción, y compararlo obligaría a reeditar el panel en cada
-// arranque. Dejándolo fuera, la hora que enseña el panel es la del último
-// cambio de verdad — que es justo lo que quiere leer un cliente en un panel de
-// estado.
-function estaAlDia(msg, embed) {
-    const publicado = msg.embeds?.[0];
-    if (!publicado) return false;
-
-    const nuevo = embed.toJSON();
-    return publicado.description === nuevo.description && publicado.color === nuevo.color;
+    return msg.author.id === botId && v2.panelText(msg).includes(TITULO);
 }
 
 // ── ensureGroupStatusPanel ────────────────────────────────────────────────────
@@ -100,16 +138,19 @@ async function ensureGroupStatusPanel(client) {
         return null;
     }
 
-    const embed = buildEmbed();
+    const container = buildContainer();
 
     const aplicar = async (msg, comoLlego) => {
-        if (estaAlDia(msg, embed)) {
+        if (v2.isUpToDate(msg, container)) {
             console.log(`[groupStatus] Panel ${comoLlego} ya actualizado — nada que hacer.`);
             return msg;
         }
-        await msg.edit({ embeds: [embed] });
+        // editOrRecreate y no msg.edit: el panel publicado hoy es un embed
+        // clásico, y Discord NO deja añadirle el flag de Components V2 en un
+        // edit. En ese caso se sustituye —y se vuelve a fijar— en vez de fallar.
+        const editado = await v2.editOrRecreate(msg, container, SIN_ADJUNTO, 'groupStatus');
         console.log(`[groupStatus] Panel ${comoLlego} actualizado.`);
-        return msg;
+        return editado;
     };
 
     // Los FIJADOS primero: no dependen de cuántos mensajes haya por encima.
@@ -137,7 +178,7 @@ async function ensureGroupStatusPanel(client) {
         return aparecido;
     }
 
-    const msg = await channel.send({ embeds: [embed] });
+    const msg = await channel.send(v2.payload(container, SIN_ADJUNTO));
     await msg.pin().catch(err => console.warn('[groupStatus] No se pudo fijar:', err.message));
     console.log('[groupStatus] Panel enviado y fijado.');
     return msg;
@@ -145,5 +186,5 @@ async function ensureGroupStatusPanel(client) {
 
 module.exports = {
     ensureGroupStatusPanel,
-    __test: { buildEmbed, buildDescripcion, isStatusMsg, estaAlDia, TITULO, VERDE, ROJO, E },
+    __test: { buildContainer, buildDescripcion, buildPie, buildRow, isStatusMsg, TITULO, VERDE, ROJO, E },
 };

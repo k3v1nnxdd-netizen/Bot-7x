@@ -91,20 +91,41 @@ module.exports = async function run() {
     // Con algo encendido, para poder comprobar el caso normal.
     for (const clave of claves) groupActive.setActive(clave, true, '123');
     estado = groupActive.getState();
-    const embed = panel.buildEmbed(estado).toJSON();
 
-    assert(embed.color === panel.VERDE, 'con alguna comunidad activa, el embed es verde');
-    assert(!embed.title, 'no se usa setTitle()...');
+    const contenedor = panel.buildContainer(estado).toJSON();
+    const nodos = [];
+    (function rec(n) {
+        if (Array.isArray(n)) return n.forEach(rec);
+        if (!n || typeof n !== 'object') return;
+        nodos.push(n);
+        rec(n.components);
+        rec(n.accessory);
+    })([contenedor]);
+
+    const textos = nodos.filter(n => n.type === 10).map(n => n.content).join('\n');
+
+    assert(contenedor.type === 17, 'el panel es un Container: el botón va DENTRO, no colgando debajo');
+    assert(contenedor.accent_color === panel.VERDE, 'con alguna comunidad activa, la barra es verde');
     assert(
-        embed.description.startsWith(`## ${panel.E.activo} ${panel.TITULO}`),
-        '...el título va en la descripción, que es donde Discord SÍ pinta los emojis del servidor'
+        textos.startsWith(`## ${panel.E.activo} ${panel.TITULO}`),
+        'el título va en el cuerpo, que es donde Discord SÍ pinta los emojis del servidor'
     );
-    assert(embed.footer?.text === '7x Community • Estado de entrega', 'lleva su pie');
-    assert(Boolean(embed.timestamp), 'y la hora del último cambio');
+    assert(textos.includes('7x Community • Estado de entrega'), 'lleva su pie');
 
     for (const g of estado) {
-        assert(embed.description.includes(`**${g.label}**`), `sale la comunidad ${g.label}`);
+        assert(textos.includes(`**${g.label}**`), `sale la comunidad ${g.label}`);
     }
+
+    // ── 3b. El botón de verificar ────────────────────────────────────────────
+    const botones = nodos.filter(n => n.type === 2);
+    assert(botones.length === 1, 'hay exactamente un botón');
+    assert(botones[0].style === 5, 'es de tipo enlace (no pasa por ningún handler)');
+    assert(
+        botones[0].url === `https://discord.com/channels/${config.GUILD_ID}/${config.CHANNELS.CHECKGROUP}`,
+        'y lleva al canal de Check Group\'s'
+    );
+    assert(config.CHANNELS.CHECKGROUP === '1534758810265059438', 'que es el 1534758810265059438');
+    assert(botones[0].label === 'Verificar elegibilidad', 'con la misma etiqueta que el del panel de comunidades');
 
     // El emoji correcto junto a cada una.
     const conUnaCaida = groupActive.getState().map((g, i) => ({ ...g, activa: i !== 1 }));
@@ -121,31 +142,47 @@ module.exports = async function run() {
     // Es además el estado con el que arranca el panel el primer día, antes de
     // que el owner encienda ninguna.
     const todasCaidas = groupActive.getState().map(g => ({ ...g, activa: false }));
-    const apagado = panel.buildEmbed(todasCaidas).toJSON();
-    assert(apagado.color === panel.ROJO, 'sin ninguna activa, el panel deja de ser verde');
+    const apagado = panel.buildContainer(todasCaidas).toJSON();
+    const textoApagado = panel.buildDescripcion(todasCaidas);
+    assert(apagado.accent_color === panel.ROJO, 'sin ninguna activa, el panel deja de ser verde');
     assert(
-        apagado.description.includes('Ninguna comunidad está enviando Robux ahora mismo'),
+        textoApagado.includes('Ninguna comunidad está enviando Robux ahora mismo'),
         'y lo dice con todas las letras, en vez de dejar cinco cruces sin explicación'
     );
     for (const g of todasCaidas) {
-        assert(apagado.description.includes(`${panel.E.down} **${g.label}**`), `${g.label} sale igual, marcada como caída`);
+        assert(textoApagado.includes(`${panel.E.down} **${g.label}**`), `${g.label} sale igual, marcada como caída`);
     }
 
-    // ── 5. Comparación sin timestamp ─────────────────────────────────────────
-    // Si el timestamp contara, el panel se reeditaría en cada arranque.
-    const publicado = { embeds: [panel.buildEmbed(estado).toJSON()] };
-    assert(panel.estaAlDia(publicado, panel.buildEmbed(estado)), 'un panel sin cambios no se reedita, aunque la hora sea otra');
-    assert(!panel.estaAlDia(publicado, panel.buildEmbed(todasCaidas)), 'y uno con otro estado sí');
-    assert(!panel.estaAlDia({ embeds: [] }, panel.buildEmbed(estado)), 'un mensaje sin embed no se da por bueno');
+    // ── 5. El pie no depende del reloj ───────────────────────────────────────
+    // Si la hora se calculara al vuelo, el texto cambiaría en cada arranque y
+    // el panel se reeditaría siempre — además de mentir sobre cuándo cambió el
+    // estado de verdad.
+    const cuando = '2026-09-09T01:36:00.000Z';
+    assert(panel.buildPie(cuando) === panel.buildPie(cuando), 'el pie es el mismo mientras no cambie el estado');
+    assert(panel.buildPie(cuando).includes(`<t:${Math.floor(Date.parse(cuando) / 1000)}:R>`), 'y lleva la hora del último cambio');
+    assert(!panel.buildPie(null).includes('<t:'), 'sin ningún cambio todavía, el pie no inventa una hora');
+
+    const v2mod = require('../../utils/panelV2');
+    const publicado = { components: [panel.buildContainer(estado, cuando).toJSON()] };
+    assert(v2mod.isUpToDate(publicado, panel.buildContainer(estado, cuando)), 'un panel sin cambios no se reedita');
+    assert(!v2mod.isUpToDate(publicado, panel.buildContainer(todasCaidas, cuando)), 'y uno con otro estado sí');
 
     // ── 6. Se reconoce el panel para reeditarlo, no duplicarlo ───────────────
-    const mio = { author: { id: 'bot' }, embeds: [panel.buildEmbed(estado).toJSON()] };
+    const mio = { author: { id: 'bot' }, components: [panel.buildContainer(estado).toJSON()], embeds: [] };
     assert(panel.isStatusMsg(mio, 'bot'), 'el bot reconoce su propio panel');
     assert(!panel.isStatusMsg(mio, 'otro-bot'), 'y no confunde el de otro bot con el suyo');
     assert(
-        !panel.isStatusMsg({ author: { id: 'bot' }, embeds: [{ description: 'hola' }] }, 'bot'),
-        'ni un embed cualquiera suyo con el panel'
+        !panel.isStatusMsg({ author: { id: 'bot' }, embeds: [{ description: 'hola' }], components: [] }, 'bot'),
+        'ni un mensaje cualquiera suyo con el panel'
     );
+    // El panel VIEJO era un embed clásico: hay que seguir reconociéndolo para
+    // convertirlo en su sitio, no para publicar otro al lado.
+    const viejo = {
+        author: { id: 'bot' },
+        embeds: [{ description: `## ${panel.E.activo} ${panel.TITULO}\n\nlo que fuera` }],
+        components: [],
+    };
+    assert(panel.isStatusMsg(viejo, 'bot'), 'y reconoce el panel antiguo (embed clásico) para convertirlo');
 
     // ── 7. El comando ofrece exactamente las comunidades de config ───────────
     const fuenteMain = fs.readFileSync(path.join(__dirname, '..', '..', 'main.js'), 'utf8');

@@ -78,6 +78,22 @@ function activas() {
     return getState().filter(g => g.activa);
 }
 
+// Cuándo se tocó por última vez, en ISO, o null si nunca.
+//
+// Lo enseña el panel como "última actualización". Sale del fichero y no de
+// Date.now() a propósito: el panel se repinta en cada arranque, y una hora
+// calculada al vuelo cambiaría el texto cada vez, obligando a reeditar el
+// mensaje en cada reinicio y mintiendo sobre cuándo cambió el estado de verdad.
+function getUpdatedAt() {
+    try {
+        const data = JSON.parse(fs.readFileSync(FILE, 'utf8'));
+        const iso = data?.updatedAt;
+        return typeof iso === 'string' && !Number.isNaN(Date.parse(iso)) ? iso : null;
+    } catch {
+        return null;
+    }
+}
+
 // Devuelve { ok, changed }: `ok` en false = esa comunidad no existe en config
 // (opción manipulada o grupo retirado); `changed` en false = ya estaba así, y
 // el comando lo dice en vez de fingir que hizo algo.
@@ -98,4 +114,4 @@ function setActive(clave, activa, actorId = null) {
     return { ok: true, changed: true };
 }
 
-module.exports = { isActive, getState, activas, setActive, POR_DEFECTO };
+module.exports = { isActive, getState, activas, setActive, getUpdatedAt, POR_DEFECTO };

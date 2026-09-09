@@ -13,6 +13,7 @@ const {
 } = require('discord.js');
 const config = require('./config');
 const v2 = require('./utils/panelV2');
+const { ensureGroupEmojis, mencionaIconos } = require('./utils/groupEmojis');
 
 // ── Banner ────────────────────────────────────────────────────────────────────
 // Va DENTRO del contenedor, entre el texto y el botón. Se sube como adjunto y se
@@ -25,16 +26,29 @@ const BANNER = v2.pickBanner(['./7xcomunidades30fps.gif'], '7xcomunidades.gif');
 const ACCENT = 0x2B2D31;
 const TITULO = "7x Community - Group's";
 
-function buildVerifText() {
-    return (
-        `# ${TITULO}\n\n` +
-        "<:followers7x:1525326777071960124> **7x Community's**\n" +
-        'https://www.roblox.com/share/g/59218460\n\n' +
-        '<:followers7x:1525326777071960124> **Noctra Study**\n' +
-        'https://www.roblox.com/share/g/282134403\n\n' +
-        '<:followers7x:1525326777071960124> **7x $tudio**\n' +
-        'https://www.roblox.com/share/g/1101699267'
-    );
+// La lista de comunidades sale de config.CHECK_GROUPS, la MISMA de la que vive
+// el panel de Check Group's. Antes estaba escrita a mano aquí, y eso significaba
+// que añadir una comunidad la dejaba fuera de este panel sin que nada avisara:
+// la gente se unía a las que veía aquí y luego el otro panel le decía que no
+// pertenecía a una cuarta que nunca le habían enseñado.
+//
+// El icono de cada una va a la IZQUIERDA del nombre, y por eso es un emoji: en
+// Components V2 la imagen de una Section se pinta siempre a la derecha (ver
+// utils/groupEmojis.js). Sin emoji propio se cae al genérico.
+const EMOJI_GENERICO = '<:followers7x:1525326777071960124>';
+
+function buildVerifText(emojis = {}) {
+    const lista = Object.entries(config.CHECK_GROUPS)
+        .map(([clave, grupo]) => {
+            const icono = emojis[clave] ?? EMOJI_GENERICO;
+            const enlace = grupo.link
+                ? `-# [Unirme a la comunidad](${grupo.link})`
+                : '-# Comunidad pendiente de configurar.';
+            return `${icono} **${grupo.label}**\n${enlace}`;
+        })
+        .join('\n');
+
+    return `# ${TITULO}\n\n${lista}`;
 }
 
 function buildVerifAviso() {
@@ -63,10 +77,10 @@ function buildVerifRow() {
 
 // El contenedor hace de "embed": texto arriba, GIF debajo y el botón al final,
 // todo dentro del mismo bloque.
-function buildVerifContainer() {
+function buildVerifContainer(emojis = {}) {
     const container = new ContainerBuilder()
         .setAccentColor(ACCENT)
-        .addTextDisplayComponents(new TextDisplayBuilder().setContent(buildVerifText()))
+        .addTextDisplayComponents(new TextDisplayBuilder().setContent(buildVerifText(emojis)))
         .addSeparatorComponents(
             new SeparatorBuilder().setDivider(true).setSpacing(SeparatorSpacingSize.Small)
         )
@@ -90,8 +104,15 @@ function buildVerifContainer() {
     return container.addActionRowComponents(buildVerifRow());
 }
 
-function buildVerifOptions() {
-    return v2.payload(buildVerifContainer(), BANNER);
+function buildVerifOptions(emojis = {}) {
+    return v2.payload(buildVerifContainer(emojis), BANNER);
+}
+
+// Las comunidades que se quedan sin su icono real en esta pasada.
+function sinIcono(emojis) {
+    return Object.entries(config.CHECK_GROUPS)
+        .filter(([clave, grupo]) => grupo.groupId && !emojis[clave])
+        .map(([, grupo]) => grupo.label);
 }
 
 // Reconoce el panel por su texto: sirve igual para el panel nuevo (TextDisplay)
@@ -115,45 +136,64 @@ async function ensureVerifPanel(client) {
         console.warn('[verif] Banner no encontrado (7xcomunidades30fps.gif) — el panel se enviará sin GIF.');
     }
 
-    const container = buildVerifContainer();
+    const emojis = await ensureGroupEmojis(client);
+    const faltan = sinIcono(emojis);
+    if (faltan.length) {
+        console.warn(`[verif] Sin icono propio: ${faltan.join(', ')} — esas comunidades irán con el emoji genérico.`);
+    }
+
+    const container = buildVerifContainer(emojis);
+
+    // Reeditar con menos iconos de los que ya tiene el panel publicado lo
+    // dejaría peor: se prefiere el bueno. El "no hay icono" se cachea 30 min,
+    // así que el siguiente arranque lo arregla solo.
+    const degradaria = msg => faltan.length && mencionaIconos(v2.panelText(msg));
+
+    const aplicar = async (msg, comoLlego) => {
+        if (v2.isUpToDate(msg, container)) {
+            console.log(`[verif] Panel ${comoLlego} ya actualizado — nada que hacer.`);
+            return msg;
+        }
+        if (degradaria(msg)) {
+            console.warn('[verif] Faltan iconos y el panel publicado sí los tiene — se deja como está.');
+            return msg;
+        }
+        const editado = await v2.editOrRecreate(msg, container, BANNER, 'verif');
+        console.log(`[verif] Panel ${comoLlego} actualizado.`);
+        return editado;
+    };
+
+    // Los FIJADOS primero: no dependen de cuántos mensajes haya por encima.
+    // Buscar sólo en los últimos 100 acaba duplicando el panel en cuanto el
+    // canal acumula más de 100 mensajes desde que se publicó.
+    const fijados = await v2.fetchPinnedMessages(channel);
+    const pinned = fijados.find(m => isVerifMsg(m, client.user.id));
+    if (pinned) return aplicar(pinned, 'fijado');
 
     const messages = await channel.messages.fetch({ limit: 100 }).catch(() => null);
-    if (messages) {
-        const pinned = messages.find(m => m.pinned && isVerifMsg(m, client.user.id));
-        if (pinned) {
-            if (v2.isUpToDate(pinned, container)) {
-                console.log('[verif] Pinned verif panel already up to date — nothing to do.');
-                return;
-            }
-            await v2.editOrRecreate(pinned, container, BANNER, 'verif');
-            console.log('[verif] Pinned verif panel updated.');
-            return;
-        }
-        const existing = messages.find(m => isVerifMsg(m, client.user.id));
-        if (existing) {
-            const msg = v2.isUpToDate(existing, container)
-                ? existing
-                : await v2.editOrRecreate(existing, container, BANNER, 'verif');
-            await msg.pin().catch(err => console.warn('[verif] Could not pin:', err.message));
-            console.log('[verif] Verif panel updated and pinned.');
-            return;
-        }
+    const existing = messages?.find(m => isVerifMsg(m, client.user.id));
+    if (existing) {
+        const msg = await aplicar(existing, 'del historial');
+        await msg.pin().catch(err => console.warn('[verif] Could not pin:', err.message));
+        return msg;
     }
 
     await new Promise(r => setTimeout(r, 3000));
 
     const recheck = await channel.messages.fetch({ limit: 20 }).catch(() => null);
-    if (recheck?.find(m => isVerifMsg(m, client.user.id))) {
+    const aparecido = recheck?.find(m => isVerifMsg(m, client.user.id));
+    if (aparecido) {
         console.log('[verif] Verif panel appeared while waiting — skipping send.');
-        return;
+        return aparecido;
     }
 
-    const msg = await channel.send(buildVerifOptions());
+    const msg = await channel.send(buildVerifOptions(emojis));
     await msg.pin().catch(err => console.warn('[verif] Could not pin:', err.message));
     console.log('[verif] Verif panel sent and pinned.');
+    return msg;
 }
 
 module.exports = {
     ensureVerifPanel,
-    __test: { buildVerifOptions, buildVerifRow, buildVerifContainer, isVerifMsg, BANNER },
+    __test: { buildVerifOptions, buildVerifRow, buildVerifContainer, buildVerifText, isVerifMsg, sinIcono, BANNER },
 };

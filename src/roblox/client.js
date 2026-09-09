@@ -271,9 +271,14 @@ async function getGroupMembership(groupId, userId) {
 // Returns null instead of throwing when Roblox has no icon ready (state
 // "Pending"/"Blocked") — a license must never fail to be granted because a
 // picture wasn't available, so every caller treats this as decoration.
-async function getGroupIcon(groupId) {
+// `size` sólo admite los tamaños que Roblox publica para iconos de grupo
+// (150x150 y 420x420); cualquier otro devuelve un error de la API en vez de una
+// imagen. 420 es el de la tarjeta de resultado; 150 existe para los emojis de
+// aplicación, donde el límite de Discord son 256 KB y el 420 de una comunidad
+// puede acercarse peligrosamente (el de 7x UGC pesa 218 KB).
+async function getGroupIcon(groupId, size = '420x420') {
     const res = await limitedThumbnailRequest(() => api.get(
-        `https://thumbnails.roblox.com/v1/groups/icons?groupIds=${groupId}&size=420x420&format=Png&isCircular=false`
+        `https://thumbnails.roblox.com/v1/groups/icons?groupIds=${groupId}&size=${size}&format=Png&isCircular=false`
     ));
     observeThumbnailLimit(res.headers);
     const entry = res.data?.data?.[0];

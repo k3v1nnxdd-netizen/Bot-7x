@@ -104,22 +104,56 @@ que una comunidad de 300.000 miembros cuesta exactamente lo mismo que una de 3.
 ### El panel
 
 Un Container de Components V2, como el de tickets: barra de color a la izquierda
-y, DENTRO del mismo bloque, el texto, una fila por comunidad con su icono y los
+y, DENTRO del mismo bloque, el texto, una linea por comunidad con su icono y los
 botones. Antes era un embed clasico con los botones colgando debajo.
 
-Los iconos **se piden a Roblox** (`thumbnails.roblox.com`, via
-`getCommunityIcon`), no son PNGs del repo: si cambia el icono de una comunidad,
-el panel se actualiza solo en el siguiente arranque. Los PNGs locales siguen
-existiendo, pero solo como respaldo de la TARJETA DE RESULTADO, no del panel.
-
-Nada del panel esta escrito a mano: las filas, los iconos y los botones salen de
+Nada del panel esta escrito a mano: las lineas, los iconos y los botones salen de
 recorrer `config.CHECK_GROUPS`. Los botones se reparten en filas de 3.
 
-Dos reglas que evitan estropear lo que ya esta publicado:
+El **panel de comunidades** (`verif.js`, el del canal de verificacion) sale de esa
+MISMA lista. Antes tenia las tres comunidades escritas a mano, y eso significaba
+que anadir una la dejaba fuera de ese panel sin que nada avisara: la gente se unia
+a las que veia alli y luego Check Group's le decia que no pertenecia a una cuarta
+que nunca le habian ensenado.
 
-- **Si Roblox no da algun icono, no se reedita un panel que si los tiene.** Es
-  preferible dejar el bueno a sustituirlo por uno sin fotos; el "no hay icono" se
-  cachea 30 minutos, asi que el siguiente arranque lo arregla solo.
+### Por que los iconos son emojis
+
+Porque **el icono va a la izquierda del nombre**, y en Components V2 la imagen de
+una Section es su `accessory`, que Discord pinta SIEMPRE a la derecha. No es que
+no usemos la opcion: la API no la tiene. La unica imagen que Discord pinta a la
+izquierda de un texto es un emoji.
+
+Asi que `utils/groupEmojis.js` sube el icono real de cada comunidad como **emoji
+de la aplicacion** (del bot, no del servidor: no gasta los 50 huecos del servidor,
+funciona en cualquier servidor donde este el bot y no necesita permisos de gestion
+de emojis). El nombre es `cg_<clave>_<hash del icono>`, y ese hash es lo que hace
+que el sistema se mantenga solo:
+
+| Situacion | Que pasa |
+|---|---|
+| Primer arranque | Se sube uno por comunidad |
+| Reinicio sin cambios | Se encuentra por nombre y **no se sube nada** |
+| El dueno cambia el icono en Roblox | Cambia el hash -> se sube el nuevo y se borra el viejo **de esa comunidad** |
+| Roblox no da el icono | Esa comunidad sale con el emoji generico |
+| Discord rechaza la subida | Igual: emoji generico, y el panel se publica |
+
+Sin el hash en el nombre no habria forma de enterarse de que la foto ya no es la
+misma; sin la reutilizacion por nombre, cada reinicio dejaria cinco emojis nuevos
+y en unas semanas la app llegaria a su tope de 2000.
+
+El icono se pide en **150x150**, no en 420x420: un emoji no puede pasar de 256 KB
+y el icono de 7x UGC en 420 pesa 218, demasiado cerca del techo. En 150 el mayor
+baja a 37 KB, y Discord los pinta a ~48 px de todos modos. El 420x420 se sigue
+usando donde si se ve grande: la TARJETA DE RESULTADO.
+
+Todo esto es decoracion y **nunca lanza**: un panel sin fotos es peor que uno con
+ellas, pero un panel que no se publica porque una foto fallo es mucho peor.
+
+Dos reglas mas que evitan estropear lo que ya esta publicado:
+
+- **Si falta algun icono, no se reedita un panel que si los tiene.** Es preferible
+  dejar el bueno a sustituirlo por uno sin fotos; el "no hay icono" se cachea 30
+  minutos, asi que el siguiente arranque lo arregla solo.
 - **El panel se busca primero entre los mensajes FIJADOS**, no en los ultimos 100:
   en un canal con movimiento, buscar solo en los ultimos 100 acaba publicando un
   duplicado en cuanto el panel queda enterrado.

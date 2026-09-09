@@ -5,29 +5,28 @@ const {
     ButtonBuilder,
     ButtonStyle,
     ContainerBuilder,
-    SectionBuilder,
     SeparatorBuilder,
     SeparatorSpacingSize,
     TextDisplayBuilder,
-    ThumbnailBuilder,
 } = require('discord.js');
 const config = require('./config');
 const v2 = require('./utils/panelV2');
-const { getCommunityIcon } = require('./utils/groupMembership');
+const { ensureGroupEmojis, mencionaIconos } = require('./utils/groupEmojis');
 
 // ── Panel de Check Group's ────────────────────────────────────────────────────
 // Un único Container hace de "embed": barra de color a la izquierda y, DENTRO
-// del mismo bloque, el texto, una fila por comunidad con su icono y los
+// del mismo bloque, el texto, una línea por comunidad con su icono y los
 // botones. Mismo patrón que panel.js, verif.js y headless.js.
 //
 // Las comunidades NO están escritas aquí: salen de config.CHECK_GROUPS, que es
 // la misma fuente de la que handlers/buttons.js deriva los customId (`cg_
 // <clave>`) y de la que el flujo saca el groupId. Añadir una comunidad es
-// tocar config y nada más: aparece su fila, su icono y su botón.
+// tocar config y nada más: aparece su línea, su icono y su botón.
 //
-// Los iconos se piden a Roblox (thumbnails.roblox.com, cacheados 12 h por
-// utils/groupMembership), no son PNGs del repo: si el dueño cambia el icono de
-// una comunidad, el panel se actualiza solo en el siguiente arranque.
+// El icono va a la IZQUIERDA del nombre, y por eso es un emoji y no la imagen
+// grande de una Section: el accessory de una Section lo pinta Discord siempre a
+// la derecha, sin alternativa. utils/groupEmojis.js sube el icono real de cada
+// comunidad como emoji de la aplicación y explica el porqué con detalle.
 
 const ACCENT = 0x2B2D31;
 const TITULO = "Check Group's";
@@ -49,26 +48,6 @@ function comunidades() {
     return Object.entries(config.CHECK_GROUPS).map(([clave, grupo]) => ({ clave, ...grupo }));
 }
 
-// ── Iconos ────────────────────────────────────────────────────────────────────
-// getCommunityIcon nunca lanza: devuelve null si Roblox no da el icono (o si
-// aún no lo ha renderizado). Se piden todos a la vez; son 5 peticiones cada 12
-// horas, que es lo que dura la caché.
-async function fetchIconos() {
-    const lista = comunidades();
-    const urls = await Promise.all(
-        lista.map(c => (c.groupId ? getCommunityIcon(c.groupId) : Promise.resolve(null)))
-    );
-
-    const iconos = {};
-    const faltan = [];
-    lista.forEach((c, i) => {
-        iconos[c.clave] = urls[i] ?? null;
-        if (c.groupId && !urls[i]) faltan.push(c.label);
-    });
-
-    return { iconos, faltan };
-}
-
 // ── Textos ────────────────────────────────────────────────────────────────────
 
 function buildCabecera() {
@@ -79,17 +58,22 @@ function buildCabecera() {
     ].join('\n');
 }
 
-// Una fila por comunidad: nombre a la izquierda, icono de Roblox a la derecha.
+// Una línea por comunidad: icono a la izquierda, nombre a la derecha y debajo
+// el enlace. Quien todavía no pertenece necesita entrar ANTES de que comprobar
+// su antigüedad tenga sentido, y ese enlace es justo lo que le hace falta.
 //
-// La segunda línea es el enlace a la comunidad, no una frase repetida cinco
-// veces: quien todavía no pertenece necesita entrar ANTES de que comprobar su
-// antigüedad tenga sentido, y ese enlace es justo lo que le hace falta.
-function textoComunidad(c) {
-    const segunda = c.link
-        ? `-# [Ver la comunidad en Roblox](${c.link})`
-        : '-# Comunidad pendiente de configurar.';
-
-    return `${E.point} **${c.label}**\n${segunda}`;
+// Sin emoji propio (Roblox no dio el icono, o Discord rechazó la subida) se usa
+// el genérico: la línea sale igual, sólo que sin la foto de la comunidad.
+function buildComunidades(emojis = {}) {
+    return comunidades()
+        .map(c => {
+            const icono = emojis[c.clave] ?? E.group;
+            const enlace = c.link
+                ? `-# [Ver la comunidad en Roblox](${c.link})`
+                : '-# Comunidad pendiente de configurar.';
+            return `${icono} **${c.label}**\n${enlace}`;
+        })
+        .join('\n');
 }
 
 function buildAviso() {
@@ -140,33 +124,12 @@ function separador(divisor = true) {
     return new SeparatorBuilder().setDivider(divisor).setSpacing(SeparatorSpacingSize.Small);
 }
 
-function buildContainer(iconos = {}) {
+function buildContainer(emojis = {}) {
     const container = new ContainerBuilder()
         .setAccentColor(ACCENT)
         .addTextDisplayComponents(new TextDisplayBuilder().setContent(buildCabecera()))
-        .addSeparatorComponents(separador());
-
-    // Con icono, la comunidad va en una Section para poder colgarle la imagen a
-    // la derecha; sin icono, en un bloque de texto normal. Así una comunidad
-    // cuyo icono Roblox no dé todavía sale igual, sólo que sin foto.
-    for (const c of comunidades()) {
-        const texto = new TextDisplayBuilder().setContent(textoComunidad(c));
-        const icono = iconos[c.clave];
-
-        if (icono) {
-            container.addSectionComponents(
-                new SectionBuilder()
-                    .addTextDisplayComponents(texto)
-                    .setThumbnailAccessory(
-                        new ThumbnailBuilder().setURL(icono).setDescription(c.label.slice(0, 100))
-                    )
-            );
-        } else {
-            container.addTextDisplayComponents(texto);
-        }
-    }
-
-    container
+        .addSeparatorComponents(separador())
+        .addTextDisplayComponents(new TextDisplayBuilder().setContent(buildComunidades(emojis)))
         .addSeparatorComponents(separador())
         .addTextDisplayComponents(new TextDisplayBuilder().setContent(buildAviso()))
         .addSeparatorComponents(separador(false));
@@ -176,8 +139,7 @@ function buildContainer(iconos = {}) {
     return container;
 }
 
-// El panel no lleva ningún adjunto: los iconos son URLs de Roblox, no ficheros
-// del repo.
+// El panel no lleva ningún adjunto: los iconos son emojis de la aplicación.
 const SIN_ADJUNTO = { exists: false, path: null, name: '' };
 
 // ── Identificación ────────────────────────────────────────────────────────────
@@ -192,13 +154,18 @@ function isCheckGroupMsg(msg, botId) {
     return v2.panelText(msg).includes(TITULO);
 }
 
-// ¿Reeditar ahora dejaría el panel PEOR de lo que está? Sólo si Roblox no dio
-// algún icono y el panel publicado sí los tenía. En ese caso se deja el bueno:
-// el "no hay icono" se cachea 30 minutos (no 12 horas), así que el siguiente
-// arranque lo arregla solo.
+// ¿Reeditar ahora dejaría el panel PEOR de lo que está? Sólo si esta vez no se
+// pudo resolver algún icono y el panel publicado sí los tiene. En ese caso se
+// deja el bueno: el "no hay icono" se cachea 30 minutos (no 12 horas), así que
+// el siguiente arranque lo arregla solo.
 function degradaria(msg, faltan) {
     if (!faltan.length) return false;
-    return v2.signature(v2.rawComponents(msg)).includes('thumb:http');
+    return mencionaIconos(v2.panelText(msg));
+}
+
+// Las comunidades que se quedan sin su icono real en esta pasada.
+function sinIcono(emojis) {
+    return comunidades().filter(c => c.groupId && !emojis[c.clave]).map(c => c.label);
 }
 
 // ── ensureCheckGroupPanel ─────────────────────────────────────────────────────
@@ -212,12 +179,13 @@ async function ensureCheckGroupPanel(client) {
         return null;
     }
 
-    const { iconos, faltan } = await fetchIconos();
+    const emojis = await ensureGroupEmojis(client);
+    const faltan = sinIcono(emojis);
     if (faltan.length) {
-        console.warn(`[checkGroup] Roblox no dio el icono de: ${faltan.join(', ')} — esas comunidades saldrán sin foto.`);
+        console.warn(`[checkGroup] Sin icono propio: ${faltan.join(', ')} — esas comunidades irán con el emoji genérico.`);
     }
 
-    const container = buildContainer(iconos);
+    const container = buildContainer(emojis);
 
     const aplicar = async (msg, comoLlego) => {
         if (v2.isUpToDate(msg, container)) {
@@ -268,5 +236,5 @@ async function ensureCheckGroupPanel(client) {
 
 module.exports = {
     ensureCheckGroupPanel,
-    __test: { buildContainer, buildRows, buildAviso, isCheckGroupMsg, degradaria, comunidades, fetchIconos, TITULO, ACCENT },
+    __test: { buildContainer, buildComunidades, buildRows, buildAviso, isCheckGroupMsg, degradaria, sinIcono, comunidades, TITULO, ACCENT },
 };

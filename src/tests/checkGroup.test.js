@@ -562,19 +562,21 @@ module.exports = async function run() {
         //   b) LOS BOTONES VAN DENTRO DEL CONTENEDOR. Es un panel V2: si
         //      alguien lo devolviera a un embed clásico, quedarían colgando
         //      debajo del mensaje.
-        //   c) LOS ICONOS SON LOS DE ROBLOX, no ficheros del repo, y cada
-        //      comunidad lleva el SUYO.
+        //   c) EL ICONO VA A LA IZQUIERDA DEL NOMBRE. Y por eso es un emoji: el
+        //      accessory de una Section lo pinta Discord siempre a la derecha,
+        //      sin alternativa. Cada comunidad lleva el SUYO.
         //   d) UN ICONO QUE FALTA NO BORRA EL PANEL BUENO que ya está
         //      publicado. Roblox se cae un rato; el panel no tiene por qué
         //      perder las fotos por eso.
+        //   e) LAS DOS LISTAS DE COMUNIDADES SON LA MISMA. El panel de
+        //      comunidades (verif.js) y este salen de config: si divergieran, la
+        //      gente se uniría a las que ve en uno y el otro le diría que no
+        //      pertenece a una que nunca le enseñaron.
         const panel = require('../../checkGroup').__test;
         const claves = Object.keys(config.CHECK_GROUPS);
 
-        roblox.getGroupIcon = async groupId => `https://tr.rbxcdn.com/icono-${groupId}/420/420/`;
-        const { iconos, faltan } = await panel.fetchIconos();
-        assert(faltan.length === 0, 'con Roblox respondiendo, ninguna comunidad se queda sin icono');
-
-        const contenedor = panel.buildContainer(iconos).toJSON();
+        const emojisFalsos = Object.fromEntries(claves.map((c, i) => [c, `<:cg_${c}_hash${i}:${100 + i}>`]));
+        const contenedor = panel.buildContainer(emojisFalsos).toJSON();
         const nodosPanel = [];
         (function rec(n) {
             if (Array.isArray(n)) return n.forEach(rec);
@@ -596,40 +598,56 @@ module.exports = async function run() {
             'y el flujo sabe resolver el customId de todos ellos contra config'
         );
 
-        const miniaturas = nodosPanel.filter(n => n.type === 11);
-        assert(miniaturas.length === claves.length, 'cada comunidad lleva su icono');
+        // El icono, DELANTE del nombre. Es lo único que Discord pinta a la
+        // izquierda de un texto.
+        const lineas = panel.buildComunidades(emojisFalsos).split('\n');
+        for (const clave of claves) {
+            const etiqueta = config.CHECK_GROUPS[clave].label;
+            const linea = lineas.find(l => l.includes(`**${etiqueta}**`));
+            assert(Boolean(linea), `la comunidad ${etiqueta} aparece en el panel`);
+            assert(
+                linea.startsWith(emojisFalsos[clave]),
+                `y su icono va DELANTE del nombre, no detrás (${etiqueta})`
+            );
+        }
         assert(
-            miniaturas.every(t => t.media.url.startsWith('https://tr.rbxcdn.com/')),
-            'los iconos vienen de Roblox, no de un fichero del repo'
+            new Set(claves.map(c => emojisFalsos[c])).size === claves.length,
+            'cada comunidad lleva su propio icono, no todas el mismo'
         );
         assert(
-            new Set(miniaturas.map(t => t.media.url)).size === claves.length,
-            'y cada comunidad lleva el SUYO, no todas el mismo'
+            nodosPanel.filter(n => n.type === 11).length === 0,
+            'y ya no queda ninguna miniatura a la derecha'
         );
-        // La firma tiene que distinguirlos: si mediaName recortara estas URLs
-        // al último segmento, los cinco iconos serían "420" y cambiar uno no
-        // repintaría el panel.
-        const v2panel = require('../../utils/panelV2');
-        const firma = v2panel.signature([contenedor]);
+
+        // Sin emoji propio se cae al genérico, pero la comunidad sigue saliendo.
+        const sinNinguno = panel.buildComunidades({});
+        for (const clave of claves) {
+            assert(sinNinguno.includes(`**${config.CHECK_GROUPS[clave].label}**`), `sin icono, ${clave} sigue apareciendo`);
+        }
+        assert(panel.sinIcono({}).length === claves.length, 'y se detecta que ninguna tiene icono propio');
+        assert(panel.sinIcono(emojisFalsos).length === 0, 'con todos resueltos, no falta ninguno');
+
+        // Un icono que falta no puede borrar las fotos del panel publicado.
+        const publicadoConIconos = { components: [contenedor] };
+        assert(panel.degradaria(publicadoConIconos, ['7x UGC']), 'NO se reedita un panel que sí tiene sus iconos');
+        assert(!panel.degradaria(publicadoConIconos, []), 'con los iconos disponibles, el panel se actualiza con normalidad');
         assert(
-            new Set(firma.split('\n').filter(l => l.startsWith('thumb:'))).size === claves.length,
-            'la firma del panel distingue un icono de otro'
+            !panel.degradaria({ components: [panel.buildContainer({}).toJSON()] }, ['7x UGC']),
+            'y un panel que ya iba sin iconos sí se puede reeditar'
         );
 
-        // Roblox deja de dar iconos: el panel publicado no se toca.
-        // Hay que invalidar la caché a mano — getCommunityIcon guarda un icono
-        // 12 h, así que sin esto seguiría devolviendo los de la línea anterior
-        // y este bloque no probaría nada.
-        const memoria = require('../../src/cache/memoryCache');
-        for (const clave of claves) memoria.invalidate(`cg:icon:${config.CHECK_GROUPS[clave].groupId}`);
-
-        roblox.getGroupIcon = async () => null;
-        const { faltan: faltanTodos } = await panel.fetchIconos();
-        assert(faltanTodos.length === claves.length, 'sin respuesta de Roblox, se detecta que faltan todos los iconos');
-
-        const publicadoConFotos = { components: [contenedor] };
-        assert(panel.degradaria(publicadoConFotos, faltanTodos), 'y NO se reedita un panel que sí tiene sus fotos');
-        assert(!panel.degradaria(publicadoConFotos, []), 'con los iconos disponibles, el panel se actualiza con normalidad');
+        // Las dos listas de comunidades, la misma.
+        const verif = require('../../verif').__test;
+        const textoVerif = verif.buildVerifText(emojisFalsos);
+        for (const clave of claves) {
+            const g = config.CHECK_GROUPS[clave];
+            assert(textoVerif.includes(`**${g.label}**`), `el panel de comunidades tambien lista ${g.label}`);
+            assert(textoVerif.includes(g.link), `y con su link directo (${clave})`);
+            assert(
+                textoVerif.includes(`${emojisFalsos[clave]} **${g.label}**`),
+                `con el icono a la izquierda del nombre (${clave})`
+            );
+        }
     } finally {
         roblox.getUserByUsername = originalGetUserByUsername;
         roblox.getGroupMembership = originalGetGroupMembership;

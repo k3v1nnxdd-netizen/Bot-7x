@@ -456,7 +456,49 @@ shards no pueden anunciar el mismo boost dos veces. Y nada de este flujo lanza:
 por el listener pasan todos los cambios de todos los miembros, asi que un fallo
 publicando el anuncio no puede tumbarlo.
 
+## Estado de entrega de Robux
+
+Un panel en `CHANNELS.GROUP_STATUS` que dice, de un vistazo, desde que
+comunidades se estan enviando Robux ahora mismo. Existe para que un cliente no
+tenga que preguntarlo.
+
+Las comunidades salen de `config.CHECK_GROUPS`, la misma lista de la que viven
+Check Group's y el panel de comunidades: anadir una la hace aparecer aqui sola,
+activa, y tambien en el desplegable del comando.
+
+### /groupactive (solo owner)
+
+```
+/groupactive grupo:<comunidad> estado:<on|off>
+```
+
+`on` la marca como que esta enviando Robux; `off`, como caida. El panel se
+repinta al momento, y si el repintado falla la respuesta lo dice en vez de dejar
+creer que ya esta.
+
+El estado vive en `DATA_DIR/groupActive.json`, no en memoria: si el owner marca
+una comunidad como caida y el bot se reinicia solo de madrugada, tiene que seguir
+marcada. Lo contrario —volver sola a "activa"— mandaria clientes a un grupo que
+no envia.
+
+**Por defecto, ACTIVA.** Una comunidad que aun no se ha tocado se enseña como
+activa: marcar de oficio como caidas cinco comunidades que funcionan es afirmar
+algo falso, y dejaria el panel en rojo el dia del despliegue. Un fichero
+corrupto o a medias cae en el mismo lado.
+
+### Dos detalles del panel
+
+- **El titulo va en la DESCRIPCION**, como encabezado markdown, no en
+  `setTitle()`. No es una preferencia: Discord no renderiza los emojis del
+  servidor en el titulo de un embed —ni en el nombre de un field, ni en el
+  footer—, ahi `<a:active:1529…>` se imprime crudo. En la descripcion si se
+  pintan.
+- **Con todas apagadas el panel se pone rojo** y lo dice con una linea. Un
+  "se estan enviando desde estos grupos" en verde seguido de cinco cruces seria
+  lo contrario de informar.
+
 ## Ejecutar
+
 
 ```bash
 npm start

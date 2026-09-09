@@ -26,6 +26,7 @@ module.exports = {
         ROBUX_TOP:          '1537754184076627978',
         HEADLESS:           '1546348969255370762',
         BOOST:              '1191157957556191263',
+        GROUP_STATUS:       '1547140265003982888',
     },
 
     ROBLOX_GROUP_ID:       282134403,

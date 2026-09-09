@@ -12,6 +12,8 @@ const { sendOrderCompletionSummary } = require('../utils/orderNotify');
 const { buildLeaderboardEmbed } = require('../utils/robuxLeaderboardPanel');
 const headlessSale = require('../utils/headlessSale');
 const { ensureHeadlessPanel } = require('../headless');
+const groupActive = require('../utils/groupActive');
+const { ensureGroupStatusPanel } = require('../groupStatus');
 const {
     buildTransferenciaEmbed, buildTransferenciaRow,
     buildOxxoEmbed, buildGiftCardEmbed,
@@ -292,6 +294,51 @@ async function handleHeadless(interaction) {
     await safeEditReply(interaction, { content: `${estado}${nota}${aviso}` });
 }
 
+// ── /groupactive <grupo> <estado> ─────────────────────────────────────────────
+// Marca una comunidad como activa o caída y repinta el panel de estado. Sólo el
+// owner, igual que /offer o /headless: el gate real es este chequeo, no el
+// registro del comando.
+
+async function handleGroupActive(interaction) {
+    if (interaction.user.id !== config.OWNER_ID) {
+        return safeReply(interaction, { content: '❌ No tienes permiso para usar este comando.', ephemeral: true });
+    }
+
+    const ok = await safeDeferReply(interaction, { ephemeral: true });
+    if (!ok) return;
+
+    const clave  = interaction.options.getString('grupo');
+    const activa = interaction.options.getString('estado') === 'on';
+
+    const resultado = groupActive.setActive(clave, activa, interaction.user.id);
+    if (!resultado.ok) {
+        // Sólo se llega aquí con una opción manipulada o con un grupo retirado
+        // de config entre que Discord cacheó el comando y llegó la ejecución.
+        return safeEditReply(interaction, { content: '❌ Esa comunidad no existe en la configuración del bot.' });
+    }
+
+    // Igual que /headless: el panel devuelve el mensaje, o null si no llegó a
+    // tocarlo. No se le dice al owner que el panel está al día si no lo está.
+    let panelMsg = null;
+    try {
+        panelMsg = await ensureGroupStatusPanel(interaction.client);
+    } catch (err) {
+        console.error('[groupStatus] No se pudo repintar el panel tras el cambio:', err);
+    }
+
+    const label  = config.CHECK_GROUPS[clave].label;
+    const estado = activa
+        ? `<:working:1547108520669741157> **${label}** está ahora **ACTIVA** — se anuncia que envía Robux.`
+        : `<:down:1547141212530679899> **${label}** está ahora **CAÍDA** — se anuncia que no envía Robux.`;
+
+    const nota  = resultado.changed ? '' : '\n-# Ya estaba así: no ha cambiado nada.';
+    const aviso = panelMsg
+        ? `\n-# Panel actualizado en <#${config.CHANNELS.GROUP_STATUS}>.`
+        : `\n<:alert:1501220021035204658> El estado se guardó, pero no se pudo actualizar el panel de <#${config.CHANNELS.GROUP_STATUS}>. Revisa la consola.`;
+
+    await safeEditReply(interaction, { content: `${estado}${nota}${aviso}` });
+}
+
 async function handleTopCompradores(interaction) {
     const ok = await safeDeferReply(interaction);
     if (!ok) return;
@@ -299,4 +346,4 @@ async function handleTopCompradores(interaction) {
     await safeEditReply(interaction, { embeds: [buildLeaderboardEmbed()] });
 }
 
-module.exports = { handleOutfit, handlePagos, handlePagoVerified, handleOffer, handleClose, handleHeadless, handleTopCompradores, refreshCouponEmbed };
+module.exports = { handleOutfit, handlePagos, handlePagoVerified, handleOffer, handleClose, handleHeadless, handleGroupActive, handleTopCompradores, refreshCouponEmbed };

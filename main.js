@@ -40,12 +40,13 @@ if (RUN_BOT) {
     const { ensureSeguidoresPanel } = require('./seguidores');
     const { ensureCheckGroupPanel } = require('./checkGroup');
     const { ensureHeadlessPanel }   = require('./headless');
+    const { ensureGroupStatusPanel } = require('./groupStatus');
     const { updateLeaderboardMessage } = require('./utils/robuxLeaderboardPanel');
     const { backfillFromOrderLog } = require('./utils/robuxLeaderboardBackfill');
     const tickets             = require('./utils/tickets');
     const { handleButton, clearTimers } = require('./handlers/buttons');
     const { handleModal }     = require('./handlers/modals');
-    const { handleOutfit, handlePagos, handlePagoVerified, handleOffer, handleClose, handleHeadless, handleTopCompradores } = require('./handlers/commands');
+    const { handleOutfit, handlePagos, handlePagoVerified, handleOffer, handleClose, handleHeadless, handleGroupActive, handleTopCompradores } = require('./handlers/commands');
     const {
         handleAddGroup, handleRegenerateToken, handleDeleteGroup, handleCheckGroup, handleGroups,
     } = require('./handlers/groupLicenses');
@@ -153,6 +154,37 @@ if (RUN_BOT) {
             {
                 name: 'topcompradores',
                 description: 'Muestra el ranking de los mayores compradores de Robux',
+            },
+
+            // Las opciones de comunidad se DERIVAN de config.CHECK_GROUPS, igual
+            // que los botones del panel de Check Group's: añadir una comunidad
+            // la pone en el desplegable sola, y no se puede quedar a medias.
+            // El gate real es el chequeo de OWNER_ID dentro de handleGroupActive.
+            {
+                name: 'groupactive',
+                description: 'Marca una comunidad como activa o caída para el envío de Robux (solo owner)',
+                options: [
+                    {
+                        name: 'grupo',
+                        type: 3,
+                        description: 'Comunidad que quieres marcar',
+                        required: true,
+                        choices: Object.entries(config.CHECK_GROUPS).map(([clave, grupo]) => ({
+                            name:  grupo.label.slice(0, 100),
+                            value: clave,
+                        })),
+                    },
+                    {
+                        name: 'estado',
+                        type: 3,
+                        description: 'on = está enviando Robux · off = no está enviando',
+                        required: true,
+                        choices: [
+                            { name: 'on',  value: 'on' },
+                            { name: 'off', value: 'off' },
+                        ],
+                    },
+                ],
             },
 
             // El gate real es el chequeo de OWNER_ID dentro de handleHeadless,
@@ -306,6 +338,7 @@ if (RUN_BOT) {
             else if (interaction.isChatInputCommand() && interaction.commandName === 'connect')      await handleConnect(interaction);
             else if (interaction.isChatInputCommand() && interaction.commandName === 'topcompradores') await handleTopCompradores(interaction);
             else if (interaction.isChatInputCommand() && interaction.commandName === 'headless')      await handleHeadless(interaction);
+            else if (interaction.isChatInputCommand() && interaction.commandName === 'groupactive')   await handleGroupActive(interaction);
             else if (interaction.isChatInputCommand() && interaction.commandName === 'addgroup')      await handleAddGroup(interaction);
             else if (interaction.isChatInputCommand() && interaction.commandName === 'regeneratetoken') await handleRegenerateToken(interaction);
             else if (interaction.isChatInputCommand() && interaction.commandName === 'deletegroup')   await handleDeleteGroup(interaction);

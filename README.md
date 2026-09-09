@@ -379,8 +379,13 @@ Cada cambio repinta el panel al momento; si el repintado falla, el estado ya est
 ## Mejoras del servidor (boosts)
 
 Cuando alguien mejora el servidor, el bot publica una tarjeta en
-`CHANNELS.BOOST`: embed gris, el avatar de quien ha boosteado como icono de la
-linea de autor y la animacion cerrando el mensaje abajo.
+`CHANNELS.BOOST`: embed gris, el avatar y el nombre de quien ha boosteado en la
+linea de autor (`@Sombra`) y la animacion cerrando el mensaje abajo.
+
+La arroba de esa linea se escribe a mano: la linea de autor de un embed es texto
+plano y no admite menciones. La mencion de verdad, la que Discord pinta en azul,
+esta en la descripcion. El nombre es el que se ve en el chat: el apodo del
+servidor por delante del de la cuenta.
 
 El avatar va de AUTOR y no de thumbnail a proposito: de thumbnail Discord lo
 pinta grande arriba a la derecha y le roba el ancho a la descripcion, asi que el

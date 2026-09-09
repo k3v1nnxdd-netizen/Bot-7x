@@ -98,10 +98,22 @@ function frase(userId, mejoras) {
     return `${E.boost} <@${userId}> ha boosteado el servidor, ahora tenemos ${E.boosters} **${mejoras}** ${plural}!`;
 }
 
-// Nombre que acompaña al avatar en la línea de autor.
-const AUTOR = '7x Boost';
+// Lo que acompaña al avatar en la línea de autor: el nombre de quien ha
+// boosteado, con arroba. Es texto plano —la línea de autor de un embed no
+// admite menciones— así que se escribe la arroba a mano; la mención de verdad,
+// la que pinta Discord en azul, ya está en la descripción.
+//
+// El límite de Discord para ese nombre son 256 caracteres. Un apodo no llega a
+// 32, pero se recorta igual: el dato viene de fuera.
+const AUTOR_SIN_NOMBRE = '7x Boost';
+const AUTOR_MAX = 256;
 
-function buildBoostEmbed(userId, mejoras, avatarURL = null) {
+function nombreAutor(nombre) {
+    const limpio = String(nombre ?? '').trim();
+    return limpio ? `@${limpio}`.slice(0, AUTOR_MAX) : AUTOR_SIN_NOMBRE;
+}
+
+function buildBoostEmbed({ userId, mejoras, avatarURL = null, nombre = null }) {
     const embed = new EmbedBuilder()
         .setColor(COLOR)
         .setDescription(frase(userId, mejoras))
@@ -113,8 +125,9 @@ function buildBoostEmbed(userId, mejoras, avatarURL = null) {
     // ancho a la descripción: el texto queda estrecho y parece pequeño al lado
     // de la foto. Como icono del autor sale pequeño y redondo, encima del
     // texto, y la descripción se queda con todo el ancho de la tarjeta.
-    if (avatarURL) embed.setAuthor({ name: AUTOR, iconURL: avatarURL });
-    else embed.setAuthor({ name: AUTOR });
+    const autor = { name: nombreAutor(nombre) };
+    if (avatarURL) autor.iconURL = avatarURL;
+    embed.setAuthor(autor);
 
     // Y la animación cerrando la tarjeta, abajo del todo.
     if (IMAGEN.exists) embed.setImage(`attachment://${IMAGEN.name}`);
@@ -122,9 +135,9 @@ function buildBoostEmbed(userId, mejoras, avatarURL = null) {
     return embed;
 }
 
-function buildBoostPayload(userId, mejoras, avatarURL = null) {
+function buildBoostPayload(datos) {
     return {
-        embeds: [buildBoostEmbed(userId, mejoras, avatarURL)],
+        embeds: [buildBoostEmbed(datos)],
         ...(IMAGEN.exists && { files: [{ attachment: IMAGEN.path, name: IMAGEN.name }] }),
     };
 }
@@ -144,7 +157,7 @@ async function resolverCanal(client) {
 // El único sitio que publica el anuncio. Los dos detectores acaban aquí, y el
 // candado —por usuario, un minuto— es lo que hace que un boost visto por los
 // dos (o un evento repetido de la pasarela) salga UNA vez.
-async function anunciar({ client, guild, userId, avatarURL, via }) {
+async function anunciar({ client, guild, userId, avatarURL, nombre, via }) {
     if (isLocked(`boost:${userId}`)) {
         console.log(`[boost] ${userId} ya anunciado hace un momento (llegó por ${via}) — ignorado.`);
         return;
@@ -157,9 +170,16 @@ async function anunciar({ client, guild, userId, avatarURL, via }) {
     const mejoras = await contarMejoras(guild);
     console.log(`[boost] ${userId} ha boosteado (por ${via}) — el servidor tiene ${mejoras}.`);
 
-    await canal.send(buildBoostPayload(userId, mejoras, avatarURL)).catch(err => {
+    await canal.send(buildBoostPayload({ userId, mejoras, avatarURL, nombre })).catch(err => {
         console.error('[boost] No se pudo publicar el anuncio:', err?.message ?? err);
     });
+}
+
+// El nombre que se ve: el apodo del servidor si lo tiene, y si no el de la
+// cuenta. Es el mismo que Discord pinta en el chat, así que es el que la gente
+// reconoce.
+function nombreVisible(member, user = null) {
+    return member?.displayName ?? user?.displayName ?? user?.username ?? null;
 }
 
 // ── Detector 1: el miembro empieza a boostear ────────────────────────────────
@@ -171,6 +191,7 @@ async function handleBoost(oldMember, newMember) {
         guild:     newMember.guild,
         userId:    newMember.id,
         avatarURL: newMember.displayAvatarURL({ size: 256 }),
+        nombre:    nombreVisible(newMember, newMember.user),
         via:       'evento de miembro',
     });
 }
@@ -195,6 +216,7 @@ async function handleBoostMessage(message) {
         guild:   message.guild,
         userId,
         avatarURL,
+        nombre:  nombreVisible(message.member, message.author),
         via:     'mensaje de sistema',
     });
 }
@@ -202,5 +224,8 @@ async function handleBoostMessage(message) {
 module.exports = {
     handleBoost,
     handleBoostMessage,
-    __test: { esBoostNuevo, buildBoostEmbed, buildBoostPayload, frase, contarMejoras, anunciar, TIPOS_BOOST, IMAGEN, COLOR, AUTOR, E },
+    __test: {
+        esBoostNuevo, buildBoostEmbed, buildBoostPayload, frase, contarMejoras, anunciar,
+        nombreAutor, nombreVisible, TIPOS_BOOST, IMAGEN, COLOR, AUTOR_SIN_NOMBRE, E,
+    },
 };

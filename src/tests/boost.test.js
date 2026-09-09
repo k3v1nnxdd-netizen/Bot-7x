@@ -139,7 +139,7 @@ module.exports = async function run() {
     assert(__test.frase('1', 0).includes('**0** mejoras!'), 'y con cero, "mejoras"');
 
     // ── 4. La tarjeta ────────────────────────────────────────────────────────
-    const embed = __test.buildBoostEmbed('555', 3, AVATAR).toJSON();
+    const embed = __test.buildBoostEmbed({ userId: '555', mejoras: 3, avatarURL: AVATAR, nombre: 'Sombra' }).toJSON();
 
     assert(embed.color === __test.COLOR, 'el embed es gris');
     assert(embed.description.includes('<@555>'), 'menciona a quien ha boosteado');
@@ -149,7 +149,7 @@ module.exports = async function run() {
     // lo pinta grande arriba a la derecha y le roba el ancho a la descripción:
     // el texto queda estrecho y se lee pequeño al lado de la foto.
     assert(embed.author?.icon_url === AVATAR, 'el avatar va como icono del autor: pequeño y redondo, encima del texto');
-    assert(embed.author?.name === __test.AUTOR, `la línea de autor dice "${__test.AUTOR}"`);
+    assert(embed.author?.name === '@Sombra', 'la línea de autor es el nombre de quien boosteó, con arroba');
     assert(!embed.thumbnail, 'y NO hay thumbnail: la descripción se queda con todo el ancho');
     assert(embed.footer?.text === '7x Community • Sistema de boosts', 'y lleva el pie del sistema');
     assert(Boolean(embed.timestamp), 'con su hora, como la tarjeta de reseñas');
@@ -159,13 +159,28 @@ module.exports = async function run() {
     assert(!(embed.title ?? '').includes('<a:'), 'ningún emoji del servidor en el título');
     assert(!(embed.footer?.text ?? '').includes('<a:'), 'ni en el footer');
 
-    const sinAvatar = __test.buildBoostEmbed('555', 3, null).toJSON();
+    const sinAvatar = __test.buildBoostEmbed({ userId: '555', mejoras: 3, avatarURL: null, nombre: 'Sombra' }).toJSON();
     assert(!sinAvatar.thumbnail, 'sin avatar la tarjeta sale igual, sin thumbnail vacío');
-    assert(sinAvatar.author?.name === __test.AUTOR && !sinAvatar.author.icon_url, 'y la línea de autor sale sin icono, no con uno roto');
+    assert(sinAvatar.author?.name === '@Sombra' && !sinAvatar.author.icon_url, 'y sin avatar la línea de autor sale sin icono, no con uno roto');
+
+    // El nombre que se enseña es el que la gente ve en el chat: el apodo del
+    // servidor por delante del de la cuenta.
+    assert(__test.nombreVisible({ displayName: 'Sombra' }, { username: 'xz_light' }) === 'Sombra', 'se usa el apodo del servidor');
+    assert(__test.nombreVisible(null, { displayName: 'Kev', username: 'kevvv' }) === 'Kev', 'sin apodo, el nombre de la cuenta');
+    assert(__test.nombreVisible(null, { username: 'kevvv' }) === 'kevvv', 'y como último recurso el username');
+    assert(__test.nombreVisible(null, null) === null, 'sin ninguno de los dos, no se inventa un nombre');
+
+    // La arroba se escribe a mano: la línea de autor de un embed es texto
+    // plano y no admite menciones de verdad.
+    assert(__test.nombreAutor('Sombra') === '@Sombra', 'la arroba la pone el bot');
+    assert(__test.nombreAutor('  Sombra  ') === '@Sombra', 'y los espacios sobrantes no se cuelan');
+    assert(__test.nombreAutor(null) === __test.AUTOR_SIN_NOMBRE, 'sin nombre se cae a una etiqueta, no a un "@" suelto');
+    assert(__test.nombreAutor('   ') === __test.AUTOR_SIN_NOMBRE, 'un nombre en blanco tampoco deja un "@" suelto');
+    assert(__test.nombreAutor('x'.repeat(400)).length <= 256, 'un nombre larguísimo se recorta al límite de Discord');
 
     // ── 5. La animación, adjunta como .gif ───────────────────────────────────
     if (__test.IMAGEN.exists) {
-        const payload = __test.buildBoostPayload('555', 3, AVATAR);
+        const payload = __test.buildBoostPayload({ userId: '555', mejoras: 3, avatarURL: AVATAR, nombre: 'Sombra' });
         assert(payload.files?.length === 1, 'la animación se adjunta al mensaje');
         assert(payload.files[0].name.endsWith('.gif'), `el adjunto va con extensión .gif o Discord lo congela (${payload.files[0].name})`);
         assert(

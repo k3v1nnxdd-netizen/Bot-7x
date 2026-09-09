@@ -10,19 +10,21 @@ const config = require('./../config');
 // lee el panel de estado (groupStatus.js) para pintar cada comunidad como
 // activa o caída.
 //
-// Va a disco, no a memoria: si el owner marca una comunidad como caída y el bot
-// se reinicia a las 4 de la mañana, tiene que seguir marcada. Lo contrario
-// —volver sola a "activa"— mandaría clientes a un grupo que no está enviando.
+// Va a disco, no a memoria: si el owner enciende una comunidad y el bot se
+// reinicia a las 4 de la mañana, tiene que seguir encendida. Lo contrario
+// —volver sola al valor por defecto— cambiaría lo que se le está diciendo al
+// cliente sin que nadie lo haya decidido.
 //
-// POR DEFECTO, ACTIVA. Una comunidad que todavía no se ha tocado se enseña como
-// activa, no como caída: marcar de oficio como "caídas" cinco comunidades que
-// funcionan es afirmar algo falso, y ademas dejaría el panel en rojo el día que
-// se despliegue esto. El owner apaga lo que de verdad esté caído.
+// POR DEFECTO, APAGADA. Sólo un `true` explícito enciende una comunidad, así
+// que el panel arranca con todas en "no está enviando" y el owner enciende las
+// que de verdad estén enviando. Es lo contrario de dar por buena una entrega
+// que nadie ha confirmado: si el fichero se pierde, se corrompe o llega una
+// comunidad nueva, el panel se queda callado en vez de prometer envíos.
 
 const FILE = dataPath('groupActive.json');
 const TMP  = FILE + '.tmp';
 
-const POR_DEFECTO = true;
+const POR_DEFECTO = false;
 
 // El fichero guarda { grupos: { clave: bool }, updatedAt, updatedBy }. Los
 // metadatos van en su propia rama y no mezclados con las claves de grupo: si
@@ -53,11 +55,11 @@ function existe(clave) {
     return Object.prototype.hasOwnProperty.call(config.CHECK_GROUPS, clave);
 }
 
-// Sólo un `false` explícito apaga una comunidad. Un fichero a medias, un valor
-// que no es booleano o una comunidad recién añadida a config caen en el lado
-// seguro: activa.
+// Sólo un `true` explícito enciende una comunidad. Un fichero a medias, un
+// valor que no es booleano o una comunidad recién añadida a config caen en el
+// lado seguro: apagada, que es no prometer un envío que nadie ha confirmado.
 function isActive(clave) {
-    return load()[clave] !== false;
+    return load()[clave] === true;
 }
 
 // El estado de TODAS las comunidades configuradas, en el orden de config. Se
@@ -68,7 +70,7 @@ function getState() {
     return claves().map(clave => ({
         clave,
         label:  config.CHECK_GROUPS[clave].label,
-        activa: guardado[clave] !== false,
+        activa: guardado[clave] === true,
     }));
 }
 
@@ -83,7 +85,7 @@ function setActive(clave, activa, actorId = null) {
     if (!existe(clave)) return { ok: false, changed: false };
 
     const data = load();
-    const antes = data[clave] !== false;
+    const antes = data[clave] === true;
     const nuevo = activa === true;
 
     if (antes === nuevo) return { ok: true, changed: false };

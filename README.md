@@ -476,15 +476,21 @@ activa, y tambien en el desplegable del comando.
 repinta al momento, y si el repintado falla la respuesta lo dice en vez de dejar
 creer que ya esta.
 
-El estado vive en `DATA_DIR/groupActive.json`, no en memoria: si el owner marca
-una comunidad como caida y el bot se reinicia solo de madrugada, tiene que seguir
-marcada. Lo contrario —volver sola a "activa"— mandaria clientes a un grupo que
-no envia.
+El estado vive en `DATA_DIR/groupActive.json`, no en memoria: si el owner
+enciende una comunidad y el bot se reinicia solo de madrugada, tiene que seguir
+encendida. Lo contrario —volver sola al valor por defecto— cambiaria lo que se le
+esta diciendo al cliente sin que nadie lo haya decidido.
 
-**Por defecto, ACTIVA.** Una comunidad que aun no se ha tocado se enseña como
-activa: marcar de oficio como caidas cinco comunidades que funcionan es afirmar
-algo falso, y dejaria el panel en rojo el dia del despliegue. Un fichero
-corrupto o a medias cae en el mismo lado.
+**Por defecto, APAGADA.** Solo un `true` explicito enciende una comunidad, asi
+que el panel se publica con las cinco en "no esta enviando" y el owner enciende
+las que de verdad estan enviando. Un fichero perdido, corrupto o a medias, o una
+comunidad recien anadida a config, caen en ese mismo lado: el panel se queda
+callado en vez de prometer un envio que nadie ha confirmado.
+
+El mensaje **ya esta publicado** antes de tocar el comando: `ensureGroupStatusPanel`
+lo envia y lo fija al arrancar el bot (y tambien si el comando se ejecuta y el
+panel no existiera todavia). `/groupactive` no publica uno nuevo cada vez: edita
+ese mismo mensaje.
 
 ### Dos detalles del panel
 

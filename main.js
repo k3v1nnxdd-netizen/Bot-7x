@@ -312,6 +312,10 @@ if (RUN_BOT) {
             console.error('[bot] ensureHeadlessPanel failed:', err)
         );
 
+        await ensureGroupStatusPanel(client).catch(err =>
+            console.error('[bot] ensureGroupStatusPanel failed:', err)
+        );
+
         await backfillFromOrderLog(client).catch(err =>
             console.error('[bot] backfillFromOrderLog failed:', err)
         );

@@ -20,6 +20,7 @@ const { buildMetodosEmbed, buildMetodosRow }               = require('../metodos
 const { handleSeguidoresModal }                             = require('./seguidoresFlow');
 const { handleCheckGroupModal }                             = require('./checkGroupFlow');
 const { handleHeadlessModal }                               = require('./headlessFlow');
+const { buildCommunitySummary }                             = require('../utils/communityStatus');
 
 // ── Modal builders ────────────────────────────────────────────────────────────
 // These are exported so buttons.js can pass them to safeShowModal().
@@ -229,6 +230,12 @@ async function handleComprarModal(interaction) {
         // ── Mensaje 1: Información de la compra ───────────────────────────────
         const savedNum = originalPriceNum - finalPriceNum;
 
+        // "Usuario de Roblox" mantiene su bloque de código porque es de ahí de
+        // donde utils/orderNotify.js lo lee para el registro de pedidos y el
+        // ranking. Lo que cambia es el icono: ya no es un emoji genérico, sino
+        // el avatar REAL de esa cuenta de Roblox, y va en la línea de autor —
+        // que es el único sitio donde Discord pinta una imagen pequeña junto a
+        // un texto.
         let descLines =
             `<:member:1501261625523699892> **Usuario de Roblox**\n\`\`\`${robloxUser}\`\`\`\n` +
             `<a:robuxxx:1510070809366892604> **Robux a recibir**\n\`\`\`${finalAmount.toLocaleString()} Robux\`\`\`\n`;
@@ -252,6 +259,11 @@ async function handleComprarModal(interaction) {
         if (rounded) descLines += `\n\n<:alert:1501220021035204658> Tu monto fue redondeado a **${finalAmount.toLocaleString()} robux**.`;
 
 
+        // El estado del comprador en cada comunidad. Va DESPUÉS de crear el
+        // canal, no antes: si Roblox tarda o falla, el ticket ya existe y el
+        // resumen sale sin esta parte en vez de dejar al cliente sin ticket.
+        const comunidades = await buildCommunitySummary(interaction.client, robloxUser);
+
         const embedWelcome = new EmbedBuilder()
             .setColor(0x2B2D31)
             .setTitle('Resumen de tu compra')
@@ -259,6 +271,17 @@ async function handleComprarModal(interaction) {
             .setDescription(descLines)
             .setFooter({ text: '7x Community • Proceso automático' })
             .setTimestamp();
+
+        // El avatar de la cuenta de ROBLOX, no el de Discord: identifica a quién
+        // van los Robux. Si Roblox no lo da, la línea sale sin foto.
+        if (comunidades.avatarURL) {
+            embedWelcome.setAuthor({ name: robloxUser.slice(0, 256), iconURL: comunidades.avatarURL });
+        }
+
+        // Los fields van en línea, así que Discord los coloca en filas de tres:
+        // una rejilla con las comunidades y, debajo, desde cuáles se está
+        // enviando ahora mismo.
+        if (comunidades.fields.length) embedWelcome.addFields(...comunidades.fields);
 
         await channel.send({
             content: `<@${userId}>`,

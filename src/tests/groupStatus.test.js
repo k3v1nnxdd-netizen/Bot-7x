@@ -150,8 +150,26 @@ module.exports = async function run() {
         'y lo dice con todas las letras, en vez de dejar cinco cruces sin explicación'
     );
     for (const g of todasCaidas) {
-        assert(textoApagado.includes(`${panel.E.down} **${g.label}**`), `${g.label} sale igual, marcada como caída`);
+        assert(
+            textoApagado.includes(`${panel.E.down} ${panel.E.grupo} **${g.label}**`),
+            `${g.label} sale igual, marcada como caída`
+        );
     }
+
+    // ── 4b. El icono de cada comunidad ───────────────────────────────────────
+    // Con cinco grupos, el icono es lo que deja distinguirlos de un vistazo.
+    const iconos = Object.fromEntries(claves.map(c => [c, `<:cg_${c}:1546000000000000001>`]));
+    const conIconos = panel.buildDescripcion(groupActive.getState(), iconos);
+    for (const clave of claves) {
+        assert(
+            conIconos.includes(`${iconos[clave]} **${config.CHECK_GROUPS[clave].label}**`),
+            `${clave} lleva su icono justo antes del nombre`
+        );
+    }
+    assert(
+        panel.buildDescripcion(groupActive.getState(), {}).includes(panel.E.grupo),
+        'y sin iconos propios se cae al genérico, sin dejar el hueco'
+    );
 
     // ── 5. El pie no depende del reloj ───────────────────────────────────────
     // Si la hora se calculara al vuelo, el texto cambiaría en cada arranque y

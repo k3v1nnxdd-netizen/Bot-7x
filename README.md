@@ -510,6 +510,9 @@ colgando debajo, fuera del marco de color.
   servidor en el titulo de un embed —ni en el nombre de un field, ni en el
   footer—, ahi `<a:active:1529…>` se imprime crudo. En la descripcion si se
   pintan.
+- **Cada comunidad lleva su icono de Roblox** (el mismo emoji de aplicacion que
+  usan Check Groups y el panel de comunidades): con cinco grupos, el icono es lo
+  que deja distinguirlos de un vistazo sin leer.
 - **Con todas apagadas el panel se pone rojo** y lo dice con una linea. Un
   "se estan enviando desde estos grupos" en verde seguido de cinco cruces seria
   lo contrario de informar.
@@ -518,7 +521,39 @@ colgando debajo, fuera del marco de color.
   vez —reeditando el mensaje en cada reinicio— y ademas mentiria sobre cuando
   cambio el estado de verdad.
 
+### El resumen de comunidades del ticket
+
+Al abrir un ticket de Robux, el resumen incluye el estado del comprador en cada
+comunidad (`utils/communityStatus.js`), para que no tenga que preguntarlo:
+
+- **Una tarjeta por comunidad**, en linea, asi que Discord las coloca en filas de
+  tres: icono de la comunidad, nombre y, debajo, los dias que lleva dentro con
+  su marca de elegible o no.
+- **Un campo de envio** al final, que lista SOLO las comunidades que el owner
+  tiene encendidas con `/groupactive`, cada una con los dias del comprador y si
+  puede recibir por ella. Si no puede por ninguna de las activas, se le avisa —
+  es lo que evita que pague y se quede esperando.
+- **La linea de autor lleva el avatar de la cuenta de ROBLOX**, no el de Discord:
+  identifica a quien van los Robux. Es el unico sitio donde Discord pinta una
+  imagen pequena junto a un texto.
+
+El icono y el nombre de la comunidad van los dos en el VALUE del field, y el
+nombre del field va vacio (un espacio de ancho cero), porque Discord no renderiza
+los emojis del servidor en el nombre de un field.
+
+Las cinco consultas salen **a la vez** (`Promise.allSettled`) y comparten la
+cache de `resolveRobloxUser`, asi que el username se resuelve una sola vez; lo
+unico que se paga son las membresias, cacheadas 5 minutos.
+
+**Nada de esto puede impedir que se abra un ticket.** Se calcula DESPUES de crear
+el canal, y cualquier fallo se degrada a "no se pudo comprobar" en esa comunidad.
+Un fallo nunca se convierte en un "no elegible": decirle a un cliente que no
+puede recibir porque Roblox tardo en contestar le niega algo que si tenia, y en
+pantalla se veria igual que un no legitimo. Con Roblox entero caido, el resumen
+sale con las cinco en "no se pudo comprobar" y el ticket funciona igual.
+
 ## Ejecutar
+
 
 
 ```bash

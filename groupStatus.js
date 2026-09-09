@@ -12,6 +12,7 @@ const {
 const config = require('./config');
 const v2 = require('./utils/panelV2');
 const groupActive = require('./utils/groupActive');
+const { ensureGroupEmojis } = require('./utils/groupEmojis');
 
 // ── Panel de estado de entrega ────────────────────────────────────────────────
 // Dice, de un vistazo, desde qué comunidades se están enviando Robux ahora
@@ -35,6 +36,7 @@ const E = {
     point:    '<:point:1501212595464700104>',
     working:  '<:working:1547108520669741157>',
     down:     '<:down:1547141212530679899>',
+    grupo:    '<:followers7x:1525326777071960124>',
 };
 
 const TITULO = 'Estado de entrega de Robux';
@@ -43,13 +45,15 @@ const TITULO = 'Estado de entrega de Robux';
 // No es una preferencia: Discord no renderiza los emojis del servidor en el
 // título de un embed —ni en el nombre de un field, ni en el footer—, ahí
 // `<a:active:1529…>` se imprime crudo. En el cuerpo sí se pintan.
-function buildDescripcion(estado) {
+function buildDescripcion(estado, emojis = {}) {
     const lineas = [
         `## ${E.activo} ${TITULO}`,
         '',
         `${E.point} Actualmente, los Robux se están enviando desde estos grupos:`,
         '',
-        ...estado.map(g => `${g.activa ? E.working : E.down} **${g.label}**`),
+        // Icono de la comunidad entre el estado y el nombre: con cinco grupos,
+        // el icono es lo que deja distinguirlos de un vistazo sin leer.
+        ...estado.map(g => `${g.activa ? E.working : E.down} ${emojis[g.clave] ?? E.grupo} **${g.label}**`),
     ];
 
     // Con todo apagado, un panel verde diciendo "se están enviando desde estos
@@ -94,10 +98,10 @@ function buildRow() {
     );
 }
 
-function buildContainer(estado = groupActive.getState(), actualizado = groupActive.getUpdatedAt()) {
+function buildContainer(estado = groupActive.getState(), actualizado = groupActive.getUpdatedAt(), emojis = {}) {
     return new ContainerBuilder()
         .setAccentColor(estado.some(g => g.activa) ? VERDE : ROJO)
-        .addTextDisplayComponents(new TextDisplayBuilder().setContent(buildDescripcion(estado)))
+        .addTextDisplayComponents(new TextDisplayBuilder().setContent(buildDescripcion(estado, emojis)))
         .addSeparatorComponents(
             new SeparatorBuilder().setDivider(true).setSpacing(SeparatorSpacingSize.Small)
         )
@@ -138,7 +142,11 @@ async function ensureGroupStatusPanel(client) {
         return null;
     }
 
-    const container = buildContainer();
+    // Los iconos de cada comunidad, subidos como emojis de la aplicación. Si no
+    // se pueden resolver, cada línea cae al emoji genérico y el panel sale
+    // igual: una foto no puede impedir que se publique el estado.
+    const emojis = await ensureGroupEmojis(client).catch(() => ({}));
+    const container = buildContainer(groupActive.getState(), groupActive.getUpdatedAt(), emojis);
 
     const aplicar = async (msg, comoLlego) => {
         if (v2.isUpToDate(msg, container)) {

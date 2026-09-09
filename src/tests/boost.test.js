@@ -145,7 +145,12 @@ module.exports = async function run() {
     assert(embed.description.includes('<@555>'), 'menciona a quien ha boosteado');
     assert(embed.description.startsWith(__test.E.boost), 'y el emoji de boost abre el mensaje');
     assert(embed.description.includes(__test.E.boosters), 'el emoji de boosters acompaña al número');
-    assert(embed.thumbnail?.url === AVATAR, 'el avatar va de thumbnail: arriba a la derecha');
+    // El avatar va en la línea de AUTOR, no de thumbnail. De thumbnail Discord
+    // lo pinta grande arriba a la derecha y le roba el ancho a la descripción:
+    // el texto queda estrecho y se lee pequeño al lado de la foto.
+    assert(embed.author?.icon_url === AVATAR, 'el avatar va como icono del autor: pequeño y redondo, encima del texto');
+    assert(embed.author?.name === __test.AUTOR, `la línea de autor dice "${__test.AUTOR}"`);
+    assert(!embed.thumbnail, 'y NO hay thumbnail: la descripción se queda con todo el ancho');
     assert(embed.footer?.text === '7x Community • Sistema de boosts', 'y lleva el pie del sistema');
     assert(Boolean(embed.timestamp), 'con su hora, como la tarjeta de reseñas');
 
@@ -156,6 +161,7 @@ module.exports = async function run() {
 
     const sinAvatar = __test.buildBoostEmbed('555', 3, null).toJSON();
     assert(!sinAvatar.thumbnail, 'sin avatar la tarjeta sale igual, sin thumbnail vacío');
+    assert(sinAvatar.author?.name === __test.AUTOR && !sinAvatar.author.icon_url, 'y la línea de autor sale sin icono, no con uno roto');
 
     // ── 5. La animación, adjunta como .gif ───────────────────────────────────
     if (__test.IMAGEN.exists) {

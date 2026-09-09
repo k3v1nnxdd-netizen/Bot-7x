@@ -98,6 +98,9 @@ function frase(userId, mejoras) {
     return `${E.boost} <@${userId}> ha boosteado el servidor, ahora tenemos ${E.boosters} **${mejoras}** ${plural}!`;
 }
 
+// Nombre que acompaña al avatar en la línea de autor.
+const AUTOR = '7x Boost';
+
 function buildBoostEmbed(userId, mejoras, avatarURL = null) {
     const embed = new EmbedBuilder()
         .setColor(COLOR)
@@ -105,10 +108,13 @@ function buildBoostEmbed(userId, mejoras, avatarURL = null) {
         .setFooter({ text: '7x Community • Sistema de boosts' })
         .setTimestamp();
 
-    // Avatar de quien ha boosteado: arriba a la derecha, como en la tarjeta de
-    // reseñas. Los emojis del servidor sólo se pintan en la descripción, nunca
-    // en el título ni en el footer, así que el texto vive todo en la descripción.
-    if (avatarURL) embed.setThumbnail(avatarURL);
+    // El avatar de quien ha boosteado va en la línea de AUTOR, no de thumbnail.
+    // De thumbnail Discord lo pinta grande, arriba a la derecha, y le roba el
+    // ancho a la descripción: el texto queda estrecho y parece pequeño al lado
+    // de la foto. Como icono del autor sale pequeño y redondo, encima del
+    // texto, y la descripción se queda con todo el ancho de la tarjeta.
+    if (avatarURL) embed.setAuthor({ name: AUTOR, iconURL: avatarURL });
+    else embed.setAuthor({ name: AUTOR });
 
     // Y la animación cerrando la tarjeta, abajo del todo.
     if (IMAGEN.exists) embed.setImage(`attachment://${IMAGEN.name}`);
@@ -196,5 +202,5 @@ async function handleBoostMessage(message) {
 module.exports = {
     handleBoost,
     handleBoostMessage,
-    __test: { esBoostNuevo, buildBoostEmbed, buildBoostPayload, frase, contarMejoras, anunciar, TIPOS_BOOST, IMAGEN, COLOR, E },
+    __test: { esBoostNuevo, buildBoostEmbed, buildBoostPayload, frase, contarMejoras, anunciar, TIPOS_BOOST, IMAGEN, COLOR, AUTOR, E },
 };

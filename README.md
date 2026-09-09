@@ -379,9 +379,14 @@ Cada cambio repinta el panel al momento; si el repintado falla, el estado ya est
 ## Mejoras del servidor (boosts)
 
 Cuando alguien mejora el servidor, el bot publica una tarjeta en
-`CHANNELS.BOOST`: embed gris, el avatar de quien ha boosteado arriba a la
-derecha y la animacion cerrando el mensaje abajo. Mismo estilo que las tarjetas
-de resenas.
+`CHANNELS.BOOST`: embed gris, el avatar de quien ha boosteado como icono de la
+linea de autor y la animacion cerrando el mensaje abajo.
+
+El avatar va de AUTOR y no de thumbnail a proposito: de thumbnail Discord lo
+pinta grande arriba a la derecha y le roba el ancho a la descripcion, asi que el
+texto queda estrecho y se lee pequeno al lado de la foto. Como icono del autor
+sale pequeno y redondo, encima del texto, y la descripcion se queda con todo el
+ancho de la tarjeta.
 
 ### Como se detecta: DOS detectores
 

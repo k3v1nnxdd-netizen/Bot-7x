@@ -1,20 +1,47 @@
 'use strict';
 
-const { EmbedBuilder } = require('discord.js');
+const { EmbedBuilder, MessageType } = require('discord.js');
 const { isLocked, lock } = require('../utils/spam');
 const v2 = require('../utils/panelV2');
 const config = require('../config');
 
 // ── Anuncio de mejoras (boosts) del servidor ─────────────────────────────────
 //
-// Cuando alguien mejora el servidor, Discord manda un GuildMemberUpdate en el
-// que `premiumSince` pasa de null a una fecha. Ese salto —y sólo ese— es el
-// boost: si ya tenía fecha antes, el evento es cualquier otra cosa (un rol, un
-// apodo, un timeout) y no se anuncia nada.
+// DOS DETECTORES, y hacen falta los dos. Cada uno cubre el agujero del otro, y
+// un candado compartido impide que un boost visto por ambos se anuncie dos
+// veces.
 //
-// No se usa el mensaje de sistema de Discord para esto: ese aparece en el canal
-// de sistema del servidor, que no tiene por qué ser este, y no se puede dar
-// formato. El evento sí llega siempre y trae al miembro.
+//   1. GuildMemberUpdate — `premiumSince` pasa de null a una fecha. Ese salto,
+//      y sólo ese, es un boost que empieza.
+//
+//      Su agujero: discord.js SÓLO emite este evento si el miembro está en la
+//      caché. Con `Partials.GuildMember` desactivado (lo está, y cambiarlo
+//      afectaría a todo el bot), su handler hace
+//      `guild.members.cache.get(id)`, y si no lo encuentra emite
+//      GuildMemberAvailable en lugar de GuildMemberUpdate. Discord manda al
+//      arrancar solo los miembros CONECTADOS de un servidor grande, así que un
+//      booster que llevara callado desde el último reinicio no se anunciaría
+//      nunca.
+//
+//   2. El mensaje de sistema de boost (tipos 8-11), que Discord publica en el
+//      canal de sistema del servidor. Ese llega SIEMPRE, esté el miembro en
+//      caché o no, y su autor es quien ha boosteado.
+//
+//      Su agujero: depende de que "Enviar un mensaje cuando alguien mejore
+//      este servidor" siga activado en los ajustes del servidor, y de que el
+//      bot vea ese canal.
+//
+// Por separado cada uno se deja boosts sin anunciar; juntos, sólo si fallan los
+// dos a la vez.
+
+// Los cuatro tipos con los que Discord anuncia un boost: el simple y los tres
+// que además avisan de que el servidor ha subido de nivel.
+const TIPOS_BOOST = new Set([
+    MessageType.GuildBoost,       // 8
+    MessageType.GuildBoostTier1,  // 9
+    MessageType.GuildBoostTier2,  // 10
+    MessageType.GuildBoostTier3,  // 11
+]);
 
 const COLOR = 0x2B2D31; // gris, igual que las tarjetas de reseñas
 
@@ -108,31 +135,66 @@ async function resolverCanal(client) {
     return canal;
 }
 
-async function handleBoost(oldMember, newMember) {
-    if (!esBoostNuevo(oldMember, newMember)) return;
-
-    const userId = newMember.id;
-
+// El único sitio que publica el anuncio. Los dos detectores acaban aquí, y el
+// candado —por usuario, un minuto— es lo que hace que un boost visto por los
+// dos (o un evento repetido de la pasarela) salga UNA vez.
+async function anunciar({ client, guild, userId, avatarURL, via }) {
     if (isLocked(`boost:${userId}`)) {
-        console.log(`[boost] Evento repetido de ${userId} ignorado.`);
+        console.log(`[boost] ${userId} ya anunciado hace un momento (llegó por ${via}) — ignorado.`);
         return;
     }
     lock(`boost:${userId}`, ANTI_DUPLICADO_MS);
 
-    const canal = await resolverCanal(newMember.client);
+    const canal = await resolverCanal(client);
     if (!canal) return;
 
-    const mejoras = await contarMejoras(newMember.guild);
-    const avatarURL = newMember.displayAvatarURL({ size: 256 });
-
-    console.log(`[boost] ${newMember.user?.tag ?? userId} ha boosteado — el servidor tiene ${mejoras}.`);
+    const mejoras = await contarMejoras(guild);
+    console.log(`[boost] ${userId} ha boosteado (por ${via}) — el servidor tiene ${mejoras}.`);
 
     await canal.send(buildBoostPayload(userId, mejoras, avatarURL)).catch(err => {
         console.error('[boost] No se pudo publicar el anuncio:', err?.message ?? err);
     });
 }
 
+// ── Detector 1: el miembro empieza a boostear ────────────────────────────────
+async function handleBoost(oldMember, newMember) {
+    if (!esBoostNuevo(oldMember, newMember)) return;
+
+    await anunciar({
+        client:    newMember.client,
+        guild:     newMember.guild,
+        userId:    newMember.id,
+        avatarURL: newMember.displayAvatarURL({ size: 256 }),
+        via:       'evento de miembro',
+    });
+}
+
+// ── Detector 2: el mensaje de sistema de Discord ─────────────────────────────
+// Llega aunque el miembro no esté en caché, que es justo donde el detector 1 se
+// queda corto. El autor del mensaje es quien ha boosteado.
+async function handleBoostMessage(message) {
+    if (!message?.guild) return;
+    if (!TIPOS_BOOST.has(message.type)) return;
+
+    const userId = message.author?.id;
+    if (!userId) return;
+
+    // El avatar del servidor si lo hay (es el que se ve en el chat), y si no el
+    // de la cuenta. `member` viene en el propio evento casi siempre; no se
+    // fuerza un fetch por una foto.
+    const avatarURL = (message.member ?? message.author).displayAvatarURL({ size: 256 });
+
+    await anunciar({
+        client:  message.client,
+        guild:   message.guild,
+        userId,
+        avatarURL,
+        via:     'mensaje de sistema',
+    });
+}
+
 module.exports = {
     handleBoost,
-    __test: { esBoostNuevo, buildBoostEmbed, buildBoostPayload, frase, contarMejoras, IMAGEN, COLOR, E },
+    handleBoostMessage,
+    __test: { esBoostNuevo, buildBoostEmbed, buildBoostPayload, frase, contarMejoras, anunciar, TIPOS_BOOST, IMAGEN, COLOR, E },
 };

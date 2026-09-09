@@ -25,11 +25,25 @@
 //      manejador de GuildMemberUpdate, por el que pasan todos los cambios de
 //      todos los miembros.
 
+const { MessageType } = require('discord.js');
 const { createSuite } = require('./testHarness');
 const config = require('../../config');
-const { handleBoost, __test } = require('../../handlers/boost');
+const { handleBoost, handleBoostMessage, __test } = require('../../handlers/boost');
 
 const AVATAR = 'https://cdn.discordapp.com/avatars/1/abc.png';
+
+// El mensaje de sistema con el que Discord anuncia un boost: sin contenido, con
+// el tipo puesto y con el booster de autor.
+function mensajeSistema({ id = '300', tipo, guild = null, client = null } = {}) {
+    return {
+        type: tipo,
+        guild: guild ?? servidor(),
+        client: client ?? clienteFalso(),
+        content: '',
+        author: { id, displayAvatarURL: () => AVATAR },
+        member: { displayAvatarURL: () => AVATAR },
+    };
+}
 
 // Miembro falso. `partial: true` = Discord no dijo cómo estaba antes.
 function miembro({ id = '100', premium = null, partial = false, guild = null, client = null } = {}) {
@@ -169,12 +183,69 @@ module.exports = async function run() {
     await evento('203', { antes: { premium: null }, ahora: { premium: HOY }, client: cliente });
     assert(cliente.enviados.length === 1, 'un evento repetido del mismo usuario no anuncia dos veces');
 
-    // ── 7. Nada de esto puede lanzar ─────────────────────────────────────────
+    // ── 7. El segundo detector: el mensaje de sistema de Discord ─────────────
+    // Existe porque discord.js SÓLO emite GuildMemberUpdate si el miembro está
+    // en la caché: con Partials.GuildMember desactivado, su handler hace
+    // guild.members.cache.get(id) y, si no lo encuentra, emite
+    // GuildMemberAvailable en su lugar. Discord manda al arrancar sólo los
+    // miembros conectados de un servidor grande, así que sin este segundo
+    // camino un booster que llevara callado desde el último reinicio no se
+    // anunciaría NUNCA.
+    for (const tipo of [MessageType.GuildBoost, MessageType.GuildBoostTier1, MessageType.GuildBoostTier2, MessageType.GuildBoostTier3]) {
+        assert(__test.TIPOS_BOOST.has(tipo), `el tipo de mensaje ${tipo} cuenta como boost`);
+    }
+    for (const tipo of [MessageType.Default, MessageType.Reply, MessageType.UserJoin, MessageType.ChannelPinnedMessage]) {
+        assert(!__test.TIPOS_BOOST.has(tipo), `el tipo de mensaje ${tipo} NO cuenta como boost`);
+    }
+
+    const c3 = clienteFalso();
+    await handleBoostMessage(mensajeSistema({ id: '301', tipo: MessageType.GuildBoost, guild: servidor({ fresco: 8 }), client: c3 }));
+    assert(c3.enviados.length === 1, 'un mensaje de sistema de boost publica el anuncio');
+    assert(c3.enviados[0].embeds[0].toJSON().description.includes('<@301>'), 'menciona al autor del mensaje, que es quien boosteó');
+    assert(c3.enviados[0].embeds[0].toJSON().description.includes('**8**'), 'y con el número fresco de mejoras');
+
+    const c4 = clienteFalso();
+    await handleBoostMessage(mensajeSistema({ id: '302', tipo: MessageType.Default, client: c4 }));
+    await handleBoostMessage(mensajeSistema({ id: '303', tipo: MessageType.UserJoin, client: c4 }));
+    assert(c4.enviados.length === 0, 'un mensaje normal o una bienvenida no anuncian nada');
+
+    const c5 = clienteFalso();
+    const sinGuild = mensajeSistema({ id: '304', tipo: MessageType.GuildBoost, client: c5 });
+    sinGuild.guild = null;
+    await handleBoostMessage(sinGuild);
+    await handleBoostMessage(null);
+    assert(c5.enviados.length === 0, 'un mensaje sin servidor (o sin mensaje) no rompe ni anuncia');
+
+    // ── 8. Los dos detectores juntos anuncian UNA vez ────────────────────────
+    // Lo normal es que un boost dispare los dos: el evento del miembro y el
+    // mensaje de sistema. El candado por usuario es lo que lo deja en uno.
+    const c6 = clienteFalso();
+    const g6 = servidor({ fresco: 4 });
+    await evento('305', { antes: { premium: null }, ahora: { premium: HOY }, guild: g6, client: c6 });
+    await handleBoostMessage(mensajeSistema({ id: '305', tipo: MessageType.GuildBoost, guild: g6, client: c6 }));
+    assert(c6.enviados.length === 1, 'el mismo boost visto por los dos detectores se anuncia UNA vez');
+
+    // Y al revés: si llega antes el mensaje de sistema, tampoco se duplica.
+    const c7 = clienteFalso();
+    const g7 = servidor({ fresco: 4 });
+    await handleBoostMessage(mensajeSistema({ id: '306', tipo: MessageType.GuildBoost, guild: g7, client: c7 }));
+    await evento('306', { antes: { premium: null }, ahora: { premium: HOY }, guild: g7, client: c7 });
+    assert(c7.enviados.length === 1, 'da igual cuál de los dos llegue primero');
+
+    // Dos personas distintas sí son dos anuncios.
+    const c8 = clienteFalso();
+    await handleBoostMessage(mensajeSistema({ id: '307', tipo: MessageType.GuildBoost, client: c8 }));
+    await handleBoostMessage(mensajeSistema({ id: '308', tipo: MessageType.GuildBoost, client: c8 }));
+    assert(c8.enviados.length === 2, 'dos personas distintas son dos anuncios');
+
+    // ── 9. Nada de esto puede lanzar ─────────────────────────────────────────
     let reventó = false;
     try {
         await evento('204', { antes: { premium: null }, ahora: { premium: HOY }, client: clienteFalso({ canalNulo: true }) });
         await evento('205', { antes: { premium: null }, ahora: { premium: HOY }, client: clienteFalso({ fallaSend: true }) });
         await evento('206', { antes: { premium: null }, ahora: { premium: HOY }, guild: servidor({ fallaFetch: true }) });
+        await handleBoostMessage(mensajeSistema({ id: '309', tipo: MessageType.GuildBoost, client: clienteFalso({ fallaSend: true }) }));
+        await handleBoostMessage(mensajeSistema({ id: '310', tipo: MessageType.GuildBoost, client: clienteFalso({ canalNulo: true }) }));
     } catch {
         reventó = true;
     }

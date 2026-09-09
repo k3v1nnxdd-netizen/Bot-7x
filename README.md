@@ -383,23 +383,43 @@ Cuando alguien mejora el servidor, el bot publica una tarjeta en
 derecha y la animacion cerrando el mensaje abajo. Mismo estilo que las tarjetas
 de resenas.
 
-### Como se detecta
+### Como se detecta: DOS detectores
 
-Por `GuildMemberUpdate`, cuando `premiumSince` pasa de `null` a una fecha. Ese
-salto —y solo ese— es un boost que empieza.
+Hacen falta los dos. Cada uno cubre el agujero del otro, y un candado
+compartido (60 s por usuario) impide que un boost visto por ambos se anuncie dos
+veces.
+
+**1. `GuildMemberUpdate`** — `premiumSince` pasa de `null` a una fecha. Ese salto,
+y solo ese, es un boost que empieza.
 
 Ese evento llega para **cualquier** cambio de un miembro: un rol, un apodo, un
 timeout. Por eso la decision no esta en el listener sino en `esBoostNuevo()`, y
-por eso hay tres casos que NO se anuncian:
+por eso hay tres casos que NO se anuncian por esta via:
 
 | Situacion | Por que no |
 |---|---|
 | Ya boosteaba y cambia otra cosa | No es un boost nuevo; anunciarlo diria que acaba de boostear cada vez que cambia de rol |
 | Deja de boostear | Es el salto contrario |
-| El miembro no estaba en cache (`partial`) | Discord no dice como estaba ANTES, asi que no se puede afirmar que no boosteaba. Ante la duda, callar: un anuncio falso es peor que uno que falta |
+| El miembro no estaba en cache (`partial`) | Discord no dice como estaba ANTES, asi que no se puede afirmar que no boosteaba |
 
-No se usa el mensaje de sistema de Discord: ese aparece en el canal de sistema
-del servidor, que no tiene por que ser este, y no admite formato.
+**Su agujero, y es grave:** discord.js SOLO emite este evento si el miembro esta
+en la cache. Con `Partials.GuildMember` desactivado —lo esta, y activarlo
+afectaria a todo el bot— su handler hace `guild.members.cache.get(id)` y, si no
+lo encuentra, emite `GuildMemberAvailable` **en lugar de** `GuildMemberUpdate`.
+Discord manda al arrancar solo los miembros CONECTADOS de un servidor grande,
+asi que un booster que llevara callado desde el ultimo reinicio no se anunciaria
+nunca.
+
+**2. El mensaje de sistema de boost** (tipos 8, 9, 10 y 11), el que Discord
+publica en el canal de sistema del servidor. Llega **siempre**, este el miembro
+en cache o no, y su autor es quien ha boosteado. Ese es justo el hueco que tapa.
+
+**Su agujero:** depende de que "Enviar un mensaje cuando alguien mejore este
+servidor" siga activado en Ajustes del servidor -> Informacion general, y de que
+el bot vea ese canal.
+
+Por separado cada uno se deja boosts sin anunciar; juntos, solo si fallan los dos
+a la vez.
 
 ### El contador de mejoras
 

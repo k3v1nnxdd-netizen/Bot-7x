@@ -54,7 +54,7 @@ if (RUN_BOT) {
     const { handleMessage }   = require('./handlers/messages');
     const { handleMessageDelete } = require('./handlers/messageDelete');
     const { handleAntiScam }  = require('./handlers/antiScam');
-    const { handleBoost }     = require('./handlers/boost');
+    const { handleBoost, handleBoostMessage } = require('./handlers/boost');
     const { handleSeguidoresSelect } = require('./handlers/seguidoresFlow');
     const { markInteraction } = require('./utils/spam');
 
@@ -324,6 +324,13 @@ if (RUN_BOT) {
 
     client.on(Events.MessageCreate, async message => {
         try {
+            // El mensaje de sistema con el que Discord anuncia un boost. Va
+            // ANTES del resto porque no es un mensaje de nadie hablando: no
+            // tiene contenido, no es de un ticket y no le toca ninguna de las
+            // reglas de abajo. Es el segundo detector de boosts, el que
+            // funciona aunque el miembro no esté en caché (ver handlers/boost.js).
+            await handleBoostMessage(message);
+
             if (config.FEATURES.ANTI_SCAM && await handleAntiScam(message)) return;
             await handleMessage(message);
         } catch (err) { console.error('[message] error:', err); }

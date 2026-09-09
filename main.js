@@ -54,6 +54,7 @@ if (RUN_BOT) {
     const { handleMessage }   = require('./handlers/messages');
     const { handleMessageDelete } = require('./handlers/messageDelete');
     const { handleAntiScam }  = require('./handlers/antiScam');
+    const { handleBoost }     = require('./handlers/boost');
     const { handleSeguidoresSelect } = require('./handlers/seguidoresFlow');
     const { markInteraction } = require('./utils/spam');
 
@@ -377,6 +378,16 @@ if (RUN_BOT) {
 
     client.on(Events.VoiceStateUpdate, (oldState, newState) => {
         handleVoiceStateUpdate(oldState, newState, client);
+    });
+
+    // ── Mejoras del servidor (boosts) ─────────────────────────────────────────
+    // El evento llega para CUALQUIER cambio en un miembro (un rol, un apodo, un
+    // timeout); handleBoost es quien decide si ese cambio concreto es un boost
+    // que empieza.
+
+    client.on(Events.GuildMemberUpdate, async (oldMember, newMember) => {
+        try { await handleBoost(oldMember, newMember); }
+        catch (err) { console.error('[boost] error:', err); }
     });
 
     // ── Member auto-role ──────────────────────────────────────────────────────

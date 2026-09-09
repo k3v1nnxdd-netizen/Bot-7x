@@ -376,6 +376,56 @@ El estado se guarda en `DATA_DIR/headlessSale.json`, no en memoria: un reinicio 
 
 Cada cambio repinta el panel al momento; si el repintado falla, el estado ya esta guardado y la respuesta lo dice.
 
+## Mejoras del servidor (boosts)
+
+Cuando alguien mejora el servidor, el bot publica una tarjeta en
+`CHANNELS.BOOST`: embed gris, el avatar de quien ha boosteado arriba a la
+derecha y la animacion cerrando el mensaje abajo. Mismo estilo que las tarjetas
+de resenas.
+
+### Como se detecta
+
+Por `GuildMemberUpdate`, cuando `premiumSince` pasa de `null` a una fecha. Ese
+salto —y solo ese— es un boost que empieza.
+
+Ese evento llega para **cualquier** cambio de un miembro: un rol, un apodo, un
+timeout. Por eso la decision no esta en el listener sino en `esBoostNuevo()`, y
+por eso hay tres casos que NO se anuncian:
+
+| Situacion | Por que no |
+|---|---|
+| Ya boosteaba y cambia otra cosa | No es un boost nuevo; anunciarlo diria que acaba de boostear cada vez que cambia de rol |
+| Deja de boostear | Es el salto contrario |
+| El miembro no estaba en cache (`partial`) | Discord no dice como estaba ANTES, asi que no se puede afirmar que no boosteaba. Ante la duda, callar: un anuncio falso es peor que uno que falta |
+
+No se usa el mensaje de sistema de Discord: ese aparece en el canal de sistema
+del servidor, que no tiene por que ser este, y no admite formato.
+
+### El contador de mejoras
+
+Se pide el servidor **a la API**, no se lee de la cache. El evento del miembro y
+el que actualiza el numero de mejoras del servidor son dos eventos distintos y no
+hay orden garantizado, asi que la cache puede tener el numero de ANTES del boost
+— el unico que no se puede anunciar. Si la peticion falla se usa la cache, que es
+mejor que no anunciar nada.
+
+El plural se calcula (`1 mejora` / `3 mejoras`): un "ahora tenemos 1 mejoras" en
+el primer boost del servidor es justo el detalle que delata un anuncio hecho a
+medias.
+
+### La animacion
+
+El fichero del repo se llama `image-1788931423031.png` pero **es un GIF**
+(800x320, 234 frames, 6,5 MB). Se adjunta con nombre `boost.gif` a proposito:
+Discord decide por la extension del ADJUNTO si lo anima, asi que con `.png` se
+publicaria congelado. Para sustituirlo basta con dejar un `boost.gif` en la raiz
+— se busca antes que el otro.
+
+Hay un anti-duplicado de 60 s por usuario: un reintento de la pasarela o dos
+shards no pueden anunciar el mismo boost dos veces. Y nada de este flujo lanza:
+por el listener pasan todos los cambios de todos los miembros, asi que un fallo
+publicando el anuncio no puede tumbarlo.
+
 ## Ejecutar
 
 ```bash

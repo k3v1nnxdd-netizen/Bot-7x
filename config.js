@@ -25,6 +25,7 @@ module.exports = {
         ORDER_LOG:          '1537756329131647018',
         ROBUX_TOP:          '1537754184076627978',
         HEADLESS:           '1546348969255370762',
+        BOOST:              '1191157957556191263',
     },
 
     ROBLOX_GROUP_ID:       282134403,

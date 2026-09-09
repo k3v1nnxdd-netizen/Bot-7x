@@ -101,6 +101,29 @@ que una comunidad de 300.000 miembros cuesta exactamente lo mismo que una de 3.
 | 6 | Pide el avatar del jugador y el icono de la comunidad |
 | 7 | Publica el resultado en el canal de resultados y confirma en efimero |
 
+### El panel
+
+Un Container de Components V2, como el de tickets: barra de color a la izquierda
+y, DENTRO del mismo bloque, el texto, una fila por comunidad con su icono y los
+botones. Antes era un embed clasico con los botones colgando debajo.
+
+Los iconos **se piden a Roblox** (`thumbnails.roblox.com`, via
+`getCommunityIcon`), no son PNGs del repo: si cambia el icono de una comunidad,
+el panel se actualiza solo en el siguiente arranque. Los PNGs locales siguen
+existiendo, pero solo como respaldo de la TARJETA DE RESULTADO, no del panel.
+
+Nada del panel esta escrito a mano: las filas, los iconos y los botones salen de
+recorrer `config.CHECK_GROUPS`. Los botones se reparten en filas de 3.
+
+Dos reglas que evitan estropear lo que ya esta publicado:
+
+- **Si Roblox no da algun icono, no se reedita un panel que si los tiene.** Es
+  preferible dejar el bueno a sustituirlo por uno sin fotos; el "no hay icono" se
+  cachea 30 minutos, asi que el siguiente arranque lo arregla solo.
+- **El panel se busca primero entre los mensajes FIJADOS**, no en los ultimos 100:
+  en un canal con movimiento, buscar solo en los ultimos 100 acaba publicando un
+  duplicado en cuanto el panel queda enterrado.
+
 ### La tarjeta
 
 Compacta y horizontal: tres columnas y nada mas.
@@ -168,15 +191,19 @@ en el canal de verificacion y sigue siendo independiente.
 ```js
 // config.js
 CHECK_GROUPS: {
-    noctra:    { label: '7x (Antes Noctra Study)', groupId: 282134403,  link: 'https://www.roblox.com/es/communities/282134403/7x#!/about' },
-    community: { label: "7x Community's",          groupId: 59218460,   link: 'https://www.roblox.com/es/communities/59218460/7x-Community-s' },
-    group7x:   { label: '#7x $tudio',              groupId: 1101699267, link: 'https://www.roblox.com/es/communities/1101699267/7x-tudio' },
+    noctra:      { label: '7x (Antes Noctra Study)', groupId: 282134403,  link: '...' },
+    community:   { label: "7x Community's",          groupId: 59218460,   link: '...' },
+    group7x:     { label: '#7x $tudio',              groupId: 1101699267, link: '...' },
+    noctranuevo: { label: 'Noctra nuevo',            groupId: 679239229,  link: '...' },
+    ugc:         { label: '7x UGC',                  groupId: 729107867,  link: '...' },
 },
 ```
 
 La clave de cada entrada es el sufijo del customId del boton (`cg_noctra` ->
-`noctra`), y `handlers/buttons.js` deriva de aqui que botones acepta, asi que
-anadir una cuarta comunidad no puede quedarse a medias.
+`noctra`). De aqui salen TODAS las piezas: los botones que acepta
+`handlers/buttons.js`, la fila y el icono de cada comunidad en el panel, y el
+groupId contra el que consulta el flujo. Anadir una comunidad es escribirla aqui
+y nada mas; no puede quedarse a medias.
 
 El canal de resultados es `config.CHANNELS.CHECKGROUP_RESULTS`
 (`1534758835531808869`), escrito una sola vez ahi. Si no esta en la cache del
@@ -193,8 +220,10 @@ es la unica fuente de `createTime`. El bot arranca igual y lo avisa por consola,
 pero cada solicitud respondera con un error al usuario.
 
 La key necesita el permiso **`group:read`** (Groups -> Read) sobre **cada una**
-de las tres comunidades configuradas arriba, y su lista de IPs permitidas tiene
-que dejar salir a Railway.
+de las comunidades configuradas arriba — las cinco — y su lista de IPs permitidas
+tiene que dejar salir a Railway. Una comunidad nueva en `CHECK_GROUPS` sin ese
+permiso en la key sale en el panel y responde `open_cloud_unauthorized`: el
+usuario ve "no se pudo comprobar" y el motivo real queda en consola.
 
 Igual que `OUTFIT_ADMIN_API_KEY`, **solo se lee en un sitio**
 (`src/roblox/client.js`), viaja unicamente en la cabecera `x-api-key` y no
@@ -238,8 +267,9 @@ comprobaciones por hora. La ventana es DESLIZANTE y no por cubos fijos: con
 cubos, quien gasta su cuota al final de uno puede gastar otra entera al empezar
 el siguiente y colar el doble de golpe justo en la frontera.
 
-6 cada 10 minutos da de sobra para el uso real: comprobar las 3 comunidades y
-repetirlo entero una segunda vez.
+6 cada 10 minutos da de sobra para el uso real: comprobar las comunidades que a
+uno le interesen y repetirlo. Con cinco configuradas, quien quiera comprobarlas
+todas de una tacada lo hara en dos tandas.
 
 Al usuario frenado se le dice **cuando** podra volver, con un timestamp de
 Discord relativo, no con un "espera un momento" que no dice nada. Y una errata
@@ -265,8 +295,8 @@ verdad cambia:
 | Identidad (username -> UserId) | 10 min | Un username no cambia de dueno entre dos clics |
 | Membresia encontrada (`createTime`) | 5 min | `createTime` es inmutable mientras la membresia exista; los dias se recalculan igual en cada consulta |
 | "No es miembro" | 60 s | Corto a proposito: es justo el caso de alguien que se va a unir y vuelve enseguida |
-| Avatar del jugador | 60 min | Cambia si se cambia de ropa. Comprobar los 3 grupos seguidos cuesta UNA peticion |
-| Icono de la comunidad | 12 h | Practicamente nunca cambia, y solo hay 3 comunidades: ~3 peticiones al dia |
+| Avatar del jugador | 60 min | Cambia si se cambia de ropa. Comprobar varios grupos seguidos cuesta UNA peticion |
+| Icono de la comunidad | 12 h | Practicamente nunca cambia. El panel los pide todos al arrancar; con la cache, un reinicio no vuelve a pedirlos |
 | Imagen que Roblox no dio | 5 min (avatar) / 30 min (icono) | Tambien se cachea el "no hay", pero poco: suele ser un render pendiente que se resuelve solo |
 
 ## Headless Horseman

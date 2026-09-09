@@ -57,9 +57,11 @@ module.exports = {
     // `link` es a dónde se manda a quien resulta NO PERTENECER: la tarjeta lo
     // enseña sólo en ese caso, para que pueda unirse y volver a comprobarlo.
     CHECK_GROUPS: {
-        noctra:    { label: '7x (Antes Noctra Study)', groupId: 282134403,  link: 'https://www.roblox.com/es/communities/282134403/7x#!/about' },
-        community: { label: "7x Community's",          groupId: 59218460,   link: 'https://www.roblox.com/es/communities/59218460/7x-Community-s' },
-        group7x:   { label: '#7x $tudio',              groupId: 1101699267, link: 'https://www.roblox.com/es/communities/1101699267/7x-tudio' },
+        noctra:      { label: '7x (Antes Noctra Study)', groupId: 282134403,  link: 'https://www.roblox.com/es/communities/282134403/7x#!/about' },
+        community:   { label: "7x Community's",          groupId: 59218460,   link: 'https://www.roblox.com/es/communities/59218460/7x-Community-s' },
+        group7x:     { label: '#7x $tudio',              groupId: 1101699267, link: 'https://www.roblox.com/es/communities/1101699267/7x-tudio' },
+        noctranuevo: { label: 'Noctra nuevo',            groupId: 679239229,  link: 'https://www.roblox.com/es/communities/679239229/Noctraa#!/about' },
+        ugc:         { label: '7x UGC',                  groupId: 729107867,  link: 'https://www.roblox.com/es/communities/729107867/7x-UGC#!/about' },
     },
 
     // Anti-spam de Check Group's, por usuario de Discord. Cada comprobación que

@@ -358,13 +358,15 @@ module.exports = async function run() {
         }).embed.data;
         assert((sinLink.fields ?? []).length === 3, 'sin link configurado la tarjeta sale igual, sin ese campo');
 
-        // Los tres links, escritos aquí a mano: si alguien cambia uno en
-        // config.js, este archivo tiene que discrepar. Un link roto manda al
-        // cliente a una página que no existe y nadie se entera.
+        // Los links, escritos aquí a mano: si alguien cambia uno en config.js,
+        // este archivo tiene que discrepar. Un link roto manda al cliente a una
+        // página que no existe y nadie se entera.
         const LINKS = {
-            noctra:    'https://www.roblox.com/es/communities/282134403/7x#!/about',
-            community: 'https://www.roblox.com/es/communities/59218460/7x-Community-s',
-            group7x:   'https://www.roblox.com/es/communities/1101699267/7x-tudio',
+            noctra:      'https://www.roblox.com/es/communities/282134403/7x#!/about',
+            community:   'https://www.roblox.com/es/communities/59218460/7x-Community-s',
+            group7x:     'https://www.roblox.com/es/communities/1101699267/7x-tudio',
+            noctranuevo: 'https://www.roblox.com/es/communities/679239229/Noctraa#!/about',
+            ugc:         'https://www.roblox.com/es/communities/729107867/7x-UGC#!/about',
         };
         for (const [clave, url] of Object.entries(LINKS)) {
             assert(config.CHECK_GROUPS[clave]?.link === url, `el link de ${clave} apunta a su comunidad`);
@@ -469,13 +471,26 @@ module.exports = async function run() {
         assert(JSON.stringify(enviados[0].embeds[0].data).includes(GROUP.link), 'la tarjeta publicada lleva el link real de la comunidad');
         assert(efimeros[0].content.includes(GROUP.link), 'y el usuario lo recibe también en su respuesta efímera, sin ir al canal');
 
-        // ── 15. Los tres grupos y el canal de resultados ─────────────────────
-        const ESPERADOS = { noctra: 282134403, community: 59218460, group7x: 1101699267 };
+        // ── 15. Las comunidades y el canal de resultados ─────────────────────
+        // Los ids, escritos a mano igual que los links: apuntar un botón al
+        // grupo equivocado da veredictos que parecen legítimos y no lo son.
+        const ESPERADOS = {
+            noctra:      282134403,
+            community:   59218460,
+            group7x:     1101699267,
+            noctranuevo: 679239229,
+            ugc:         729107867,
+        };
         for (const [clave, id] of Object.entries(ESPERADOS)) {
             assert(config.CHECK_GROUPS[clave]?.groupId === id, `cg_${clave} apunta al grupo ${id}`);
         }
         assert(config.CHECK_GROUPS.group7x.label === '#7x $tudio', 'group7x se llama #7x $tudio');
-        assert(Object.keys(config.CHECK_GROUPS).length === 3, 'no hay más comunidades configuradas de las tres esperadas');
+        assert(config.CHECK_GROUPS.noctranuevo.label === 'Noctra nuevo', 'noctranuevo se llama Noctra nuevo');
+        assert(config.CHECK_GROUPS.ugc.label === '7x UGC', 'ugc se llama 7x UGC');
+        assert(
+            Object.keys(config.CHECK_GROUPS).length === Object.keys(ESPERADOS).length,
+            `no hay más comunidades configuradas de las ${Object.keys(ESPERADOS).length} esperadas`
+        );
         assert(config.CHANNELS.CHECKGROUP_RESULTS === '1534758835531808869', 'el canal de resultados es el 1534758835531808869');
         assert(enviados.every(() => canalFalso.id === '1534758835531808869'), 'y es el único canal al que se publica');
         // ── 16. Anti-spam: por usuario, y ANTES de tocar Roblox ─────────────
@@ -536,6 +551,85 @@ module.exports = async function run() {
         for (const clave of ['COOLDOWN_MS', 'MAX_PER_WINDOW', 'WINDOW_MS']) {
             assert(typeof antispamOriginal[clave] === 'number' && antispamOriginal[clave] > 0, `config.CHECKGROUP_ANTISPAM.${clave} está definido`);
         }
+
+        // ── 17. El panel ────────────────────────────────────────────────────
+        // Lo que se protege aquí:
+        //
+        //   a) UN BOTÓN POR COMUNIDAD, ni uno más ni uno menos, y con el
+        //      customId que el flujo sabe resolver. Un botón sin su entrada en
+        //      config responde "esa comunidad no existe"; una comunidad sin
+        //      botón es invisible aunque esté configurada.
+        //   b) LOS BOTONES VAN DENTRO DEL CONTENEDOR. Es un panel V2: si
+        //      alguien lo devolviera a un embed clásico, quedarían colgando
+        //      debajo del mensaje.
+        //   c) LOS ICONOS SON LOS DE ROBLOX, no ficheros del repo, y cada
+        //      comunidad lleva el SUYO.
+        //   d) UN ICONO QUE FALTA NO BORRA EL PANEL BUENO que ya está
+        //      publicado. Roblox se cae un rato; el panel no tiene por qué
+        //      perder las fotos por eso.
+        const panel = require('../../checkGroup').__test;
+        const claves = Object.keys(config.CHECK_GROUPS);
+
+        roblox.getGroupIcon = async groupId => `https://tr.rbxcdn.com/icono-${groupId}/420/420/`;
+        const { iconos, faltan } = await panel.fetchIconos();
+        assert(faltan.length === 0, 'con Roblox respondiendo, ninguna comunidad se queda sin icono');
+
+        const contenedor = panel.buildContainer(iconos).toJSON();
+        const nodosPanel = [];
+        (function rec(n) {
+            if (Array.isArray(n)) return n.forEach(rec);
+            if (!n || typeof n !== 'object') return;
+            nodosPanel.push(n);
+            rec(n.components);
+            rec(n.accessory);
+        })([contenedor]);
+
+        assert(contenedor.type === 17, 'el panel es un Container: los botones van DENTRO, no colgando debajo');
+
+        const botonesPanel = nodosPanel.filter(n => n.type === 2);
+        assert(botonesPanel.length === claves.length, `hay un botón por comunidad (${botonesPanel.length} de ${claves.length})`);
+        for (const clave of claves) {
+            assert(botonesPanel.some(b => b.custom_id === `cg_${clave}`), `existe el botón cg_${clave}`);
+        }
+        assert(
+            botonesPanel.every(b => getGroup(b.custom_id.slice('cg_'.length)) !== null),
+            'y el flujo sabe resolver el customId de todos ellos contra config'
+        );
+
+        const miniaturas = nodosPanel.filter(n => n.type === 11);
+        assert(miniaturas.length === claves.length, 'cada comunidad lleva su icono');
+        assert(
+            miniaturas.every(t => t.media.url.startsWith('https://tr.rbxcdn.com/')),
+            'los iconos vienen de Roblox, no de un fichero del repo'
+        );
+        assert(
+            new Set(miniaturas.map(t => t.media.url)).size === claves.length,
+            'y cada comunidad lleva el SUYO, no todas el mismo'
+        );
+        // La firma tiene que distinguirlos: si mediaName recortara estas URLs
+        // al último segmento, los cinco iconos serían "420" y cambiar uno no
+        // repintaría el panel.
+        const v2panel = require('../../utils/panelV2');
+        const firma = v2panel.signature([contenedor]);
+        assert(
+            new Set(firma.split('\n').filter(l => l.startsWith('thumb:'))).size === claves.length,
+            'la firma del panel distingue un icono de otro'
+        );
+
+        // Roblox deja de dar iconos: el panel publicado no se toca.
+        // Hay que invalidar la caché a mano — getCommunityIcon guarda un icono
+        // 12 h, así que sin esto seguiría devolviendo los de la línea anterior
+        // y este bloque no probaría nada.
+        const memoria = require('../../src/cache/memoryCache');
+        for (const clave of claves) memoria.invalidate(`cg:icon:${config.CHECK_GROUPS[clave].groupId}`);
+
+        roblox.getGroupIcon = async () => null;
+        const { faltan: faltanTodos } = await panel.fetchIconos();
+        assert(faltanTodos.length === claves.length, 'sin respuesta de Roblox, se detecta que faltan todos los iconos');
+
+        const publicadoConFotos = { components: [contenedor] };
+        assert(panel.degradaria(publicadoConFotos, faltanTodos), 'y NO se reedita un panel que sí tiene sus fotos');
+        assert(!panel.degradaria(publicadoConFotos, []), 'con los iconos disponibles, el panel se actualiza con normalidad');
     } finally {
         roblox.getUserByUsername = originalGetUserByUsername;
         roblox.getGroupMembership = originalGetGroupMembership;

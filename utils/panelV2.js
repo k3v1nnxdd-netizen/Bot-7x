@@ -111,10 +111,29 @@ function panelText(msg) {
     return out.join('\n');
 }
 
-// Nombre de fichero de una URL de media, sin los parámetros de firma que añade
-// la CDN de Discord: `.../7xticket-ab12cd34.gif?ex=…` -> `7xticket-ab12cd34.gif`.
+// Identidad estable de una imagen, para poder comparar lo que se ACABA de
+// construir (`attachment://x.png`) con lo que Discord devuelve ya publicado.
+//
+// De la CDN de Discord sólo vale el nombre del fichero: esas URLs vienen
+// firmadas y con caducidad (`…/x.gif?ex=…`), así que cambian en cada fetch
+// aunque la imagen sea exactamente la misma, y compararlas enteras provocaría
+// una reedición en cada arranque.
+//
+// De cualquier OTRA imagen —el icono de un grupo de Roblox, por ejemplo— vale
+// la URL entera sin query: ahí la ruta es la identidad, y recortarla al último
+// segmento sería peor que inútil, porque todos los iconos de Roblox terminan en
+// `/420/420/` y los cinco parecerían el mismo (o, con la barra final, cadena
+// vacía).
+const CDN_DISCORD = /^https?:\/\/[^/]*\b(discordapp\.(com|net)|discord\.com)\//i;
+
 function mediaName(url) {
-    return typeof url === 'string' ? url.split('?')[0].split('/').pop() : '';
+    if (typeof url !== 'string') return '';
+
+    const sinQuery = url.split('?')[0];
+    if (sinQuery.startsWith('attachment://') || CDN_DISCORD.test(sinQuery)) {
+        return sinQuery.split('/').filter(Boolean).pop() ?? '';
+    }
+    return sinQuery;
 }
 
 // Firma de lo que se ve: color, textos, imágenes y botones. Sirve para no
@@ -146,9 +165,21 @@ async function editOrRecreate(msg, container, banner, tag) {
         return msg;
     } catch (err) {
         console.warn(`[${tag}] Edit rechazado, recreando el panel:`, err.message);
+
         const channel = msg.channel;
+        // Recrear es borrar y mandar OTRO mensaje, y el pin se va con el que se
+        // borra. Sin volver a fijarlo, el panel deja de encontrarse por la vía
+        // fiable (los fijados) y pasa a depender del barrido de 100 mensajes,
+        // que es justo lo que acaba duplicándolo en un canal con movimiento.
+        const estabaFijado = msg.pinned === true;
+
         await msg.delete().catch(e => console.warn(`[${tag}] Could not delete old panel:`, e.message));
-        return channel.send(payload(container, banner));
+        const nuevo = await channel.send(payload(container, banner));
+
+        if (estabaFijado) {
+            await nuevo.pin().catch(e => console.warn(`[${tag}] No se pudo volver a fijar el panel recreado:`, e.message));
+        }
+        return nuevo;
     }
 }
 

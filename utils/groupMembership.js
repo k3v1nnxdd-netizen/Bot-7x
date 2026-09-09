@@ -53,8 +53,10 @@ const NOT_MEMBER_TTL_MS = 60_000;
 // que no hay ninguna razón para volver a preguntar lo mismo cada vez que
 // alguien pulsa un botón.
 //
-// El icono de una comunidad no cambia prácticamente nunca y sólo hay tres
-// comunidades, así que 12 h significa ~3 peticiones al día en total. El avatar
+// El icono de una comunidad no cambia prácticamente nunca y son un puñado de
+// comunidades, así que 12 h significa unas pocas peticiones al día en total.
+// El panel de Check Group's los pide TODOS al arrancar (uno por comunidad),
+// y esa caché es la que hace que un reinicio no vuelva a pedirlos. El avatar
 // de un jugador sí cambia cuando se cambia de ropa, así que 1 h: lo bastante
 // largo para que comprobar los tres grupos seguidos cueste UNA sola petición, y
 // lo bastante corto para no enseñar un avatar de ayer.

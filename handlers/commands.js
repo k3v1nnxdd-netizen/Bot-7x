@@ -4,6 +4,7 @@ const { EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('
 const { safeDeferReply, safeReply, safeEditReply, safeFollowUp } = require('../utils/safe');
 const roblox = require('../src/roblox/client');
 const config = require('../config');
+const { esAdminDeInteraccion } = require('../utils/permisos');
 const { createCoupon, getCoupon, setMessageRef } = require('../utils/coupons');
 const { buildRefRow, sendPurchaseDM } = require('../utils/purchaseDm');
 const tickets = require('../utils/tickets');
@@ -88,7 +89,7 @@ async function handleOutfit(interaction) {
 }
 
 async function handlePagoVerified(interaction) {
-    if (interaction.user.id !== config.OWNER_ID) {
+    if (!esAdminDeInteraccion(interaction)) {
         return safeReply(interaction, { content: '❌ No tienes permiso para usar este comando.', ephemeral: true });
     }
 
@@ -198,7 +199,7 @@ async function refreshCouponEmbed(client, code) {
 }
 
 async function handleOffer(interaction) {
-    if (interaction.user.id !== config.OWNER_ID) {
+    if (!esAdminDeInteraccion(interaction)) {
         return safeReply(interaction, { content: '❌ No tienes permiso para usar este comando.', ephemeral: true });
     }
 
@@ -233,7 +234,7 @@ async function handleOffer(interaction) {
 }
 
 async function handleClose(interaction) {
-    if (interaction.user.id !== config.OWNER_ID) {
+    if (!esAdminDeInteraccion(interaction)) {
         return safeReply(interaction, { content: '❌ No tienes permiso para usar este comando.', ephemeral: true });
     }
 
@@ -260,7 +261,7 @@ async function handleClose(interaction) {
 // vez de dejar creer que no se aplicó nada.
 
 async function handleHeadless(interaction) {
-    if (interaction.user.id !== config.OWNER_ID) {
+    if (!esAdminDeInteraccion(interaction)) {
         return safeReply(interaction, { content: '❌ No tienes permiso para usar este comando.', ephemeral: true });
     }
 
@@ -300,7 +301,7 @@ async function handleHeadless(interaction) {
 // registro del comando.
 
 async function handleGroupActive(interaction) {
-    if (interaction.user.id !== config.OWNER_ID) {
+    if (!esAdminDeInteraccion(interaction)) {
         return safeReply(interaction, { content: '❌ No tienes permiso para usar este comando.', ephemeral: true });
     }
 

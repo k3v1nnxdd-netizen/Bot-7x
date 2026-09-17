@@ -2,6 +2,7 @@
 
 const { EmbedBuilder, AuditLogEvent, PermissionFlagsBits } = require('discord.js');
 const config = require('../config');
+const { esAdmin } = require('../utils/permisos');
 
 // Discord only writes a MESSAGE_DELETE / MESSAGE_BULK_DELETE audit log entry
 // when someone deletes a message that isn't their own (mod/admin/bot deleting
@@ -123,7 +124,7 @@ async function handleMessageDelete(message) {
     if (message.partial) return; // uncached message — no author/content to report
     if (!message.guild) return;
     if (!message.author || message.author.bot) return;
-    if (message.author.id === config.OWNER_ID) return;
+    if (esAdmin(message.author.id)) return;
 
     if (await wasDeletedBySomeoneElse(message)) return;
 

@@ -8,6 +8,7 @@ const EXITOSO_NAME   = 'exitosoemoji.gif';
 const EXITOSO_EXISTS = fs.existsSync(EXITOSO_PATH);
 const { isGone, safeReply, safeEditReply, safeDeferReply, safeShowModal } = require('../utils/safe');
 const { isLocked, lock } = require('../utils/spam');
+const { esAdminDeInteraccion, puedeGestionarTicket } = require('../utils/permisos');
 const tickets            = require('../utils/tickets');
 const { buildComprarModal, buildOtraCosaModal, buildDuelsModal, buildCalcDineroModal, buildCalcRobuxModal, buildVerifModal, buildReviewModal } = require('./modals');
 const { buildRefRow, sendPurchaseDM } = require('../utils/purchaseDm');
@@ -191,7 +192,7 @@ async function onDuels(interaction) {
 async function onConfirmarPago(interaction) {
     if (interaction.replied || interaction.deferred) return;
 
-    if (interaction.user.id !== config.OWNER_ID) {
+    if (!esAdminDeInteraccion(interaction)) {
         return safeReply(interaction, { content: '❌ No tienes permiso para usar este botón.', ephemeral: true });
     }
 
@@ -257,8 +258,8 @@ async function onCerrarTicket(interaction) {
     if (interaction.replied || interaction.deferred) return;
 
     const ownerId = tickets.getOwner(interaction.channel);
-    if (interaction.user.id !== ownerId && interaction.user.id !== config.OWNER_ID) {
-        return safeReply(interaction, { content: '❌ Solo el creador del ticket o el owner pueden cerrarlo.', ephemeral: true });
+    if (!puedeGestionarTicket(interaction.user.id, ownerId)) {
+        return safeReply(interaction, { content: '❌ Solo el creador del ticket o un administrador pueden cerrarlo.', ephemeral: true });
     }
 
     const embed = new EmbedBuilder()
@@ -280,8 +281,8 @@ async function onConfirmarCerrar(interaction) {
     const channelId = interaction.channelId;
     const ownerId   = tickets.getOwner(interaction.channel);
 
-    if (interaction.user.id !== ownerId && interaction.user.id !== config.OWNER_ID) {
-        return safeReply(interaction, { content: '❌ Solo el creador del ticket o el owner pueden cerrarlo.', ephemeral: true });
+    if (!puedeGestionarTicket(interaction.user.id, ownerId)) {
+        return safeReply(interaction, { content: '❌ Solo el creador del ticket o un administrador pueden cerrarlo.', ephemeral: true });
     }
 
     if (isLocked(`cerrar:${channelId}`)) {
@@ -302,8 +303,8 @@ async function onCancelarCerrar(interaction) {
     if (interaction.replied || interaction.deferred) return;
 
     const ownerId = tickets.getOwner(interaction.channel);
-    if (interaction.user.id !== ownerId && interaction.user.id !== config.OWNER_ID) {
-        return safeReply(interaction, { content: '❌ Solo el creador del ticket o el owner pueden cancelar.', ephemeral: true });
+    if (!puedeGestionarTicket(interaction.user.id, ownerId)) {
+        return safeReply(interaction, { content: '❌ Solo el creador del ticket o un administrador pueden cancelar.', ephemeral: true });
     }
     try { await interaction.message.delete(); } catch {}
     await safeReply(interaction, { content: '✅ Cierre del ticket cancelado.', ephemeral: true });

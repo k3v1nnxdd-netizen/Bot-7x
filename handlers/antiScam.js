@@ -2,13 +2,14 @@
 
 const { EmbedBuilder } = require('discord.js');
 const config = require('../config');
+const { esAdmin } = require('../utils/permisos');
 const { containsScamTerm } = require('../utils/antiScam');
 
 // Returns true if the message was flagged and handled (deleted + warned).
 async function handleAntiScam(message) {
     if (message.author.bot) return false;
     if (!message.guild) return false;
-    if (message.author.id === config.OWNER_ID) return false;
+    if (esAdmin(message.author.id)) return false;
     if (message.author.id === config.INTERMEDIARY_ID) return false;
     if (message.channel.parentId === config.CATEGORIES.TICKETS) return false;
     if (message.channelId === config.CHANNELS.REFERENCIAS) return false;

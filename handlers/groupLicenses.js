@@ -5,6 +5,7 @@ const { safeDeferReply, safeReply, safeEditReply, safeFollowUp, safeDeferUpdate 
 const roblox = require('../src/roblox/client');
 const outfitApi = require('../utils/outfitApi');
 const config = require('../config');
+const { esAdminDeInteraccion } = require('../utils/permisos');
 
 // /addgroup, /deletegroup, /checkgroup and /groups — the license system for
 // Roblox groups, on top of outfit-api's /admin/groups.
@@ -71,8 +72,12 @@ const ROBLOX_USER_PATTERN = /^[A-Za-z0-9_]{3,20}$/;
 
 // ── Small helpers ────────────────────────────────────────────────────────────
 
+// Los comandos de licencias emiten y revocan credenciales de la API, asi que
+// aqui "owner" significa lo mismo que en el resto del bot: cualquiera de
+// config.ADMIN_IDS. Si alguna vez hiciera falta que estos cuatro comandos fueran
+// SOLO del dueno, es la unica linea que habria que volver a OWNER_ID.
 function esOwner(interaction) {
-    return interaction.user.id === config.OWNER_ID;
+    return esAdminDeInteraccion(interaction);
 }
 
 function denegar(interaction) {

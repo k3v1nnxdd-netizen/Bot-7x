@@ -159,7 +159,7 @@ if (RUN_BOT) {
             // Las opciones de comunidad se DERIVAN de config.CHECK_GROUPS, igual
             // que los botones del panel de Check Group's: añadir una comunidad
             // la pone en el desplegable sola, y no se puede quedar a medias.
-            // El gate real es el chequeo de OWNER_ID dentro de handleGroupActive.
+            // El gate real es el chequeo de permisos dentro de handleGroupActive.
             {
                 name: 'groupactive',
                 description: 'Marca una comunidad como activa o caída para el envío de Robux (solo owner)',
@@ -187,7 +187,7 @@ if (RUN_BOT) {
                 ],
             },
 
-            // El gate real es el chequeo de OWNER_ID dentro de handleHeadless,
+            // El gate real es el chequeo de permisos dentro de handleHeadless,
             // igual que /offer: el registro del comando no decide permisos.
             {
                 name: 'headless',
@@ -199,7 +199,7 @@ if (RUN_BOT) {
             },
 
             // ── Licencias de grupos (outfit-api /admin/groups, solo owner) ──
-            // El gate real es el chequeo de OWNER_ID dentro de cada handler
+            // El gate real es el chequeo de permisos dentro de cada handler
             // (handlers/groupLicenses.js), igual que /offer o /pagoverified:
             // el registro del comando no decide permisos.
             {

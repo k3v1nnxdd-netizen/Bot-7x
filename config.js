@@ -1,7 +1,24 @@
 'use strict';
 
+// ── Quién manda ───────────────────────────────────────────────────────────────
+// OWNER_ID es el dueño: la persona concreta, la que sale nombrada en los avisos
+// del anti-estafa. ADMIN_IDS es QUIÉN PUEDE hacer cosas de owner, que ya no es
+// una sola persona.
+//
+// La lista se construye desde OWNER_ID, no se escribe a mano con su id dentro:
+// así el dueño no puede quedarse fuera de sus propios permisos por una errata.
+//
+// Para dar permisos a alguien más, añade su id a ADMINS_EXTRA y a ningún otro
+// sitio: utils/permisos.js es el único que decide, y todos los comandos y
+// botones preguntan ahí.
+const OWNER_ID = '996310284803248158';
+const ADMINS_EXTRA = [
+    '620310742138224661',
+];
+
 module.exports = {
-    OWNER_ID: '996310284803248158',
+    OWNER_ID,
+    ADMIN_IDS: [OWNER_ID, ...ADMINS_EXTRA],
     INTERMEDIARY_ID: '346085763638886400',
     GUILD_ID: '1162602588328435802',
 

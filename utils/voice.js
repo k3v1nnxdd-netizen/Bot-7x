@@ -6,6 +6,7 @@ const {
     entersState,
 } = require('@discordjs/voice');
 const config = require('../config');
+const { esAdminDeInteraccion } = require('./permisos');
 const { safeReply } = require('./safe');
 
 let connection = null;
@@ -110,7 +111,7 @@ function handleVoiceStateUpdate(oldState, newState, client) {
 
 // /connect (owner-only) — toggles the bot in/out of config.VOICE_CHANNEL_ID.
 async function handleConnect(interaction) {
-    if (interaction.user.id !== config.OWNER_ID) {
+    if (!esAdminDeInteraccion(interaction)) {
         return safeReply(interaction, { content: '❌ No tienes permisos para usar este comando.', ephemeral: true });
     }
 

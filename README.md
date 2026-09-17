@@ -22,6 +22,7 @@ TOKEN=tu_token_aqui
 ## Configuración
 
 - OWNER_ID: ID del propietario (996310284803248158)
+- ADMIN_IDS: quién puede hacer cosas de owner (el propietario + `ADMINS_EXTRA`) — ver «Quien puede hacer cosas de owner»
 - Canal principal: 1442456304420524146
 - Categoría de tickets: 1184353695643729940
 - Canal de métodos de pago: 1494475415597744360
@@ -561,7 +562,45 @@ puede recibir porque Roblox tardo en contestar le niega algo que si tenia, y en
 pantalla se veria igual que un no legitimo. Con Roblox entero caido, el resumen
 sale con las cinco en "no se pudo comprobar" y el ticket funciona igual.
 
+## Quien puede hacer cosas de owner
+
+`config.OWNER_ID` es el dueno: la persona concreta, la que sale nombrada en los
+avisos del anti-estafa. `config.ADMIN_IDS` es **quien puede**, que ya no es una
+sola persona.
+
+Para dar permisos a alguien mas, anade su id a `ADMINS_EXTRA` en `config.js` y a
+ningun otro sitio. La lista se construye desde `OWNER_ID`, asi que el dueno no
+puede quedarse fuera de sus propios permisos por una errata.
+
+`utils/permisos.js` es el UNICO sitio que decide:
+
+| | Que responde |
+|---|---|
+| `esAdmin(userId)` | ¿puede hacer cosas de owner? |
+| `esAdminDeInteraccion(interaction)` | lo mismo, desde un boton o un comando |
+| `puedeGestionarTicket(userId, duenoDelTicket)` | el cliente manda sobre SU ticket; un admin, sobre cualquiera |
+
+Antes ese chequeo estaba copiado a mano en once archivos
+(`interaction.user.id !== config.OWNER_ID`). El problema de eso no era la
+repeticion: era que olvidarse de UNO no da ningun error — esa accion se queda
+siendo solo del dueno, en silencio, hasta que alguien la necesita y no puede.
+
+Por eso `src/tests/permisos.test.js` **recorre el codigo** buscando
+comparaciones sueltas contra `OWNER_ID` en `handlers/`, `utils/` y `main.js`. Si
+alguien anade un comando nuevo con el chequeo copiado, el test lo caza. Se
+permite nombrar `OWNER_ID` para MENCIONAR al dueno (`<@${config.OWNER_ID}>`),
+que no es decidir nada.
+
+### Los ids se comparan como cadena, siempre
+
+Un snowflake de Discord tiene 17-20 digitos y NO cabe exacto en un numero de
+JavaScript. Si un id llegara ya convertido a numero, volverlo a cadena no lo
+arregla: la precision se perdio antes (`620310742138224661` como numero vale
+620310742138224700). El modulo no intenta recuperarlo — simplemente no coincide
+y deniega, que es el lado correcto en el que equivocarse.
+
 ## Ejecutar
+
 
 
 

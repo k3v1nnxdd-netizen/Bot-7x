@@ -651,12 +651,12 @@ No es comodidad: en el movil, seleccionar una direccion de cripto dentro de un
 embed es incomodo y facil de hacer mal, y **media direccion copiada es un pago
 perdido**. Un mensaje de texto plano se copia de un toque.
 
-Todo lo copiable sale del objeto , construido desde ,
- y los dos enlaces. Antes la cuenta de Mercado Pago estaba escrita DOS
-veces —en  y otra vez a mano en —, asi que
+Todo lo copiable sale del objeto `COPIABLES`, construido desde `CRIPTO`,
+`CUENTA` y los dos enlaces. Antes la cuenta de Mercado Pago estaba escrita DOS
+veces —en `metodos.js` y otra vez a mano en `handlers/buttons.js`—, asi que
 cambiarla en un sitio dejaba al boton de copiar entregando la vieja. El test
 comprueba que lo que entrega cada boton es EXACTAMENTE lo que dice su embed, y
-que ningun dato de pago siga copiado en .
+que ningun dato de pago siga copiado en `handlers/buttons.js`.
 
 ### El GIF y los tickets
 

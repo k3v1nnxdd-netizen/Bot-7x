@@ -10,7 +10,7 @@ const { isValidUsername } = require('../utils/groupMembership');
 const headlessSale = require('../utils/headlessSale');
 const tickets = require('../utils/tickets');
 const config = require('../config');
-const { buildMetodosEmbed, buildMetodosRow } = require('../metodos');
+const { buildMetodosPayload } = require('../metodos');
 const { buildCommunitySummary } = require('../utils/communityStatus');
 
 // ── Ticket del Headless Horseman ──────────────────────────────────────────────
@@ -206,10 +206,7 @@ async function handleHeadlessModal(interaction) {
         });
 
         // ── Mensaje 2: métodos de pago ────────────────────────────────────────
-        await channel.send({
-            embeds: [buildMetodosEmbed()],
-            components: [buildMetodosRow()],
-        });
+        await channel.send(buildMetodosPayload());
 
         // ── Mensaje 3: pago pendiente ─────────────────────────────────────────
         await channel.send({ embeds: [buildPasosEmbed()] });

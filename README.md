@@ -599,7 +599,68 @@ arregla: la precision se perdio antes (`620310742138224661` como numero vale
 620310742138224700). El modulo no intenta recuperarlo — simplemente no coincide
 y deniega, que es el lado correcto en el que equivocarse.
 
+## Metodos de pago
+
+Un Container de Components V2 en `CHANNELS.METODOS`: el GIF, el texto y los
+CINCO BOTONES dentro del mismo bloque. Antes era un embed con un desplegable
+colgando debajo.
+
+| Boton | Que enseña |
+|---|---|
+| Cripto | BTC, ETH, LINK, LTC y UNI, cada una con su direccion y su red |
+| Transferencia | Cuenta de Mercado Pago, titular y banco |
+| Deposito OXXO | El codigo QR |
+| Gift Card Eneba | Enlace de compra |
+| Gift Card Amazon | Enlace de compra (Amazon Mexico) |
+
+### La respuesta es EFIMERA
+
+Pulsar un boton responde **solo a quien lo pulso**. No es un detalle estetico:
+una cuenta bancaria y cinco direcciones de cobro escritas en un canal abierto
+las lee cualquiera, para siempre, y no se pueden "despublicar".
+
+`/pagos` es la excepcion, y a proposito: ese lo usa el staff DENTRO de un ticket
+para enseñarle los datos al cliente, asi que su respuesta es publica. El
+contenido sale de la misma funcion (`buildDetallePayload`), asi que no hay dos
+versiones de una cuenta bancaria que puedan desincronizarse.
+
+### Las direcciones de cobro
+
+Viven en `metodos.js`, juntas y en un solo sitio, porque **son dinero**: un
+caracter de mas o de menos manda el pago de un cliente a la nada, y en una
+blockchain eso no se deshace ni se reclama.
+
+Por eso `src/tests/metodos.test.js` comprueba su FORMATO en cada `npm test`:
+longitud exacta, alfabeto valido por moneda (bech32 para BTC/LTC, hex para las
+EVM) y que no haya dos iguales. No valida el checksum —haria falta una
+libreria— pero caza lo que de verdad pasa al copiar y pegar: que se quede un
+caracter por el camino. La cuenta de Mercado Pago se comprueba igual: 18
+digitos.
+
+ETH, LINK y UNI son tres direcciones EVM **distintas entre si**, no
+intercambiables, y el mensaje lo avisa: enviar una moneda a la direccion de otra
+o por otra red pierde el pago.
+
+### El GIF y los tickets
+
+El panel del canal lleva el GIF; los tickets mandan **el mismo bloque sin el**.
+Son 6,5 MiB: en el canal se suben una vez y se quedan, pero en un ticket serian
+6,5 MiB de subida y varios segundos de espera por cada cliente, para una
+decoracion que ya vio en el canal. El texto y los botones son identicos. Si
+alguna vez se quiere con GIF, `buildMetodosPayload({ conBanner: true })`.
+
+Los tres tickets que mandan metodos de pago (compra de Robux, Headless y
+seguidores) usan ese mismo bloque, asi que cambiar un dato de pago se hace en un
+solo sitio.
+
+### Anadir un metodo
+
+Se escribe en el objeto `METODOS` de `metodos.js` y en ningun otro sitio: de ahi
+salen el boton del panel, su enrutado en `handlers/buttons.js` y las opciones de
+`/pagos`. No se puede quedar a medias.
+
 ## Ejecutar
+
 
 
 

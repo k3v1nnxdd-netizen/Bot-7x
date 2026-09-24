@@ -15,11 +15,7 @@ const headlessSale = require('../utils/headlessSale');
 const { ensureHeadlessPanel } = require('../headless');
 const groupActive = require('../utils/groupActive');
 const { ensureGroupStatusPanel } = require('../groupStatus');
-const {
-    buildTransferenciaEmbed, buildTransferenciaRow,
-    buildOxxoEmbed, buildGiftCardEmbed,
-    OXXO_PATH, OXXO_NAME, OXXO_EXISTS,
-} = require('../metodos');
+const { buildDetallePayload } = require('../metodos');
 
 async function handleOutfit(interaction) {
     if (interaction.channelId !== config.CHANNELS.OUTFIT) {
@@ -133,26 +129,24 @@ async function handlePagoVerified(interaction) {
     }
 }
 
+// Enseña el detalle de un método de pago. El contenido es EXACTAMENTE el mismo
+// que sale al pulsar su botón en el panel: sale de buildDetallePayload, así que
+// no hay dos versiones de una cuenta bancaria que puedan desincronizarse.
+//
+// La respuesta es pública a propósito, al revés que el botón: este comando lo
+// usa el staff dentro de un ticket para enseñarle los datos al cliente, y un
+// efímero sólo lo vería quien escribió el comando.
 async function handlePagos(interaction) {
     const ok = await safeDeferReply(interaction);
     if (!ok) return;
 
     const metodo = interaction.options.getString('metodo');
+    const payload = buildDetallePayload(metodo);
 
-    if (metodo === 'transferencia') {
-        return safeEditReply(interaction, {
-            embeds: [buildTransferenciaEmbed()],
-            components: [buildTransferenciaRow()],
-        });
+    if (!payload) {
+        return safeEditReply(interaction, { content: '❌ Ese método de pago ya no está disponible.' });
     }
-    if (metodo === 'oxxo') {
-        const payload = { embeds: [buildOxxoEmbed()] };
-        if (OXXO_EXISTS) payload.files = [{ attachment: OXXO_PATH, name: OXXO_NAME }];
-        return safeEditReply(interaction, payload);
-    }
-    if (metodo === 'giftcard') {
-        return safeEditReply(interaction, { embeds: [buildGiftCardEmbed()] });
-    }
+    return safeEditReply(interaction, payload);
 }
 
 function buildCouponEmbed(codigo, coupon) {

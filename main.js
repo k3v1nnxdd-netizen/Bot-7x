@@ -34,7 +34,7 @@ if (RUN_BOT) {
     const { ensurePanel }     = require('./panel');
     const { ensureCalcPanel }   = require('./calc');
     const { ensureReglasPanel }  = require('./reglas');
-    const { ensureMetodosPanel, handleMetodosSelect } = require('./metodos');
+    const { ensureMetodosPanel, handleMetodosSelect, METODOS } = require('./metodos');
     const { ensureVerifPanel }   = require('./verif');
     const { ensureRolesPanel, EMOJI_ROLE_MAP, getRolesMsgId } = require('./roles');
     const { ensureSeguidoresPanel } = require('./seguidores');
@@ -115,11 +115,12 @@ if (RUN_BOT) {
                     type: 3,
                     description: 'Método de pago que deseas consultar',
                     required: true,
-                    choices: [
-                        { name: 'Transferencia', value: 'transferencia' },
-                        { name: 'Depósito OXXO', value: 'oxxo' },
-                        { name: 'Gift Card',     value: 'giftcard' },
-                    ],
+                    // Derivadas de METODOS, igual que los botones del panel:
+                    // añadir un método de pago lo pone en los dos sitios solo.
+                    choices: Object.entries(METODOS).map(([clave, m]) => ({
+                        name:  m.label.slice(0, 100),
+                        value: clave,
+                    })),
                 }],
             },
             {

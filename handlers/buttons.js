@@ -19,6 +19,7 @@ const { startSeguidoresTicket, handleSeguidoresButton } = require('./seguidoresF
 const { handleCheckGroupButton } = require('./checkGroupFlow');
 const { handleHeadlessButton } = require('./headlessFlow');
 const { handleGroupsPageButton } = require('./groupLicenses');
+const { handleMetodosButton, BOTONES: METODOS_BUTTONS } = require('../metodos');
 const config             = require('../config');
 
 // ── Countdown timers per ticket channel ───────────────────────────────────────
@@ -412,6 +413,9 @@ const HANDLERS = {
     cancelar_cerrar:     onCancelarCerrar,
     metodos_copy_cuenta: onCopiarCuenta,
     metodos_copy_nombre: onCopiarNombre,
+    // Los de metodos_<clave> se enrutan por su Set, derivado de METODOS: anadir
+    // un metodo de pago no puede quedarse sin boton enrutado.
+    ...Object.fromEntries([...METODOS_BUTTONS].map(id => [id, handleMetodosButton])),
 };
 
 async function handleButton(interaction) {

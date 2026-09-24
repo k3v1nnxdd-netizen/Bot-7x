@@ -16,7 +16,7 @@ const { finalizeReview }                                    = require('../utils/
 const roblox                                               = require('../src/roblox/client');
 const { getJoinDate, getLastChecked, trackIfNew, updateLastChecked, daysSince } = require('../utils/groupTracker');
 const config                                               = require('../config');
-const { buildMetodosEmbed, buildMetodosRow }               = require('../metodos');
+const { buildMetodosPayload }                               = require('../metodos');
 const { handleSeguidoresModal }                             = require('./seguidoresFlow');
 const { handleCheckGroupModal }                             = require('./checkGroupFlow');
 const { handleHeadlessModal }                               = require('./headlessFlow');
@@ -290,10 +290,10 @@ async function handleComprarModal(interaction) {
         });
 
         // ── Mensaje 2: Panel de métodos de pago (con dropdown) ────────────────
-        await channel.send({
-            embeds: [buildMetodosEmbed()],
-            components: [buildMetodosRow()],
-        });
+        // El mismo bloque de métodos de pago que el panel del canal, sin el
+        // GIF: son 6,5 MiB que el cliente ya vio ahí y que aquí sólo añadirían
+        // segundos de espera a cada ticket.
+        await channel.send(buildMetodosPayload());
 
         // ── Mensaje 3: Pago pendiente ─────────────────────────────────────────
         const embedSteps = new EmbedBuilder()

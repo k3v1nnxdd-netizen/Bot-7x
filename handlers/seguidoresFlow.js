@@ -9,7 +9,7 @@ const { safeReply, safeEditReply, safeDeferReply, safeShowModal } = require('../
 const { isLocked, lock } = require('../utils/spam');
 const tickets = require('../utils/tickets');
 const config = require('../config');
-const { buildMetodosEmbed, buildMetodosRow } = require('../metodos');
+const { buildMetodosPayload } = require('../metodos');
 
 const EMBED_COLOR = 0x2B2D31; // gray, per request
 
@@ -411,10 +411,10 @@ async function handlePagarButton(interaction) {
         return safeReply(interaction, { content: '❌ Solo el creador del ticket puede continuar.', ephemeral: true });
     }
 
-    await interaction.channel.send({
-        embeds: [buildMetodosEmbed()],
-        components: [buildMetodosRow()],
-    });
+    // El mismo bloque de métodos de pago que el panel del canal, sin el GIF:
+    // son 6,5 MiB que el cliente ya vio ahí y que aquí sólo añadirían segundos
+    // de espera a cada ticket.
+    await interaction.channel.send(buildMetodosPayload());
 
     await safeReply(interaction, { content: '✅ Métodos de pago enviados.', ephemeral: true });
 }

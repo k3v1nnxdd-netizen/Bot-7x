@@ -20,6 +20,7 @@ const { handleCheckGroupButton } = require('./checkGroupFlow');
 const { handleHeadlessButton } = require('./headlessFlow');
 const { handleGroupsPageButton } = require('./groupLicenses');
 const { handleMetodosButton, handleCopiarButton, BOTONES: METODOS_BUTTONS, COPY_BOTONES } = require('../metodos');
+const v2                 = require('../utils/panelV2');
 const config             = require('../config');
 
 // ── Countdown timers per ticket channel ───────────────────────────────────────
@@ -219,22 +220,23 @@ async function onConfirmarPago(interaction) {
     const ownerId = tickets.getOwner(interaction.channel);
     const mention = ownerId ? `<@${ownerId}>` : 'Usuario';
 
-    const embed = new EmbedBuilder()
-        .setColor(0x2B2D31)
-        .setTitle('<:truepurple:1501214679400190086> PAGO EXITOSO')
-        .setThumbnail(EXITOSO_EXISTS ? `attachment://${EXITOSO_NAME}` : null)
-        .setDescription(
-            `<:member:1501261625523699892> ${mention}, ¡tu pago fue confirmado y tus Robux ya fueron enviados a tu cuenta!\n\n` +
-            '<:alert:1501220021035204658> Si aún no los ves, Roblox puede retenerlos en estado **Pendiente** por seguridad (normalmente **5-10 min**, máximo **10 días**).\n\n' +
-            '<:point:1501212595464700104> Revisa el estado de tus Robux aquí: [ver transacciones](<https://www.roblox.com/transactions>)\n\n' +
-            '<:truepurple:1501214679400190086> ¡Gracias por tu compra!'
-        );
-
+    // Tarjeta y no embed: así el botón de dejar referencia queda DENTRO del
+    // bloque en vez de colgando debajo. El emoji del título sólo se pinta
+    // porque ahora es un encabezado de texto — en el título de un embed
+    // Discord lo imprimía crudo.
     const replyPayload = {
         content: ownerId ? `<@${ownerId}>` : undefined,
-        embeds: [embed],
-        components: [buildRefRow()],
-        ...(EXITOSO_EXISTS && { files: [{ attachment: EXITOSO_PATH, name: EXITOSO_NAME }] }),
+        ...v2.tarjetaPayload({
+            color: 0x2B2D31,
+            texto:
+                '## <:truepurple:1501214679400190086> PAGO EXITOSO\n\n' +
+                `<:member:1501261625523699892> ${mention}, ¡tu pago fue confirmado y tus Robux ya fueron enviados a tu cuenta!\n\n` +
+                '<:alert:1501220021035204658> Si aún no los ves, Roblox puede retenerlos en estado **Pendiente** por seguridad (normalmente **5-10 min**, máximo **10 días**).\n\n' +
+                '<:point:1501212595464700104> Revisa el estado de tus Robux aquí: [ver transacciones](<https://www.roblox.com/transactions>)\n\n' +
+                '<:truepurple:1501214679400190086> ¡Gracias por tu compra!',
+            thumbnail: EXITOSO_EXISTS ? `attachment://${EXITOSO_NAME}` : null,
+            filas: [buildRefRow()],
+        }, EXITOSO_EXISTS ? [{ attachment: EXITOSO_PATH, name: EXITOSO_NAME }] : []),
     };
     await safeReply(interaction, replyPayload);
 
@@ -263,17 +265,22 @@ async function onCerrarTicket(interaction) {
         return safeReply(interaction, { content: '❌ Solo el creador del ticket o un administrador pueden cerrarlo.', ephemeral: true });
     }
 
-    const embed = new EmbedBuilder()
-        .setColor(0xFFA500)
-        .setTitle('⚠️ CONFIRMAR CIERRE DE TICKET')
-        .setDescription('¿Estás seguro de que quieres cerrar este ticket?\n\n**Esta acción es irreversible y eliminará el canal.**');
-
     const row = new ActionRowBuilder().addComponents(
         new ButtonBuilder().setCustomId('confirmar_cerrar').setLabel('Sí, cerrar ticket').setStyle(ButtonStyle.Danger).setEmoji('✅'),
         new ButtonBuilder().setCustomId('cancelar_cerrar').setLabel('Cancelar').setStyle(ButtonStyle.Secondary).setEmoji('❌')
     );
 
-    await safeReply(interaction, { embeds: [embed], components: [row], ephemeral: true });
+    await safeReply(interaction, {
+        ...v2.tarjetaPayload({
+            color: 0xFFA500,
+            texto:
+                '## ⚠️ CONFIRMAR CIERRE DE TICKET\n\n' +
+                '¿Estás seguro de que quieres cerrar este ticket?\n\n' +
+                '**Esta acción es irreversible y eliminará el canal.**',
+            filas: [row],
+        }),
+        ephemeral: true,
+    });
 }
 
 async function onConfirmarCerrar(interaction) {

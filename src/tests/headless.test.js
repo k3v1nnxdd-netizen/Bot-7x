@@ -43,6 +43,14 @@ const H = config.HEADLESS;
 // ./data real. Por eso la ruta se pregunta, no se construye.
 const ESTADO_FILE = dataPath('headlessSale.json');
 
+// Todo el texto de una tarjeta (Container) ya serializada.
+function textoDeTarjeta(container) {
+    return nodos([container.toJSON()])
+        .filter(n => n.type === 10)
+        .map(n => n.content)
+        .join('\n');
+}
+
 // Todos los nodos de un contenedor ya serializado, en plano. walk() no se
 // exporta desde panelV2, así que se recorre aquí igual que hace él.
 function nodos(json) {
@@ -118,8 +126,7 @@ module.exports = async function run() {
     assert(/`headless-\$\{pad\(/.test(fuenteFlujo), 'y se distingue por el nombre del canal: headless-0001');
 
     // ── 5. El resumen usa las etiquetas que lee orderNotify ──────────────────
-    const resumen = flujo.buildResumenEmbed('PlayerName123', null).toJSON();
-    const desc = resumen.description;
+    const desc = textoDeTarjeta(flujo.buildResumenTarjeta('PlayerName123', null));
     const orden = fs.readFileSync(path.join(__dirname, '..', '..', 'utils', 'orderNotify.js'), 'utf8');
 
     for (const etiqueta of ['Usuario de Roblox', 'Robux a recibir', 'Precio a pagar']) {
@@ -147,24 +154,43 @@ module.exports = async function run() {
 
     const estadoFalso = {
         avatarURL: 'https://tr.rbxcdn.com/avatar/150/150/',
-        fields: [
-            { name: '​', value: '<:cg_x:1> **7x Community\'s**\n<a:remove:1540604743234228364> 14 días · faltan 1', inline: true },
-            { name: 'Envío de Robux', value: 'lo que sea', inline: false },
-        ],
+        texto: '\n### Estado en las comunidades\n<:cg_x:1> **7x Community\'s** — <a:remove:1540604743234228364> 14 días · faltan 1',
     };
-    const conEstado = flujo.buildResumenEmbed('PlayerName123', 'https://cdn.discordapp.com/x.png', estadoFalso).toJSON();
+    const conEstado = flujo.buildResumenTarjeta('PlayerName123', 'https://cdn.discordapp.com/x.png', estadoFalso);
+    const jsonConEstado = conEstado.toJSON();
+    const piezasConEstado = nodos([jsonConEstado]);
 
-    assert(conEstado.author?.icon_url === estadoFalso.avatarURL, 'el avatar de ROBLOX va en la línea de autor');
-    assert(conEstado.thumbnail?.url === 'https://cdn.discordapp.com/x.png', 'y el de Discord sigue de thumbnail: son dos personas distintas de identificar');
-    assert(conEstado.fields?.length === 2, 'los campos de comunidades se añaden al resumen');
-    assert(JSON.stringify(conEstado).length < 6000, 'y el embed entero cabe en el límite de Discord');
+    assert(jsonConEstado.type === 17, 'el resumen es una tarjeta (Container), no un embed');
+    assert(
+        piezasConEstado.some(n => n.type === 11 && n.media.url === 'https://cdn.discordapp.com/x.png'),
+        'el avatar de Discord va de miniatura: identifica a quién abrió el ticket'
+    );
+    assert(
+        piezasConEstado.some(n => n.type === 2 && n.custom_id === 'cerrar_ticket'),
+        'y el botón de cerrar va DENTRO del bloque, no colgando debajo'
+    );
+    assert(textoDeTarjeta(conEstado).includes('Estado en las comunidades'), 'el estado de comunidades se añade al resumen');
+    assert(JSON.stringify(jsonConEstado).length < 6000, 'y la tarjeta entera cabe en el límite de Discord');
 
     // Sin estado —Roblox caído— el resumen sale igual, como antes de que
     // existiera esta parte.
-    const sinEstado = flujo.buildResumenEmbed('PlayerName123', null).toJSON();
-    assert(!sinEstado.fields?.length, 'sin datos de comunidades, el resumen sale sin esos campos');
-    assert(!sinEstado.author, 'y sin línea de autor, en vez de una vacía');
-    assert(sinEstado.description.includes('Robux a recibir'), 'pero con todo lo demás intacto');
+    const sinEstado = flujo.buildResumenTarjeta('PlayerName123', null);
+    const textoSinEstado = textoDeTarjeta(sinEstado);
+    assert(!textoSinEstado.includes('Estado en las comunidades'), 'sin datos de comunidades, el resumen sale sin esa parte');
+    assert(textoSinEstado.includes('Robux a recibir'), 'pero con todo lo demás intacto');
+    assert(
+        nodos([sinEstado.toJSON()]).some(n => n.type === 2 && n.custom_id === 'cerrar_ticket'),
+        'y con su botón de cerrar igualmente'
+    );
+
+    // Los pasos de pago llevan el botón del owner DENTRO.
+    const pasos = flujo.buildPasosPayload();
+    const piezasPasos = nodos(pasos.components.map(c => c.toJSON()));
+    assert(pasos.flags === require('discord.js').MessageFlags.IsComponentsV2, 'los pasos de pago son una tarjeta');
+    assert(
+        piezasPasos.some(n => n.type === 2 && n.custom_id === 'confirmar_pago'),
+        'con el botón de PAGO REALIZADO dentro, no en un mensaje suelto debajo'
+    );
 
     // ── 6. El panel: botones dentro del contenedor, imagen y estado ──────────
     const json = panel.buildContainer(true).toJSON();

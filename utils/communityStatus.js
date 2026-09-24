@@ -157,6 +157,31 @@ function buildEnvio(comunidades, emojis = {}) {
     return { name: 'Envío de Robux', value: lineas.join('\n').slice(0, 1024), inline: false };
 }
 
+// La misma información que los fields, pero como texto.
+//
+// Hace falta porque el resumen del ticket es una tarjeta (Container) y no un
+// embed: los Containers no tienen fields. En una lista se lee además mejor en
+// móvil que en tres columnas, donde "7x (Antes Noctra Study)" no cabe sin
+// partirse por la mitad.
+function buildTextoComunidades(comunidades, emojis = {}) {
+    if (!comunidades.length) return '';
+
+    const filas = comunidades.map(c =>
+        `${emojis[c.clave] ?? EMOJI.generico} **${c.label}** — ${marca(c)} ${textoDias(c)}`
+    );
+
+    const envio = buildEnvio(comunidades, emojis);
+
+    return [
+        '',
+        '### Estado en las comunidades',
+        ...filas,
+        '',
+        `### ${envio.name}`,
+        envio.value,
+    ].join('\n');
+}
+
 // ── Lo que consume el ticket ─────────────────────────────────────────────────
 // Devuelve los fields ya montados y el avatar de Roblox del comprador. Nunca
 // lanza: si todo falla, `fields` sale vacío y el resumen se envía sin esta
@@ -175,16 +200,17 @@ async function buildCommunitySummary(client, username, { minDias } = {}) {
 
         return {
             fields: [...buildFields(comunidades, emojis), buildEnvio(comunidades, emojis)],
+            texto: buildTextoComunidades(comunidades, emojis),
             avatarURL,
             comunidades,
         };
     } catch (err) {
         console.error('[communityStatus] Fallo inesperado montando el resumen:', err);
-        return { fields: [], avatarURL: null, comunidades: [] };
+        return { fields: [], texto: '', avatarURL: null, comunidades: [] };
     }
 }
 
 module.exports = {
     buildCommunitySummary,
-    __test: { resolverComunidades, buildFields, buildEnvio, textoDias, marca, resumenEnvio, umbral, EMOJI, NOMBRE_VACIO },
+    __test: { resolverComunidades, buildFields, buildEnvio, buildTextoComunidades, textoDias, marca, resumenEnvio, umbral, EMOJI, NOMBRE_VACIO },
 };

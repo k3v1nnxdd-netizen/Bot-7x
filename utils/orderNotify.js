@@ -5,6 +5,7 @@ const config = require('../config');
 const tickets = require('./tickets');
 const robuxLeaderboard = require('./robuxLeaderboard');
 const robuxLeaderboardPanel = require('./robuxLeaderboardPanel');
+const { panelText } = require('./panelV2');
 
 const TYPE_LABELS = {
     comprar:    'Compra de Robux',
@@ -28,16 +29,32 @@ async function findComprobante(channel, buyerId) {
     }
 }
 
-// Scrapes the order-specific embed each flow already sent when the ticket
-// was created — the only place these details exist (nothing is persisted).
-// For 'comprar' tickets also returns the parsed numeric robuxAmount/priceMxn
-// so the caller can feed the Robux leaderboard.
+// El texto del mensaje del ticket que contenga `marca`.
+//
+// Lee TANTO los embeds clásicos como los bloques de texto de Components V2
+// (panelText hace las dos cosas), y eso no es por gusto: los resúmenes de
+// ticket pasaron a ser contenedores V2 para poder llevar sus botones dentro,
+// pero los tickets que ya estaban abiertos siguen teniendo el embed de antes.
+// Buscar sólo en `embeds[0].description` habría dejado de registrar sus compras
+// —y de contarlas en el ranking— sin que nada fallara.
+function textoDelTicket(messages, marca) {
+    for (const m of messages.values()) {
+        const texto = panelText(m);
+        if (texto.includes(marca)) return texto;
+    }
+    return '';
+}
+
+// Saca los datos del pedido del mensaje que cada flujo ya envió al abrir el
+// ticket — el único sitio donde existen (no se guarda nada). Para los tickets
+// de 'comprar' devuelve además robuxAmount/priceMxn ya en número, que es lo que
+// alimenta el ranking de compradores.
 async function extractOrderFields(channel, ticketType) {
     try {
         const messages = await channel.messages.fetch({ limit: 100 });
 
         if (ticketType === 'comprar') {
-            const desc = messages.find(m => m.embeds[0]?.description?.includes('Robux a recibir'))?.embeds[0]?.description ?? '';
+            const desc = textoDelTicket(messages, 'Robux a recibir');
             const robloxUser = desc.match(/Usuario de Roblox\*\*\n```([^`]+)```/)?.[1] ?? 'No disponible';
             const robux = desc.match(/Robux a recibir\*\*\n```([^`]+)```/)?.[1] ?? 'No disponible';
             const price = desc.match(/Precio final a pagar\*\*\n```\$([^`]+) MXN```/)?.[1]
@@ -55,7 +72,7 @@ async function extractOrderFields(channel, ticketType) {
         }
 
         if (ticketType === 'duels') {
-            const desc = messages.find(m => m.embeds[0]?.description?.includes('Set solicitado'))?.embeds[0]?.description ?? '';
+            const desc = textoDelTicket(messages, 'Set solicitado');
             const set = desc.match(/Set solicitado\*\*\n```([^`]+)```/)?.[1] ?? 'No disponible';
             const robloxUser = desc.match(/Usuario de Roblox\*\*\n```([^`]+)```/)?.[1] ?? 'No disponible';
             return {
@@ -67,7 +84,7 @@ async function extractOrderFields(channel, ticketType) {
         }
 
         if (ticketType === 'seguidores') {
-            const desc = messages.find(m => m.embeds[0]?.title === 'Resumen de tu pedido')?.embeds[0]?.description ?? '';
+            const desc = textoDelTicket(messages, 'Resumen de tu pedido');
             const platform = desc.match(/Plataforma\*\*\n```([^`]+)```/)?.[1] ?? null;
             const qty      = desc.match(/Seguidores solicitados\*\*\n```([^`]+)```/)?.[1] ?? 'No disponible';
             const price    = desc.match(/Precio a pagar\*\*\n```\$([^`]+) MXN```/)?.[1] ?? null;
@@ -78,7 +95,7 @@ async function extractOrderFields(channel, ticketType) {
         }
 
         if (ticketType === 'soporte') {
-            const desc = messages.find(m => m.embeds[0]?.description?.includes('Motivo'))?.embeds[0]?.description ?? '';
+            const desc = textoDelTicket(messages, 'Motivo');
             const motivo = desc.match(/Motivo\*\*\n```([^`]+)```/)?.[1] ?? 'No disponible';
             return { fields: [{ name: 'Motivo', value: motivo }] };
         }

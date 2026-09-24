@@ -16,6 +16,7 @@ const { ensureHeadlessPanel } = require('../headless');
 const groupActive = require('../utils/groupActive');
 const { ensureGroupStatusPanel } = require('../groupStatus');
 const { buildDetallePayload } = require('../metodos');
+const v2 = require('../utils/panelV2');
 
 async function handleOutfit(interaction) {
     if (interaction.channelId !== config.CHANNELS.OUTFIT) {
@@ -89,30 +90,29 @@ async function handlePagoVerified(interaction) {
         return safeReply(interaction, { content: '❌ No tienes permiso para usar este comando.', ephemeral: true });
     }
 
-    const ok = await safeDeferReply(interaction);
-    if (!ok) return;
-
     const mentionUser = interaction.options.getUser('usuario');
 
-    const embed = new EmbedBuilder()
-        .setColor(0x2B2D31)
-        .setTitle('<:truepurple:1501214679400190086> Pago Verificado — 7x Community')
-        .setDescription(
-            '¡Gracias por tu compra con **7x Community**!\n\n' +
-            '<:point:1501212595464700104> Ya sea que hayas adquirido **Robux** u otro tipo de producto, esperamos que lo disfrutes al máximo.\n\n' +
-            '<:point:1501212595464700104> Si adquiriste Robux y aún no aparecen en tu balance, no te preocupes. Roblox puede colocarlos en estado **Pendiente** por motivos de seguridad.\n\n' +
-            '<:alert:1501220021035204658> Normalmente se acreditan en **5 a 10 minutos**, aunque en casos poco comunes puede tomar hasta **6-7 días**. Como máximo, Roblox los libera dentro de **10 días**.\n\n' +
-            '<:point:1501212595464700104> Puedes revisar el estado de tus transacciones aquí: [Ver Robux pendientes](<https://www.roblox.com/transactions>)\n\n' +
-            '<:truepurple:1501214679400190086> ¡Gracias por confiar en nosotros y esperamos verte pronto!'
-        )
-        .setFooter({ text: '7x Community • Compra verificada' })
-        .setTimestamp();
-
-    await safeEditReply(interaction, {
+    // Sin diferir: es una tarjeta de Components V2 y ese flag hay que ponerlo
+    // al CREAR el mensaje — un editReply sobre una respuesta ya diferida no
+    // puede añadirlo. El contenido no espera a nada, así que diferir no
+    // aportaba nada.
+    const ok = await safeReply(interaction, {
         content: mentionUser ? `<@${mentionUser.id}>` : undefined,
-        embeds: [embed],
-        components: [buildRefRow()],
+        ...v2.tarjetaPayload({
+            color: 0x2B2D31,
+            texto:
+                '## <:truepurple:1501214679400190086> Pago Verificado — 7x Community\n\n' +
+                '¡Gracias por tu compra con **7x Community**!\n\n' +
+                '<:point:1501212595464700104> Ya sea que hayas adquirido **Robux** u otro tipo de producto, esperamos que lo disfrutes al máximo.\n\n' +
+                '<:point:1501212595464700104> Si adquiriste Robux y aún no aparecen en tu balance, no te preocupes. Roblox puede colocarlos en estado **Pendiente** por motivos de seguridad.\n\n' +
+                '<:alert:1501220021035204658> Normalmente se acreditan en **5 a 10 minutos**, aunque en casos poco comunes puede tomar hasta **6-7 días**. Como máximo, Roblox los libera dentro de **10 días**.\n\n' +
+                '<:point:1501212595464700104> Puedes revisar el estado de tus transacciones aquí: [Ver Robux pendientes](<https://www.roblox.com/transactions>)\n\n' +
+                '<:truepurple:1501214679400190086> ¡Gracias por confiar en nosotros y esperamos verte pronto!',
+            pie: '7x Community • Compra verificada',
+            filas: [buildRefRow()],
+        }),
     });
+    if (!ok) return;
 
     if (mentionUser) {
         await sendPurchaseDM(interaction.client, mentionUser.id);

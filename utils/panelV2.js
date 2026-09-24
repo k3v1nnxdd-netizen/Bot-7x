@@ -2,7 +2,10 @@
 
 const fs = require('fs');
 const crypto = require('crypto');
-const { MessageFlags } = require('discord.js');
+const {
+    ContainerBuilder, MediaGalleryBuilder, MediaGalleryItemBuilder, MessageFlags,
+    SectionBuilder, SeparatorBuilder, SeparatorSpacingSize, TextDisplayBuilder, ThumbnailBuilder,
+} = require('discord.js');
 
 // ── Paneles con Components V2 ─────────────────────────────────────────────────
 // Un panel V2 es un único Container que hace de "embed": dentro van el texto, el
@@ -23,6 +26,70 @@ function pickBanner(candidates, attachName) {
 
     const hash = crypto.createHash('sha1').update(fs.readFileSync(path)).digest('hex').slice(0, 8);
     return { path, name: attachName.replace(/(\.\w+)$/, `-${hash}$1`), exists: true };
+}
+
+// ── Tarjeta: texto + botones DENTRO del mismo bloque ─────────────────────────
+//
+// Un embed clásico no admite botones: siempre quedan colgando debajo, fuera del
+// marco de color. Esto monta la misma tarjeta como Container, que sí los mete
+// dentro.
+//
+// Lo que un Container NO tiene y hay que rehacer a mano:
+//   - título  -> un encabezado markdown al principio del texto (y ahí Discord
+//                SÍ pinta los emojis del servidor, al revés que en el título de
+//                un embed);
+//   - pie     -> una línea de subtexto al final;
+//   - imagen  -> `imagen` como `attachment://…` o una URL, en una galería.
+//
+// `thumbnail` va a la derecha del texto, como el de un embed, y por eso el
+// texto entra en una Section: es el único sitio donde Discord admite una imagen
+// pegada a un bloque de texto.
+function tarjeta({ color, texto, pie = null, thumbnail = null, imagen = null, filas = [] }) {
+    const container = new ContainerBuilder();
+    if (color !== undefined && color !== null) container.setAccentColor(color);
+
+    const bloque = new TextDisplayBuilder().setContent(texto);
+    if (thumbnail) {
+        container.addSectionComponents(
+            new SectionBuilder()
+                .addTextDisplayComponents(bloque)
+                .setThumbnailAccessory(new ThumbnailBuilder().setURL(thumbnail))
+        );
+    } else {
+        container.addTextDisplayComponents(bloque);
+    }
+
+    if (imagen) {
+        container.addMediaGalleryComponents(
+            new MediaGalleryBuilder().addItems(new MediaGalleryItemBuilder().setURL(imagen))
+        );
+    }
+
+    if (pie) {
+        container
+            .addSeparatorComponents(new SeparatorBuilder().setDivider(true).setSpacing(SeparatorSpacingSize.Small))
+            .addTextDisplayComponents(new TextDisplayBuilder().setContent(`-# ${pie}`));
+    }
+
+    const conFilas = filas.filter(Boolean);
+    if (conFilas.length) {
+        container.addSeparatorComponents(
+            new SeparatorBuilder().setDivider(false).setSpacing(SeparatorSpacingSize.Small)
+        );
+        for (const fila of conFilas) container.addActionRowComponents(fila);
+    }
+
+    return container;
+}
+
+// El mensaje listo para enviar. `files` para los adjuntos que referencie la
+// tarjeta (una imagen con `attachment://`).
+function tarjetaPayload(opciones, files = []) {
+    return {
+        flags: MessageFlags.IsComponentsV2,
+        components: [tarjeta(opciones)],
+        ...(files.length && { files }),
+    };
 }
 
 function payload(container, banner) {
@@ -185,6 +252,8 @@ async function editOrRecreate(msg, container, banner, tag) {
 
 module.exports = {
     pickBanner,
+    tarjeta,
+    tarjetaPayload,
     payload,
     editPayload,
     rawComponents,

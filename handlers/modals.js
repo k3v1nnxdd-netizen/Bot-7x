@@ -21,6 +21,7 @@ const { handleSeguidoresModal }                             = require('./seguido
 const { handleCheckGroupModal }                             = require('./checkGroupFlow');
 const { handleHeadlessModal }                               = require('./headlessFlow');
 const { buildCommunitySummary }                             = require('../utils/communityStatus');
+const v2                                                    = require('../utils/panelV2');
 
 // ── Modal builders ────────────────────────────────────────────────────────────
 // These are exported so buttons.js can pass them to safeShowModal().
@@ -264,29 +265,25 @@ async function handleComprarModal(interaction) {
         // resumen sale sin esta parte en vez de dejar al cliente sin ticket.
         const comunidades = await buildCommunitySummary(interaction.client, robloxUser);
 
-        const embedWelcome = new EmbedBuilder()
-            .setColor(0x2B2D31)
-            .setTitle('Resumen de tu compra')
-            .setThumbnail(interaction.user.displayAvatarURL({ size: 256 }))
-            .setDescription(descLines)
-            .setFooter({ text: '7x Community • Proceso automático' })
-            .setTimestamp();
-
-        // El avatar de la cuenta de ROBLOX, no el de Discord: identifica a quién
-        // van los Robux. Si Roblox no lo da, la línea sale sin foto.
-        if (comunidades.avatarURL) {
-            embedWelcome.setAuthor({ name: robloxUser.slice(0, 256), iconURL: comunidades.avatarURL });
-        }
-
-        // Los fields van en línea, así que Discord los coloca en filas de tres:
-        // una rejilla con las comunidades y, debajo, desde cuáles se está
-        // enviando ahora mismo.
-        if (comunidades.fields.length) embedWelcome.addFields(...comunidades.fields);
-
+        // El resumen es una TARJETA (Container), no un embed, para que el botón
+        // de cerrar el ticket quede dentro del bloque en vez de colgando debajo.
+        //
+        // Un Container no tiene fields, así que la rejilla de comunidades pasa a
+        // ser una lista de líneas. Se lee mejor en móvil que tres columnas donde
+        // "7x (Antes Noctra Study)" no cabe sin partirse.
+        //
+        // Las etiquetas del texto NO cambian: utils/orderNotify.js y
+        // utils/reviewFlow.js las leen para el registro de pedidos y el ranking
+        // de compradores, y lo hacen con panelText, que entiende las dos formas.
         await channel.send({
             content: `<@${userId}>`,
-            embeds: [embedWelcome],
-            components: [closeBtnRow()],
+            ...v2.tarjetaPayload({
+                color: 0x2B2D31,
+                texto: `## Resumen de tu compra\n\n${descLines}${comunidades.texto}`,
+                pie: '7x Community • Proceso automático',
+                thumbnail: interaction.user.displayAvatarURL({ size: 256 }),
+                filas: [closeBtnRow()],
+            }),
         });
 
         // ── Mensaje 2: Panel de métodos de pago (con dropdown) ────────────────
@@ -296,19 +293,24 @@ async function handleComprarModal(interaction) {
         await channel.send(buildMetodosPayload());
 
         // ── Mensaje 3: Pago pendiente ─────────────────────────────────────────
-        const embedSteps = new EmbedBuilder()
-            .setColor(0xFFA500)
-            .setTitle('Pago Pendiente')
-            .setDescription(
-                'Selecciona tu método de pago en el menú de arriba.\n\n' +
-                'Realiza el pago por el monto exacto.\n\n' +
-                'Envía la **foto del comprobante** en este ticket.\n\n' +
-                'Escribe **PAGO EXITOSO** para que procesemos tu orden.'
-            )
-            .setFooter({ text: '7x Community • Proceso automático' });
-
-        await channel.send({ embeds: [embedSteps] });
-        await channel.send({ components: [confirmBtnRow()] });
+        // Los pasos y el botón del owner, en UN solo mensaje: antes el botón
+        // iba suelto debajo, fuera de cualquier marco.
+        await channel.send(v2.tarjetaPayload({
+            color: 0xFFA500,
+            texto: [
+                '## Pago Pendiente',
+                '',
+                'Selecciona tu método de pago en el menú de arriba.',
+                '',
+                'Realiza el pago por el monto exacto.',
+                '',
+                'Envía la **foto del comprobante** en este ticket.',
+                '',
+                'Escribe **PAGO EXITOSO** para que procesemos tu orden.',
+            ].join('\n'),
+            pie: '7x Community • Proceso automático',
+            filas: [confirmBtnRow()],
+        }));
 
         await safeEditReply(interaction, { content: `✅ Ticket creado: ${channel}` });
     } catch (err) {

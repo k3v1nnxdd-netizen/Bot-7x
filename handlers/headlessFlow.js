@@ -1,7 +1,7 @@
 'use strict';
 
 const {
-    EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle,
+    ActionRowBuilder, ButtonBuilder, ButtonStyle, MessageFlags,
     ModalBuilder, TextInputBuilder, TextInputStyle,
 } = require('discord.js');
 const { safeReply, safeEditReply, safeDeferReply, safeShowModal } = require('../utils/safe');
@@ -12,6 +12,7 @@ const tickets = require('../utils/tickets');
 const config = require('../config');
 const { buildMetodosPayload } = require('../metodos');
 const { buildCommunitySummary } = require('../utils/communityStatus');
+const v2 = require('../utils/panelV2');
 
 // ── Ticket del Headless Horseman ──────────────────────────────────────────────
 // Es un ticket de compra de Robux normal, con dos diferencias y sólo dos:
@@ -112,48 +113,46 @@ function confirmBtnRow() {
     );
 }
 
-function buildResumenEmbed(robloxUser, avatarURL, estado = { fields: [], avatarURL: null }) {
+function buildResumenTarjeta(robloxUser, avatarURL, estado = { texto: '', avatarURL: null }) {
     const comunidades = H.COMUNIDADES.map(c => `<:followers7x:1525326777071960124> [**${c.label}**](${c.link})`).join('\n');
 
-    const embed = new EmbedBuilder()
-        .setColor(ACCENT_NARANJA)
-        .setTitle('Resumen de tu compra — Headless Horseman')
-        .setThumbnail(avatarURL)
-        .setDescription(
-            `<:member:1501261625523699892> **Usuario de Roblox**\n\`\`\`${robloxUser}\`\`\`\n` +
-            `<a:robuxxx:1510070809366892604> **Robux a recibir**\n\`\`\`${fmt(H.ROBUX)} Robux\`\`\`\n` +
-            `<:money:1544123920897019906> **Precio a pagar**\n\`\`\`$${fmt(H.PRECIO_MXN)} MXN\`\`\`\n` +
-            `<:Headlesss:1546349270486220976> **Promoción**\n\`\`\`Headless Horseman — paquete fijo\`\`\`\n` +
-            `<:alert:1501220021035204658> **Requisito**\nDebes llevar **${H.DIAS_REQ} días** dentro de ambas comunidades para poder recibir los Robux:\n${comunidades}`
-        )
-        .setFooter({ text: '7x Community • Proceso automático' })
-        .setTimestamp();
+    // Tarjeta y no embed, para que el botón de cerrar quede DENTRO del bloque.
+    // Las etiquetas del texto no cambian: orderNotify y reviewFlow las leen.
+    const texto =
+        '## Resumen de tu compra — Headless Horseman\n\n' +
+        `<:member:1501261625523699892> **Usuario de Roblox**\n\`\`\`${robloxUser}\`\`\`\n` +
+        `<a:robuxxx:1510070809366892604> **Robux a recibir**\n\`\`\`${fmt(H.ROBUX)} Robux\`\`\`\n` +
+        `<:money:1544123920897019906> **Precio a pagar**\n\`\`\`$${fmt(H.PRECIO_MXN)} MXN\`\`\`\n` +
+        `<:Headlesss:1546349270486220976> **Promoción**\n\`\`\`Headless Horseman — paquete fijo\`\`\`\n` +
+        `<:alert:1501220021035204658> **Requisito**\nDebes llevar **${H.DIAS_REQ} días** dentro de ambas comunidades para poder recibir los Robux:\n${comunidades}` +
+        (estado.texto ?? '');
 
-    // El avatar de la cuenta de ROBLOX en la línea de autor: identifica a quién
-    // van los Robux. El thumbnail sigue siendo el de Discord, que identifica a
-    // quién abrió el ticket.
-    if (estado.avatarURL) {
-        embed.setAuthor({ name: robloxUser.slice(0, 256), iconURL: estado.avatarURL });
-    }
-
-    // Y la rejilla con su antigüedad en cada comunidad, medida contra los días
-    // que exige ESTA promoción, no contra el mínimo de Roblox.
-    if (estado.fields.length) embed.addFields(...estado.fields);
-
-    return embed;
+    return v2.tarjeta({
+        color: ACCENT_NARANJA,
+        texto,
+        pie: '7x Community • Proceso automático',
+        thumbnail: avatarURL,
+        filas: [closeBtnRow()],
+    });
 }
 
-function buildPasosEmbed() {
-    return new EmbedBuilder()
-        .setColor(0xFFA500)
-        .setTitle('Pago Pendiente')
-        .setDescription(
-            'Selecciona tu método de pago en el menú de arriba.\n\n' +
-            `Realiza el pago por el monto exacto: **$${fmt(H.PRECIO_MXN)} MXN**.\n\n` +
-            'Envía la **foto del comprobante** en este ticket.\n\n' +
-            'Escribe **PAGO EXITOSO** para que procesemos tu orden.'
-        )
-        .setFooter({ text: '7x Community • Proceso automático' });
+function buildPasosPayload() {
+    return v2.tarjetaPayload({
+        color: 0xFFA500,
+        texto: [
+            '## Pago Pendiente',
+            '',
+            'Selecciona tu método de pago en el menú de arriba.',
+            '',
+            `Realiza el pago por el monto exacto: **$${fmt(H.PRECIO_MXN)} MXN**.`,
+            '',
+            'Envía la **foto del comprobante** en este ticket.',
+            '',
+            'Escribe **PAGO EXITOSO** para que procesemos tu orden.',
+        ].join('\n'),
+        pie: '7x Community • Proceso automático',
+        filas: [confirmBtnRow()],
+    });
 }
 
 function ticketErrorMsg(err) {
@@ -201,18 +200,15 @@ async function handleHeadlessModal(interaction) {
         // ── Mensaje 1: resumen del pedido ─────────────────────────────────────
         await channel.send({
             content: `<@${userId}>`,
-            embeds: [buildResumenEmbed(robloxUser, interaction.user.displayAvatarURL({ size: 256 }), estado)],
-            components: [closeBtnRow()],
+            flags: MessageFlags.IsComponentsV2,
+            components: [buildResumenTarjeta(robloxUser, interaction.user.displayAvatarURL({ size: 256 }), estado)],
         });
 
         // ── Mensaje 2: métodos de pago ────────────────────────────────────────
         await channel.send(buildMetodosPayload());
 
-        // ── Mensaje 3: pago pendiente ─────────────────────────────────────────
-        await channel.send({ embeds: [buildPasosEmbed()] });
-
-        // ── Mensaje 4: botón de confirmación del owner ────────────────────────
-        await channel.send({ components: [confirmBtnRow()] });
+        // ── Mensaje 3: pago pendiente, con el botón del owner dentro ──────────
+        await channel.send(buildPasosPayload());
 
         await safeEditReply(interaction, { content: `✅ Ticket creado: ${channel}` });
     } catch (err) {
@@ -224,5 +220,5 @@ async function handleHeadlessModal(interaction) {
 module.exports = {
     handleHeadlessButton,
     handleHeadlessModal,
-    __test: { buildHeadlessModal, buildResumenEmbed, buildPasosEmbed, VENTA_CERRADA, ACCENT_NARANJA },
+    __test: { buildHeadlessModal, buildResumenTarjeta, buildPasosPayload, VENTA_CERRADA, ACCENT_NARANJA },
 };

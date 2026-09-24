@@ -5,20 +5,26 @@ const config = require('../config');
 const reviews = require('./reviews');
 const tickets = require('./tickets');
 const { safeMessageEdit } = require('./safe');
+const v2 = require('./panelV2');
+const { panelText } = v2;
 
 const SHOP_EMOJI  = '<a:shop:1190502129748676650>';
 const STAR_EMOJI  = '<a:star:1514369366878064650>';
 const STATS_EMOJI = '<:stats:1190502686886481991>';
 
-function buildReviewEmbed(buyerId) {
-    return new EmbedBuilder()
-        .setColor(0x2B2D31)
-        .setDescription(
+// Tarjeta y no embed: el botón de calificar queda DENTRO del bloque. Y por eso
+// el payload lleva SIEMPRE el contenedor entero, también al deshabilitarlo: en
+// un mensaje V2 un edit con sólo `components: [fila]` borraría el texto.
+function buildReviewPayload(buyerId, ticketChannelId, disabled = false) {
+    return v2.tarjetaPayload({
+        color: 0x2B2D31,
+        texto:
             `${SHOP_EMOJI} Compra por <@${buyerId}>\n\n` +
             'Gracias por tu compra. ¿Podrías evaluar la atención y el trato del staff hacia tu ticket?\n\n' +
-            '• Presiona el botón de abajo y escribe un número del **1 al 5** (5 = la mejor atención).'
-        )
-        .setFooter({ text: '7x Community • Sistema de reseñas' });
+            '• Presiona el botón de abajo y escribe un número del **1 al 5** (5 = la mejor atención).',
+        pie: '7x Community • Sistema de reseñas',
+        filas: [buildReviewRow(ticketChannelId, disabled)],
+    });
 }
 
 function buildReviewRow(ticketChannelId, disabled = false) {
@@ -45,9 +51,16 @@ async function detectOrderLabel(channel, ticketType) {
 
     try {
         const messages = await channel.messages.fetch({ limit: 100 });
-        const summary  = messages.find(m => m.embeds[0]?.description?.includes('Robux a recibir'));
-        const match    = summary?.embeds[0]?.description?.match(/Robux a recibir\*\*\n```([^`]+)```/);
-        return match ? match[1] : 'Robux';
+
+        // panelText lee tanto el embed clásico como el bloque de texto de un
+        // contenedor V2: los resúmenes son contenedores desde que llevan sus
+        // botones dentro, pero un ticket abierto antes del cambio sigue con el
+        // embed de entonces, y los dos tienen que seguir funcionando.
+        for (const m of messages.values()) {
+            const match = panelText(m).match(/Robux a recibir\*\*\n```([^`]+)```/);
+            if (match) return match[1];
+        }
+        return 'Robux';
     } catch {
         return 'Robux';
     }
@@ -83,10 +96,7 @@ function buildAnnounceEmbed(buyerId, score = null, avatarURL = null, orderLabel 
 async function sendReviewDM(client, buyerId, ticketChannelId) {
     try {
         const user = await client.users.fetch(buyerId);
-        const msg  = await user.send({
-            embeds: [buildReviewEmbed(buyerId)],
-            components: [buildReviewRow(ticketChannelId)],
-        });
+        const msg  = await user.send(buildReviewPayload(buyerId, ticketChannelId));
         reviews.setDmMessageRef(ticketChannelId, msg.channelId, msg.id);
     } catch (err) {
         console.warn('[reviewFlow] Could not DM review request:', err.message);
@@ -116,10 +126,7 @@ async function requestReview(client, channel, ticketChannelId, buyerId) {
     reviews.createReviewRequest(ticketChannelId, buyerId, orderLabel);
 
     try {
-        const ticketMsg = await channel.send({
-            embeds: [buildReviewEmbed(buyerId)],
-            components: [buildReviewRow(ticketChannelId)],
-        });
+        const ticketMsg = await channel.send(buildReviewPayload(buyerId, ticketChannelId));
         reviews.setTicketMessageRef(ticketChannelId, ticketMsg.channelId, ticketMsg.id);
     } catch (err) {
         console.warn('[reviewFlow] Could not send ticket review prompt:', err.message);
@@ -140,7 +147,7 @@ async function finalizeReview(client, ticketChannelId, score, comment = null) {
         try {
             const ch  = await client.channels.fetch(rec.ticketMessageRef.channelId);
             const msg = await ch.messages.fetch(rec.ticketMessageRef.messageId);
-            await safeMessageEdit(msg, { components: [buildReviewRow(ticketChannelId, true)] });
+            await safeMessageEdit(msg, buildReviewPayload(rec.buyerId, ticketChannelId, true));
         } catch (err) {
             console.warn('[reviewFlow] Could not disable ticket review button:', err.message);
         }
@@ -151,7 +158,7 @@ async function finalizeReview(client, ticketChannelId, score, comment = null) {
             const user = await client.users.fetch(rec.buyerId);
             const dm   = await user.createDM();
             const msg  = await dm.messages.fetch(rec.dmMessageRef.messageId);
-            await safeMessageEdit(msg, { components: [buildReviewRow(ticketChannelId, true)] });
+            await safeMessageEdit(msg, buildReviewPayload(rec.buyerId, ticketChannelId, true));
         } catch (err) {
             console.warn('[reviewFlow] Could not disable DM review button:', err.message);
         }
@@ -181,4 +188,4 @@ async function finalizeReview(client, ticketChannelId, score, comment = null) {
     }
 }
 
-module.exports = { buildReviewEmbed, buildReviewRow, requestReview, finalizeReview };
+module.exports = { buildReviewPayload, buildReviewRow, requestReview, finalizeReview };

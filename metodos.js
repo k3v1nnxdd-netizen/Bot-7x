@@ -113,19 +113,57 @@ function buildTransferenciaEmbed() {
         .setTimestamp();
 }
 
+// ── Botones de copiar ─────────────────────────────────────────────────────────
+//
+// En el móvil, seleccionar una dirección de cripto dentro de un embed es
+// incómodo y fácil de hacer mal — y media dirección copiada es un pago perdido.
+// Estos botones responden con el dato PELADO, sin markdown ni nada alrededor,
+// que es lo que el móvil deja copiar de un toque.
+//
+// Todo lo copiable sale de un solo sitio. Antes la cuenta de Mercado Pago
+// estaba escrita DOS veces —aquí y otra vez a mano en handlers/buttons.js—, así
+// que cambiarla en un sitio dejaba al botón de copiar entregando la vieja.
+
+const COPIAR_EMOJI = { id: '1527509149758259371', name: 'copiar' };
+const COPY_PREFIJO = 'metodos_copy_';
+const COPY_ID = clave => `${COPY_PREFIJO}${clave}`;
+
+const COPIABLES = {
+    cuenta: CUENTA.numero,
+    nombre: CUENTA.titular,
+    amazon: AMAZON_URL,
+    eneba:  ENEBA_URL,
+    // Una entrada por moneda, con su ticker en minúsculas como clave.
+    ...Object.fromEntries(CRIPTO.map(c => [c.ticker.toLowerCase(), c.direccion])),
+};
+
+const COPY_BOTONES = new Set(Object.keys(COPIABLES).map(COPY_ID));
+
+function botonCopiar(clave, label) {
+    return new ButtonBuilder()
+        .setCustomId(COPY_ID(clave))
+        .setLabel(label)
+        .setEmoji(COPIAR_EMOJI)
+        .setStyle(ButtonStyle.Secondary);
+}
+
 function buildTransferenciaRow() {
     return new ActionRowBuilder().addComponents(
-        new ButtonBuilder()
-            .setCustomId('metodos_copy_cuenta')
-            .setLabel('Copiar Cuenta')
-            .setEmoji('🔑')
-            .setStyle(ButtonStyle.Secondary),
-        new ButtonBuilder()
-            .setCustomId('metodos_copy_nombre')
-            .setLabel('Copiar Nombre')
-            .setEmoji('🔑')
-            .setStyle(ButtonStyle.Secondary),
+        botonCopiar('cuenta', 'Copiar Cuenta'),
+        botonCopiar('nombre', 'Copiar Nombre'),
     );
+}
+
+// Una fila con un botón por moneda, etiquetado con su nombre. Son cinco, que es
+// justo el máximo de una fila de Discord.
+function buildCriptoRow() {
+    return new ActionRowBuilder().addComponents(
+        CRIPTO.map(c => botonCopiar(c.ticker.toLowerCase(), c.nombre))
+    );
+}
+
+function buildEnlaceRow(clave) {
+    return new ActionRowBuilder().addComponents(botonCopiar(clave, 'Copiar enlace'));
 }
 
 function buildOxxoEmbed() {
@@ -179,6 +217,7 @@ const METODOS = {
         descripcion: 'BTC, ETH, LINK, LTC y UNI',
         emoji: E.cripto,
         embed: buildCriptoEmbed,
+        row: buildCriptoRow,
     },
     transferencia: {
         label: 'Transferencia',
@@ -199,12 +238,14 @@ const METODOS = {
         descripcion: 'Compras internacionales',
         emoji: E.eneba,
         embed: buildEnebaEmbed,
+        row: () => buildEnlaceRow('eneba'),
     },
     amazon: {
         label: 'Gift Card Amazon',
         descripcion: 'Amazon México',
         emoji: E.amazon,
         embed: buildAmazonEmbed,
+        row: () => buildEnlaceRow('amazon'),
     },
 };
 
@@ -308,6 +349,16 @@ async function handleMetodosButton(interaction) {
     await safeReply(interaction, { ...payload, ephemeral: true });
 }
 
+// Responde con el dato pelado: sin markdown, sin embed y sin nada alrededor,
+// que es lo unico que el movil deja copiar de un toque. Siempre efimero.
+async function handleCopiarButton(interaction) {
+    const clave = interaction.customId.slice(COPY_PREFIJO.length);
+    const valor = COPIABLES[clave];
+    if (!valor) return;
+
+    await safeReply(interaction, { content: valor, ephemeral: true });
+}
+
 // El panel viejo era un desplegable. Sigue existiendo en mensajes efímeros que
 // alguien tenga abiertos, así que se le contesta en vez de dejarlo colgado.
 // Sus tres valores son claves válidas menos "giftcard", que ahora son dos.
@@ -389,6 +440,8 @@ async function ensureMetodosPanel(client) {
 module.exports = {
     ensureMetodosPanel,
     handleMetodosButton,
+    handleCopiarButton,
+    COPY_BOTONES,
     handleMetodosSelect,
     buildMetodosPayload,
     buildDetallePayload,
@@ -398,5 +451,5 @@ module.exports = {
     OXXO_PATH,
     OXXO_NAME,
     OXXO_EXISTS,
-    __test: { buildMetodosContainer, buildTexto, buildAviso, buildRow, isMetodosMsg, CRIPTO, CUENTA, ENEBA_URL, AMAZON_URL, BANNER, ACCENT, TITULO },
+    __test: { buildMetodosContainer, buildTexto, buildAviso, buildRow, buildCriptoRow, isMetodosMsg, COPIABLES, COPY_ID, CRIPTO, CUENTA, ENEBA_URL, AMAZON_URL, BANNER, ACCENT, TITULO },
 };

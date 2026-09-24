@@ -641,6 +641,23 @@ ETH, LINK y UNI son tres direcciones EVM **distintas entre si**, no
 intercambiables, y el mensaje lo avisa: enviar una moneda a la direccion de otra
 o por otra red pierde el pago.
 
+### Botones para copiar
+
+Cada tarjeta lleva botones que entregan el dato **pelado**, sin markdown ni
+embed alrededor: cinco en la de cripto (uno por moneda), dos en la de
+transferencia (cuenta y titular) y uno en cada gift card (el enlace).
+
+No es comodidad: en el movil, seleccionar una direccion de cripto dentro de un
+embed es incomodo y facil de hacer mal, y **media direccion copiada es un pago
+perdido**. Un mensaje de texto plano se copia de un toque.
+
+Todo lo copiable sale del objeto , construido desde ,
+ y los dos enlaces. Antes la cuenta de Mercado Pago estaba escrita DOS
+veces —en  y otra vez a mano en —, asi que
+cambiarla en un sitio dejaba al boton de copiar entregando la vieja. El test
+comprueba que lo que entrega cada boton es EXACTAMENTE lo que dice su embed, y
+que ningun dato de pago siga copiado en .
+
 ### El GIF y los tickets
 
 El panel del canal lleva el GIF; los tickets mandan **el mismo bloque sin el**.

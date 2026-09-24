@@ -19,7 +19,7 @@ const { startSeguidoresTicket, handleSeguidoresButton } = require('./seguidoresF
 const { handleCheckGroupButton } = require('./checkGroupFlow');
 const { handleHeadlessButton } = require('./headlessFlow');
 const { handleGroupsPageButton } = require('./groupLicenses');
-const { handleMetodosButton, BOTONES: METODOS_BUTTONS } = require('../metodos');
+const { handleMetodosButton, handleCopiarButton, BOTONES: METODOS_BUTTONS, COPY_BOTONES } = require('../metodos');
 const config             = require('../config');
 
 // ── Countdown timers per ticket channel ───────────────────────────────────────
@@ -333,22 +333,6 @@ async function onCalcRobux(interaction) {
     if (!ok) await safeReply(interaction, { content: '❌ No se pudo abrir el formulario. Intenta de nuevo.', ephemeral: true });
 }
 
-async function onCopiarCuenta(interaction) {
-    if (interaction.replied || interaction.deferred) return;
-    await safeReply(interaction, {
-        content: '722969040869278041',
-        ephemeral: true,
-    });
-}
-
-async function onCopiarNombre(interaction) {
-    if (interaction.replied || interaction.deferred) return;
-    await safeReply(interaction, {
-        content: 'VICENTA MARIANO VALDOVINOS',
-        ephemeral: true,
-    });
-}
-
 // ── Review rating handler (button lives in both a ticket channel and a DM) ────
 
 async function onReviewRate(interaction) {
@@ -411,11 +395,13 @@ const HANDLERS = {
     cerrar_ticket:       onCerrarTicket,
     confirmar_cerrar:    onConfirmarCerrar,
     cancelar_cerrar:     onCancelarCerrar,
-    metodos_copy_cuenta: onCopiarCuenta,
-    metodos_copy_nombre: onCopiarNombre,
-    // Los de metodos_<clave> se enrutan por su Set, derivado de METODOS: anadir
-    // un metodo de pago no puede quedarse sin boton enrutado.
+    // Los dos Sets se derivan de metodos.js: anadir un metodo de pago, o una
+    // moneda que copiar, no puede quedarse sin boton enrutado. Los datos que
+    // entregan los de copiar (la cuenta, las direcciones) viven alli y solo
+    // alli: antes la cuenta estaba escrita otra vez aqui, y cambiarla en un
+    // sitio dejaba al boton entregando la vieja.
     ...Object.fromEntries([...METODOS_BUTTONS].map(id => [id, handleMetodosButton])),
+    ...Object.fromEntries([...COPY_BOTONES].map(id => [id, handleCopiarButton])),
 };
 
 async function handleButton(interaction) {

@@ -167,6 +167,77 @@ module.exports = async function run() {
     assert((viejo?.flags & EPHEMERAL) === EPHEMERAL, 'el desplegable viejo también responde en efímero');
     assert(viejo.embeds[0].toJSON().title.includes('Eneba'), 'y su "giftcard" se traduce al método que ahora existe');
 
+    // ── 3c. Los botones de copiar ────────────────────────────────────────────
+    // En el móvil, seleccionar una dirección de cripto dentro de un embed es
+    // incómodo y fácil de hacer mal, y MEDIA dirección copiada es un pago
+    // perdido. El botón entrega el dato pelado, sin markdown.
+    //
+    // Lo crítico es que entregue EXACTAMENTE lo mismo que dice el embed: si el
+    // botón y el texto se desincronizaran, el cliente copiaría una cosa
+    // mientras lee otra. Antes pasaba: la cuenta de Mercado Pago estaba escrita
+    // por segunda vez a mano en handlers/buttons.js.
+    const copiarDe = async id => {
+        let enviado = null;
+        await metodos.handleCopiarButton({
+            customId: id, replied: false, deferred: false,
+            user: { id: '1' }, reply: async p => { enviado = p; },
+        });
+        return enviado;
+    };
+
+    for (const c of t.CRIPTO) {
+        const id = t.COPY_ID(c.ticker.toLowerCase());
+        const enviado = await copiarDe(id);
+
+        assert(Boolean(enviado), `hay botón para copiar ${c.ticker}`);
+        assert(enviado.content === c.direccion, `y entrega la dirección de ${c.ticker} EXACTA, igual que el embed`);
+        assert(!/[`*_>]/.test(enviado.content), `sin markdown alrededor (${c.ticker}): el móvil copia el texto tal cual`);
+        assert((enviado.flags & EPHEMERAL) === EPHEMERAL, `y en efímero (${c.ticker})`);
+        assert(!enviado.embeds?.length, `sin embed (${c.ticker}): dentro de uno no se puede copiar de un toque`);
+    }
+
+    // La cuenta bancaria y los enlaces, lo mismo.
+    assert((await copiarDe(t.COPY_ID('cuenta'))).content === t.CUENTA.numero, 'el botón de la cuenta entrega el número del embed');
+    assert((await copiarDe(t.COPY_ID('nombre'))).content === t.CUENTA.titular, 'y el del titular, su nombre');
+    assert((await copiarDe(t.COPY_ID('amazon'))).content === t.AMAZON_URL, 'el de Amazon entrega el enlace pelado');
+    assert((await copiarDe(t.COPY_ID('eneba'))).content === t.ENEBA_URL, 'y el de Eneba el suyo');
+    assert(await copiarDe('metodos_copy_inventado') === null, 'una clave que no existe no responde nada');
+
+    // Las filas: cada mensaje lleva los suyos y ninguno se queda sin enrutar.
+    const filaCripto = buildDetallePayload('cripto').components[0].toJSON().components;
+    assert(filaCripto.length === t.CRIPTO.length, `la tarjeta de cripto lleva un botón por moneda (${filaCripto.length})`);
+    assert(filaCripto.length <= 5, 'y caben en una sola fila de Discord');
+    for (const c of t.CRIPTO) {
+        const b = filaCripto.find(x => x.custom_id === t.COPY_ID(c.ticker.toLowerCase()));
+        assert(Boolean(b), `el botón de ${c.ticker} está en la fila`);
+        assert(b.label === c.nombre, `etiquetado con el nombre de la moneda (${c.nombre})`);
+        assert(b.emoji?.id === '1527509149758259371', `y con el emoji de copiar (${c.ticker})`);
+    }
+
+    for (const clave of ['eneba', 'amazon']) {
+        const fila = buildDetallePayload(clave).components[0].toJSON().components;
+        assert(fila.length === 1, `${clave} lleva un botón de copiar el enlace`);
+        assert(fila[0].custom_id === t.COPY_ID(clave), `con su customId (${clave})`);
+    }
+
+    // Todos los botones de copiar que se pintan están en el Set que los enruta.
+    const pintados = CLAVES.flatMap(clave => {
+        const fila = buildDetallePayload(clave).components?.[0]?.toJSON().components ?? [];
+        return fila.map(b => b.custom_id);
+    });
+    for (const id of pintados) {
+        assert(metodos.COPY_BOTONES.has(id), `el botón ${id} está enrutado`);
+    }
+    assert(pintados.length === Object.keys(t.COPIABLES).length, 'y no sobra ninguna entrada copiable sin botón');
+
+    // Y el dato ya no está escrito por segunda vez en el handler de botones.
+    const srcBotones = fs.readFileSync(path.join(RAIZ, 'handlers', 'buttons.js'), 'utf8');
+    assert(!srcBotones.includes(t.CUENTA.numero), 'la cuenta bancaria ya no está copiada en handlers/buttons.js');
+    assert(!srcBotones.includes(t.CUENTA.titular), 'ni el nombre del titular');
+    for (const c of t.CRIPTO) {
+        assert(!srcBotones.includes(c.direccion), `ni la dirección de ${c.ticker}`);
+    }
+
     // ── 4. El panel: botones dentro, uno por método ──────────────────────────
     const panel = t.buildMetodosContainer({ conBanner: true }).toJSON();
     const piezas = nodos([panel]);

@@ -6,9 +6,9 @@ const {
     ButtonBuilder,
     ButtonStyle,
     ContainerBuilder,
-    EmbedBuilder,
     MediaGalleryBuilder,
     MediaGalleryItemBuilder,
+    MessageFlags,
     SeparatorBuilder,
     SeparatorSpacingSize,
     TextDisplayBuilder,
@@ -80,37 +80,27 @@ const PIE = '7x Community • Métodos de Pago';
 // quien lo pulsó. Es lo que hace que estos datos —una cuenta bancaria, cinco
 // direcciones de cobro— no se queden escritos en el canal para cualquiera.
 
-function buildCriptoEmbed() {
+function buildCriptoCuerpo() {
     const lineas = CRIPTO.map(c =>
         `**${c.nombre} (${c.ticker})** · red ${c.red}\n\`\`\`${c.direccion}\`\`\``
     );
 
-    return new EmbedBuilder()
-        .setColor(ACCENT)
-        .setTitle('Pago con criptomonedas')
-        .setDescription(
+    return (
             `${PUNTO} Envía el importe exacto a la dirección de la moneda que vayas a usar.\n\n` +
             `${lineas.join('\n')}\n\n` +
             `${ALERTA} **Cada moneda tiene SU dirección y SU red.** Enviar una moneda a la dirección de otra, o por una red distinta, hace que el pago se pierda y no se pueda recuperar.\n\n` +
             `${PUNTO} Cuando lo envíes, pega el **hash de la transacción** en tu ticket para que podamos verificarlo.`
-        )
-        .setFooter({ text: PIE })
-        .setTimestamp();
+    );
 }
 
-function buildTransferenciaEmbed() {
-    return new EmbedBuilder()
-        .setColor(ACCENT)
-        .setTitle('Transferencia — Mercado Pago')
-        .setDescription(
+function buildTransferenciaCuerpo() {
+    return (
             `${PUNTO} Transfiere el importe exacto a esta cuenta:\n\n` +
             `**Número de cuenta (CLABE)**\n\`\`\`${CUENTA.numero}\`\`\`\n` +
             `**Titular**\n\`\`\`${CUENTA.titular}\`\`\`\n` +
             `**Banco**\n\`\`\`${CUENTA.banco}\`\`\`\n` +
             `${PUNTO} Una vez enviado, sube el **comprobante** a tu ticket para que podamos verificar tu pago.`
-        )
-        .setFooter({ text: PIE })
-        .setTimestamp();
+    );
 }
 
 // ── Botones de copiar ─────────────────────────────────────────────────────────
@@ -124,7 +114,12 @@ function buildTransferenciaEmbed() {
 // estaba escrita DOS veces —aquí y otra vez a mano en handlers/buttons.js—, así
 // que cambiarla en un sitio dejaba al botón de copiar entregando la vieja.
 
-const COPIAR_EMOJI = { id: '1527509149758259371', name: 'copiar' };
+// Un emoji por tipo de dato, no uno para todo: la llave es la de siempre para
+// los datos de la cuenta bancaria, el de copiar el que se pidió para las
+// direcciones de cripto, y el enlace para las gift cards.
+const EMOJI_CUENTA = '🔑';
+const EMOJI_CRIPTO = { id: '1527509149758259371', name: 'copiar' };
+const EMOJI_ENLACE = '🔗';
 const COPY_PREFIJO = 'metodos_copy_';
 const COPY_ID = clave => `${COPY_PREFIJO}${clave}`;
 
@@ -139,18 +134,18 @@ const COPIABLES = {
 
 const COPY_BOTONES = new Set(Object.keys(COPIABLES).map(COPY_ID));
 
-function botonCopiar(clave, label) {
+function botonCopiar(clave, label, emojiBoton) {
     return new ButtonBuilder()
         .setCustomId(COPY_ID(clave))
         .setLabel(label)
-        .setEmoji(COPIAR_EMOJI)
+        .setEmoji(emojiBoton)
         .setStyle(ButtonStyle.Secondary);
 }
 
 function buildTransferenciaRow() {
     return new ActionRowBuilder().addComponents(
-        botonCopiar('cuenta', 'Copiar Cuenta'),
-        botonCopiar('nombre', 'Copiar Nombre'),
+        botonCopiar('cuenta', 'Copiar Cuenta', EMOJI_CUENTA),
+        botonCopiar('nombre', 'Copiar Nombre', EMOJI_CUENTA),
     );
 }
 
@@ -158,53 +153,35 @@ function buildTransferenciaRow() {
 // justo el máximo de una fila de Discord.
 function buildCriptoRow() {
     return new ActionRowBuilder().addComponents(
-        CRIPTO.map(c => botonCopiar(c.ticker.toLowerCase(), c.nombre))
+        CRIPTO.map(c => botonCopiar(c.ticker.toLowerCase(), c.nombre, EMOJI_CRIPTO))
     );
 }
 
 function buildEnlaceRow(clave) {
-    return new ActionRowBuilder().addComponents(botonCopiar(clave, 'Copiar enlace'));
+    return new ActionRowBuilder().addComponents(botonCopiar(clave, 'Copiar enlace', EMOJI_ENLACE));
 }
 
-function buildOxxoEmbed() {
-    const embed = new EmbedBuilder()
-        .setColor(ACCENT)
-        .setTitle('Depósito en OXXO')
-        .setDescription(
+function buildOxxoCuerpo() {
+    return (
             `${PUNTO} Puedes depositar en cualquier tienda OXXO con el código de abajo.\n\n` +
             `${PUNTO} **Conserva el ticket del depósito** y súbelo a tu ticket de Discord: es el comprobante con el que se valida tu compra.`
-        )
-        .setFooter({ text: PIE })
-        .setTimestamp();
-
-    if (OXXO_EXISTS) embed.setImage(`attachment://${OXXO_NAME}`);
-    return embed;
+    );
 }
 
-function buildEnebaEmbed() {
-    return new EmbedBuilder()
-        .setColor(ACCENT)
-        .setTitle('Gift Card — Eneba')
-        .setDescription(
+function buildEnebaCuerpo() {
+    return (
             `${PUNTO} Compra la gift card por el importe que corresponda a tu pedido.\n\n` +
             `${PUNTO} Cuando la tengas, envía el **código** en tu ticket. No lo publiques en ningún canal abierto: quien lo lea puede canjearlo.\n\n` +
             `${PUNTO} [Comprar en Eneba](${ENEBA_URL})`
-        )
-        .setFooter({ text: PIE })
-        .setTimestamp();
+    );
 }
 
-function buildAmazonEmbed() {
-    return new EmbedBuilder()
-        .setColor(ACCENT)
-        .setTitle('Gift Card — Amazon México')
-        .setDescription(
+function buildAmazonCuerpo() {
+    return (
             `${PUNTO} Compra la gift card por el importe que corresponda a tu pedido.\n\n` +
             `${PUNTO} Cuando la tengas, envía el **código** en tu ticket. No lo publiques en ningún canal abierto: quien lo lea puede canjearlo.\n\n` +
             `${PUNTO} [Comprar en Amazon México](${AMAZON_URL})`
-        )
-        .setFooter({ text: PIE })
-        .setTimestamp();
+    );
 }
 
 // ── Los métodos, en un solo sitio ─────────────────────────────────────────────
@@ -216,35 +193,40 @@ const METODOS = {
         label: 'Cripto',
         descripcion: 'BTC, ETH, LINK, LTC y UNI',
         emoji: E.cripto,
-        embed: buildCriptoEmbed,
+        titulo: 'Pago con criptomonedas',
+        cuerpo: buildCriptoCuerpo,
         row: buildCriptoRow,
     },
     transferencia: {
         label: 'Transferencia',
         descripcion: 'Mercado Pago MX',
         emoji: E.transferencia,
-        embed: buildTransferenciaEmbed,
+        titulo: 'Transferencia — Mercado Pago',
+        cuerpo: buildTransferenciaCuerpo,
         row: buildTransferenciaRow,
     },
     oxxo: {
         label: 'Depósito OXXO',
         descripcion: 'En cualquier tienda OXXO',
         emoji: E.oxxo,
-        embed: buildOxxoEmbed,
+        titulo: 'Depósito en OXXO',
+        cuerpo: buildOxxoCuerpo,
         adjunto: OXXO_EXISTS ? { attachment: OXXO_PATH, name: OXXO_NAME } : null,
     },
     eneba: {
         label: 'Gift Card Eneba',
         descripcion: 'Compras internacionales',
         emoji: E.eneba,
-        embed: buildEnebaEmbed,
+        titulo: 'Gift Card — Eneba',
+        cuerpo: buildEnebaCuerpo,
         row: () => buildEnlaceRow('eneba'),
     },
     amazon: {
         label: 'Gift Card Amazon',
         descripcion: 'Amazon México',
         emoji: E.amazon,
-        embed: buildAmazonEmbed,
+        titulo: 'Gift Card — Amazon México',
+        cuerpo: buildAmazonCuerpo,
         row: () => buildEnlaceRow('amazon'),
     },
 };
@@ -253,15 +235,63 @@ const CLAVES = Object.keys(METODOS);
 const CUSTOM_ID = clave => `metodos_${clave}`;
 const BOTONES = new Set(CLAVES.map(CUSTOM_ID));
 
-// Lo que se envía al pulsar un botón o ejecutar /pagos. Siempre el mismo
-// contenido, venga de donde venga.
-function buildDetallePayload(clave) {
+// ── El detalle, como contenedor ───────────────────────────────────────────────
+//
+// Cada método se envía como un Container de Components V2 para que sus botones
+// queden DENTRO del bloque, no colgando debajo. Un embed clásico no admite
+// botones: ahí siempre quedan fuera del marco.
+//
+// Lo que se pierde al dejar el embed: título, pie y hora propios. Se rehacen a
+// mano — el título como encabezado markdown (que además SÍ pinta los emojis del
+// servidor, al revés que un título de embed) y el pie como línea de subtexto.
+//
+// Esto se puede hacer aquí porque NADIE lee estos mensajes: son de usar y
+// tirar. El resumen del ticket es otra historia — utils/orderNotify.js y
+// utils/reviewFlow.js leen su `embeds[0].description` para el registro de
+// pedidos y el ranking de compradores, así que ese tiene que seguir siendo un
+// embed clásico.
+function buildDetalleContainer(clave) {
     const metodo = METODOS[clave];
     if (!metodo) return null;
 
+    const container = new ContainerBuilder()
+        .setAccentColor(ACCENT)
+        .addTextDisplayComponents(
+            new TextDisplayBuilder().setContent(`## ${emoji(clave)} ${metodo.titulo}\n\n${metodo.cuerpo()}`)
+        );
+
+    // La imagen del método, si la tiene (el código de OXXO).
+    if (metodo.adjunto) {
+        container.addMediaGalleryComponents(
+            new MediaGalleryBuilder().addItems(
+                new MediaGalleryItemBuilder().setURL(`attachment://${metodo.adjunto.name}`)
+            )
+        );
+    }
+
+    container
+        .addSeparatorComponents(new SeparatorBuilder().setDivider(true).setSpacing(SeparatorSpacingSize.Small))
+        .addTextDisplayComponents(new TextDisplayBuilder().setContent(`-# ${PIE}`));
+
+    if (metodo.row) {
+        container
+            .addSeparatorComponents(new SeparatorBuilder().setDivider(false).setSpacing(SeparatorSpacingSize.Small))
+            .addActionRowComponents(metodo.row());
+    }
+
+    return container;
+}
+
+// Lo que se envía al pulsar un botón o ejecutar /pagos. Siempre el mismo
+// contenido, venga de donde venga.
+function buildDetallePayload(clave) {
+    const container = buildDetalleContainer(clave);
+    if (!container) return null;
+
+    const metodo = METODOS[clave];
     return {
-        embeds: [metodo.embed()],
-        ...(metodo.row && { components: [metodo.row()] }),
+        flags: MessageFlags.IsComponentsV2,
+        components: [container],
         ...(metodo.adjunto && { files: [metodo.adjunto] }),
     };
 }
@@ -451,5 +481,5 @@ module.exports = {
     OXXO_PATH,
     OXXO_NAME,
     OXXO_EXISTS,
-    __test: { buildMetodosContainer, buildTexto, buildAviso, buildRow, buildCriptoRow, isMetodosMsg, COPIABLES, COPY_ID, CRIPTO, CUENTA, ENEBA_URL, AMAZON_URL, BANNER, ACCENT, TITULO },
+    __test: { buildMetodosContainer, buildDetalleContainer, buildTexto, buildAviso, buildRow, buildCriptoRow, isMetodosMsg, COPIABLES, COPY_ID, CRIPTO, CUENTA, ENEBA_URL, AMAZON_URL, BANNER, ACCENT, TITULO },
 };

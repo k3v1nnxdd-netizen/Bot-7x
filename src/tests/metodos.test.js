@@ -43,6 +43,19 @@ const REGLAS = {
     UNI:  { re: /^0x[0-9a-fA-F]{40}$/,              largo: 42, red: 'Ethereum' },
 };
 
+// Todo el texto de un mensaje de detalle, ya montado como contenedor.
+function textoDe(clave) {
+    return nodos([buildDetallePayload(clave).components[0].toJSON()])
+        .filter(n => n.type === 10)
+        .map(n => n.content)
+        .join('\n');
+}
+
+// Los botones de un mensaje de detalle.
+function botonesDe(clave) {
+    return nodos([buildDetallePayload(clave).components[0].toJSON()]).filter(n => n.type === 2);
+}
+
 function nodos(json) {
     const out = [];
     (function rec(n) {
@@ -94,13 +107,18 @@ module.exports = async function run() {
 
     for (const clave of CLAVES) {
         const payload = buildDetallePayload(clave);
-        assert(Boolean(payload?.embeds?.length), `${clave} tiene su mensaje de detalle`);
+        assert(Boolean(payload?.components?.length), `${clave} tiene su mensaje de detalle`);
+        assert(payload.flags === MessageFlags.IsComponentsV2, `${clave} se envía como Container: sus botones van DENTRO`);
+        assert(!payload.embeds, `${clave} no lleva embed: un mensaje V2 no los admite`);
 
-        const embed = payload.embeds[0].toJSON();
-        assert(Boolean(embed.title), `${clave} lleva título`);
-        assert(!embed.title.includes('<:'), `y sin emojis del servidor en él (Discord los imprime crudos)`);
-        assert(embed.footer?.text === '7x Community • Métodos de Pago', `${clave} lleva el pie del sistema`);
-        assert(JSON.stringify(payload).length < 6000, `${clave} cabe en el límite de un embed`);
+        const contenedor = payload.components[0].toJSON();
+        assert(contenedor.type === 17, `${clave} es un Container`);
+        assert(contenedor.accent_color === t.ACCENT, `con su barra de color (${clave})`);
+
+        const texto = textoDe(clave);
+        assert(texto.includes(`## ${'<:'}`), `${clave} lleva su título como encabezado`);
+        assert(texto.includes('7x Community • Métodos de Pago'), `${clave} lleva el pie del sistema`);
+        assert(texto.length < 4000, `${clave} cabe en el límite de texto de Discord`);
     }
 
     assert(buildDetallePayload('inventado') === null, 'un método que no existe no devuelve nada que enviar');
@@ -108,19 +126,19 @@ module.exports = async function run() {
 
     // Las direcciones salen ENTERAS en el mensaje: si una se truncara al
     // pintarla, el cliente copiaría una dirección rota.
-    const cripto = buildDetallePayload('cripto').embeds[0].toJSON().description;
+    const cripto = textoDe('cripto');
     for (const c of t.CRIPTO) {
         assert(cripto.includes(c.direccion), `la dirección de ${c.ticker} sale completa en el mensaje`);
         assert(cripto.includes(`\`\`\`${c.direccion}\`\`\``), `y en un bloque de código, para poder copiarla de un toque`);
     }
     assert(cripto.includes('SU dirección y SU red'), 'con el aviso de no mezclar monedas ni redes');
 
-    const transferencia = buildDetallePayload('transferencia').embeds[0].toJSON().description;
+    const transferencia = textoDe('transferencia');
     assert(transferencia.includes(t.CUENTA.numero), 'la cuenta bancaria sale completa');
     assert(transferencia.includes(t.CUENTA.titular), 'y con su titular');
 
-    assert(buildDetallePayload('amazon').embeds[0].toJSON().description.includes(t.AMAZON_URL), 'el de Amazon lleva su enlace');
-    assert(buildDetallePayload('eneba').embeds[0].toJSON().description.includes(t.ENEBA_URL), 'y el de Eneba el suyo');
+    assert(textoDe('amazon').includes(t.AMAZON_URL), 'el de Amazon lleva su enlace');
+    assert(textoDe('eneba').includes(t.ENEBA_URL), 'y el de Eneba el suyo');
 
     // ── 3b. La respuesta del botón es EFÍMERA ────────────────────────────────
     // Lo más importante de todo el fichero. Una cuenta bancaria y cinco
@@ -145,7 +163,7 @@ module.exports = async function run() {
             (enviado.flags & EPHEMERAL) === EPHEMERAL,
             `y lo hace en EFÍMERO: los datos de pago de ${clave} no se quedan escritos en el canal`
         );
-        assert(enviado.embeds?.length === 1, `con su detalle (${clave})`);
+        assert(enviado.components?.length === 1, `con su detalle (${clave})`);
     }
 
     // Un customId de un método que ya no existe no responde nada, en vez de
@@ -165,7 +183,10 @@ module.exports = async function run() {
         user: { id: '1' }, reply: async p => { viejo = p; },
     });
     assert((viejo?.flags & EPHEMERAL) === EPHEMERAL, 'el desplegable viejo también responde en efímero');
-    assert(viejo.embeds[0].toJSON().title.includes('Eneba'), 'y su "giftcard" se traduce al método que ahora existe');
+    assert(
+        nodos([viejo.components[0].toJSON()]).some(n => n.type === 10 && n.content.includes('Eneba')),
+        'y su "giftcard" se traduce al método que ahora existe'
+    );
 
     // ── 3c. Los botones de copiar ────────────────────────────────────────────
     // En el móvil, seleccionar una dirección de cripto dentro de un embed es
@@ -197,14 +218,18 @@ module.exports = async function run() {
     }
 
     // La cuenta bancaria y los enlaces, lo mismo.
-    assert((await copiarDe(t.COPY_ID('cuenta'))).content === t.CUENTA.numero, 'el botón de la cuenta entrega el número del embed');
+    const filaCuenta = botonesDe('transferencia');
+    assert(filaCuenta.length === 2, 'la tarjeta de transferencia lleva sus dos botones');
+    assert(filaCuenta.every(b => b.emoji?.name === '🔑'), 'con la llave de siempre, no con el emoji de cripto');
+
+    assert((await copiarDe(t.COPY_ID('cuenta'))).content === t.CUENTA.numero, 'el botón de la cuenta entrega el número del mensaje');
     assert((await copiarDe(t.COPY_ID('nombre'))).content === t.CUENTA.titular, 'y el del titular, su nombre');
     assert((await copiarDe(t.COPY_ID('amazon'))).content === t.AMAZON_URL, 'el de Amazon entrega el enlace pelado');
     assert((await copiarDe(t.COPY_ID('eneba'))).content === t.ENEBA_URL, 'y el de Eneba el suyo');
     assert(await copiarDe('metodos_copy_inventado') === null, 'una clave que no existe no responde nada');
 
     // Las filas: cada mensaje lleva los suyos y ninguno se queda sin enrutar.
-    const filaCripto = buildDetallePayload('cripto').components[0].toJSON().components;
+    const filaCripto = botonesDe('cripto');
     assert(filaCripto.length === t.CRIPTO.length, `la tarjeta de cripto lleva un botón por moneda (${filaCripto.length})`);
     assert(filaCripto.length <= 5, 'y caben en una sola fila de Discord');
     for (const c of t.CRIPTO) {
@@ -212,19 +237,18 @@ module.exports = async function run() {
         assert(Boolean(b), `el botón de ${c.ticker} está en la fila`);
         assert(b.label === c.nombre, `etiquetado con el nombre de la moneda (${c.nombre})`);
         assert(b.emoji?.id === '1527509149758259371', `y con el emoji de copiar (${c.ticker})`);
+        assert(b.emoji?.name !== '🔑', `que NO es la llave: esa es la de los datos bancarios (${c.ticker})`);
     }
 
     for (const clave of ['eneba', 'amazon']) {
-        const fila = buildDetallePayload(clave).components[0].toJSON().components;
+        const fila = botonesDe(clave);
         assert(fila.length === 1, `${clave} lleva un botón de copiar el enlace`);
         assert(fila[0].custom_id === t.COPY_ID(clave), `con su customId (${clave})`);
+        assert(fila[0].emoji?.name === '🔗', `y el emoji de enlace (${clave})`);
     }
 
     // Todos los botones de copiar que se pintan están en el Set que los enruta.
-    const pintados = CLAVES.flatMap(clave => {
-        const fila = buildDetallePayload(clave).components?.[0]?.toJSON().components ?? [];
-        return fila.map(b => b.custom_id);
-    });
+    const pintados = CLAVES.flatMap(clave => botonesDe(clave).map(b => b.custom_id));
     for (const id of pintados) {
         assert(metodos.COPY_BOTONES.has(id), `el botón ${id} está enrutado`);
     }

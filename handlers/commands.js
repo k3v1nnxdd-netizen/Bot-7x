@@ -136,17 +136,18 @@ async function handlePagoVerified(interaction) {
 // La respuesta es pública a propósito, al revés que el botón: este comando lo
 // usa el staff dentro de un ticket para enseñarle los datos al cliente, y un
 // efímero sólo lo vería quien escribió el comando.
+// Responde DIRECTAMENTE, sin diferir: el bloque de métodos de pago es un
+// contenedor de Components V2, y ese flag hay que ponerlo al crear el mensaje —
+// un editReply sobre una respuesta ya diferida no puede añadirlo. Como el
+// contenido se construye sin esperar a nada, diferir no aportaba nada.
 async function handlePagos(interaction) {
-    const ok = await safeDeferReply(interaction);
-    if (!ok) return;
-
     const metodo = interaction.options.getString('metodo');
     const payload = buildDetallePayload(metodo);
 
     if (!payload) {
-        return safeEditReply(interaction, { content: '❌ Ese método de pago ya no está disponible.' });
+        return safeReply(interaction, { content: '❌ Ese método de pago ya no está disponible.', ephemeral: true });
     }
-    return safeEditReply(interaction, payload);
+    return safeReply(interaction, payload);
 }
 
 function buildCouponEmbed(codigo, coupon) {

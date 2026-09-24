@@ -275,16 +275,16 @@ async function handleComprarModal(interaction) {
         // Las etiquetas del texto NO cambian: utils/orderNotify.js y
         // utils/reviewFlow.js las leen para el registro de pedidos y el ranking
         // de compradores, y lo hacen con panelText, que entiende las dos formas.
-        await channel.send({
-            content: `<@${userId}>`,
-            ...v2.tarjetaPayload({
+        await channel.send(
+            v2.tarjetaPayload({
                 color: 0x2B2D31,
+                mencion: `<@${userId}>`,
                 texto: `## Resumen de tu compra\n\n${descLines}${comunidades.texto}`,
                 pie: '7x Community • Proceso automático',
                 thumbnail: interaction.user.displayAvatarURL({ size: 256 }),
                 filas: [closeBtnRow()],
-            }),
-        });
+            })
+        );
 
         // ── Mensaje 2: Panel de métodos de pago (con dropdown) ────────────────
         // El mismo bloque de métodos de pago que el panel del canal, sin el

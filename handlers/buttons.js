@@ -224,10 +224,9 @@ async function onConfirmarPago(interaction) {
     // bloque en vez de colgando debajo. El emoji del título sólo se pinta
     // porque ahora es un encabezado de texto — en el título de un embed
     // Discord lo imprimía crudo.
-    const replyPayload = {
-        content: ownerId ? `<@${ownerId}>` : undefined,
-        ...v2.tarjetaPayload({
+    const replyPayload = v2.tarjetaPayload({
             color: 0x2B2D31,
+            mencion: ownerId ? `<@${ownerId}>` : null,
             texto:
                 '## <:truepurple:1501214679400190086> PAGO EXITOSO\n\n' +
                 `<:member:1501261625523699892> ${mention}, ¡tu pago fue confirmado y tus Robux ya fueron enviados a tu cuenta!\n\n` +
@@ -236,8 +235,7 @@ async function onConfirmarPago(interaction) {
                 '<:truepurple:1501214679400190086> ¡Gracias por tu compra!',
             thumbnail: EXITOSO_EXISTS ? `attachment://${EXITOSO_NAME}` : null,
             filas: [buildRefRow()],
-        }, EXITOSO_EXISTS ? [{ attachment: EXITOSO_PATH, name: EXITOSO_NAME }] : []),
-    };
+        }, EXITOSO_EXISTS ? [{ attachment: EXITOSO_PATH, name: EXITOSO_NAME }] : []);
     await safeReply(interaction, replyPayload);
 
     if (ownerId) {

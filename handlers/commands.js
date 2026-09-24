@@ -96,10 +96,9 @@ async function handlePagoVerified(interaction) {
     // al CREAR el mensaje — un editReply sobre una respuesta ya diferida no
     // puede añadirlo. El contenido no espera a nada, así que diferir no
     // aportaba nada.
-    const ok = await safeReply(interaction, {
-        content: mentionUser ? `<@${mentionUser.id}>` : undefined,
-        ...v2.tarjetaPayload({
+    const ok = await safeReply(interaction, v2.tarjetaPayload({
             color: 0x2B2D31,
+            mencion: mentionUser ? `<@${mentionUser.id}>` : null,
             texto:
                 '## <:truepurple:1501214679400190086> Pago Verificado — 7x Community\n\n' +
                 '¡Gracias por tu compra con **7x Community**!\n\n' +
@@ -110,8 +109,7 @@ async function handlePagoVerified(interaction) {
                 '<:truepurple:1501214679400190086> ¡Gracias por confiar en nosotros y esperamos verte pronto!',
             pie: '7x Community • Compra verificada',
             filas: [buildRefRow()],
-        }),
-    });
+    }));
     if (!ok) return;
 
     if (mentionUser) {

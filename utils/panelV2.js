@@ -44,11 +44,20 @@ function pickBanner(candidates, attachName) {
 // `thumbnail` va a la derecha del texto, como el de un embed, y por eso el
 // texto entra en una Section: es el único sitio donde Discord admite una imagen
 // pegada a un bloque de texto.
-function tarjeta({ color, texto, pie = null, thumbnail = null, imagen = null, filas = [] }) {
+// `mencion` va DENTRO del texto, y no como `content` del mensaje, porque
+// Discord rechaza los dos juntos:
+//
+//   MESSAGE_CANNOT_USE_LEGACY_FIELDS_WITH_COMPONENTS_V2
+//
+// Un mensaje con el flag de Components V2 no puede llevar `content` ni
+// `embeds`: TODO tiene que ir en los componentes. Pasarlo por aquí es lo que
+// evita que alguien lo vuelva a intentar — y no se pierde el aviso, porque una
+// mención dentro de un bloque de texto notifica igual.
+function tarjeta({ color, texto, mencion = null, pie = null, thumbnail = null, imagen = null, filas = [] }) {
     const container = new ContainerBuilder();
     if (color !== undefined && color !== null) container.setAccentColor(color);
 
-    const bloque = new TextDisplayBuilder().setContent(texto);
+    const bloque = new TextDisplayBuilder().setContent(mencion ? `${mencion}\n${texto}` : texto);
     if (thumbnail) {
         container.addSectionComponents(
             new SectionBuilder()

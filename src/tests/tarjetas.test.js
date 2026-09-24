@@ -96,6 +96,44 @@ module.exports = async function run() {
     assert(!payload.embeds, 'y ningún embed: un mensaje V2 no los admite');
     assert(payload.files.length === 1, 'los adjuntos se pasan tal cual');
 
+    // ── 1b. Un mensaje V2 NO puede llevar `content` ni `embeds` ──────────────
+    //
+    // Discord lo rechaza de plano:
+    //   MESSAGE_CANNOT_USE_LEGACY_FIELDS_WITH_COMPONENTS_V2
+    //
+    // Y eso llegó a producción: el resumen del ticket mandaba la mención del
+    // comprador en `content` junto a la tarjeta, Discord devolvía 400 y el canal
+    // del ticket se quedaba CREADO PERO VACÍO, con un "Error al crear el ticket"
+    // para el cliente. Nada en el código lo delataba: se ve al enviarlo.
+    //
+    // Por eso la mención se pasa por `mencion` y acaba dentro del texto — donde
+    // notifica igual — y por eso esto se comprueba en dos niveles: el payload
+    // que se construye, y el código que lo envía.
+    const conMencion = v2.tarjetaPayload({ color: 1, texto: 'Hola', mencion: '<@123>' });
+    assert(!('content' in conMencion), 'el payload de una tarjeta NUNCA lleva content');
+    assert(!('embeds' in conMencion), 'ni embeds');
+    assert(
+        nodos(conMencion.components.map(c => c.toJSON()))
+            .some(n => n.type === 10 && n.content.startsWith('<@123>\n')),
+        'la mención va dentro del texto, que es donde sí puede ir (y sigue notificando)'
+    );
+    assert(
+        nodos(v2.tarjetaPayload({ color: 1, texto: 'Hola' }).components.map(c => c.toJSON()))
+            .some(n => n.type === 10 && n.content === 'Hola'),
+        'y sin mención el texto sale limpio, sin un salto de línea suelto delante'
+    );
+
+    // El otro nivel: que nadie vuelva a juntar `content` con una tarjeta al
+    // enviarla. Se busca en el código, que es donde se cometió el error.
+    const FUENTES = ['handlers/modals.js', 'handlers/headlessFlow.js', 'handlers/buttons.js', 'handlers/commands.js', 'metodos.js'];
+    for (const fichero of FUENTES) {
+        const src = fs.readFileSync(path.join(RAIZ, fichero), 'utf8').replace(/\r\n/g, '\n');
+
+        // `content:` seguido, dentro del mismo objeto, de una tarjeta o del flag.
+        const juntos = /content:[^\n]*\n(?:[^\n]*\n){0,3}?[^\n]*(?:tarjetaPayload|IsComponentsV2)/.test(src);
+        assert(!juntos, `${fichero} no manda content junto a un mensaje de Components V2`);
+    }
+
     // ── 2. Los dos formatos del resumen se leen IGUAL ────────────────────────
     // Esto es lo que evita que el ranking de compradores deje de contar.
     const viejo = { content: '', embeds: [{ title: null, description: RESUMEN }], components: [] };

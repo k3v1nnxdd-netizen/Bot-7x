@@ -113,7 +113,7 @@ function confirmBtnRow() {
     );
 }
 
-function buildResumenTarjeta(robloxUser, avatarURL, estado = { texto: '', avatarURL: null }) {
+function buildResumenTarjeta(robloxUser, avatarURL, estado = { texto: '', avatarURL: null }, mencion = null) {
     const comunidades = H.COMUNIDADES.map(c => `<:followers7x:1525326777071960124> [**${c.label}**](${c.link})`).join('\n');
 
     // Tarjeta y no embed, para que el botón de cerrar quede DENTRO del bloque.
@@ -129,6 +129,7 @@ function buildResumenTarjeta(robloxUser, avatarURL, estado = { texto: '', avatar
 
     return v2.tarjeta({
         color: ACCENT_NARANJA,
+        mencion,
         texto,
         pie: '7x Community • Proceso automático',
         thumbnail: avatarURL,
@@ -199,9 +200,8 @@ async function handleHeadlessModal(interaction) {
 
         // ── Mensaje 1: resumen del pedido ─────────────────────────────────────
         await channel.send({
-            content: `<@${userId}>`,
             flags: MessageFlags.IsComponentsV2,
-            components: [buildResumenTarjeta(robloxUser, interaction.user.displayAvatarURL({ size: 256 }), estado)],
+            components: [buildResumenTarjeta(robloxUser, interaction.user.displayAvatarURL({ size: 256 }), estado, `<@${userId}>`)],
         });
 
         // ── Mensaje 2: métodos de pago ────────────────────────────────────────

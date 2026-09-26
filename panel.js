@@ -35,6 +35,7 @@ const ACCENT = 0x2B2D31;
 // para que el texto y los botones se lean como una sola cosa.
 const E = {
     buy:        '<:buy:1501212698556371004>',
+    alianza:    '<:Proyectonuevo20260925T225153319:1553269490748366928>',
     duels:      '<:duels7x2:1525325282624540732>',
     seguidores: '<:followers7x:1525326777071960124>',
     otra:       '<:up:1501217620437897227>',
@@ -51,6 +52,7 @@ const HEADER = [
 
 const OPCIONES = [
     `${E.buy} **Comprar** — Ticket para comprar **Robux**`,
+    `${E.alianza} **Alianza** — Ticket para **aliar tu servidor** con 7x`,
     `${E.duels} **Duels** — Ticket para comprar **sets de Duels**`,
     `${E.seguidores} **Seguidores** — Ticket para comprar **seguidores**`,
     `${E.otra} **Otra cosa** — Dudas, problemas o consultas`,
@@ -77,6 +79,11 @@ function buildButtons() {
             .setLabel('Comprar')
             .setStyle(ButtonStyle.Secondary)
             .setEmoji(E.buy),
+        new ButtonBuilder()
+            .setCustomId('alianza')
+            .setLabel('Alianza')
+            .setStyle(ButtonStyle.Secondary)
+            .setEmoji(E.alianza),
         new ButtonBuilder()
             .setCustomId('duels')
             .setLabel('Duels')

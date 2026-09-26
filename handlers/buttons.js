@@ -18,6 +18,7 @@ const { sendOrderCompletionSummary } = require('../utils/orderNotify');
 const { startSeguidoresTicket, handleSeguidoresButton } = require('./seguidoresFlow');
 const { handleCheckGroupButton } = require('./checkGroupFlow');
 const { handleHeadlessButton } = require('./headlessFlow');
+const { startAlianzaTicket, handleAlianzaButton } = require('./alianzaFlow');
 const { handleGroupsPageButton } = require('./groupLicenses');
 const { handleMetodosButton, handleCopiarButton, BOTONES: METODOS_BUTTONS, COPY_BOTONES } = require('../metodos');
 const v2                 = require('../utils/panelV2');
@@ -47,7 +48,7 @@ function buildAutoCloseEmbed(minutes) {
 
 // ── Channel classification ────────────────────────────────────────────────────
 
-const PANEL_BUTTONS  = new Set(['comprar', 'otra_cosa', 'duels', 'seguidores']);
+const PANEL_BUTTONS  = new Set(['comprar', 'alianza', 'otra_cosa', 'duels', 'seguidores']);
 const CALC_BUTTONS   = new Set(['calc_dinero', 'calc_robux']);
 const HEADLESS_BUTTONS = new Set(['headless_comprar']);
 const VERIF_BUTTONS  = new Set(['verif_check']);
@@ -120,6 +121,13 @@ async function guardButton(interaction) {
     // Check Group panel buttons must come from the check group channel
     if (CHECKGROUP_BUTTONS.has(interaction.customId) && interaction.channelId !== config.CHANNELS.CHECKGROUP) {
         await safeReply(interaction, { content: 'Usa los botones del panel oficial de Check Group.', ephemeral: true });
+        return false;
+    }
+
+    // Los botones del ticket de alianza (ali_*) también son solo de dentro del
+    // ticket: fuera no hay nada que rellenar ni a quién atribuirlo.
+    if (interaction.customId.startsWith('ali_') && !isTicketChannel(interaction)) {
+        await safeReply(interaction, { content: 'Este boton solo funciona dentro de un ticket activo.', ephemeral: true });
         return false;
     }
 
@@ -400,6 +408,7 @@ const HANDLERS = {
     otra_cosa:        onOtraCosa,
     duels:            onDuels,
     seguidores:       startSeguidoresTicket,
+    alianza:          startAlianzaTicket,
     headless_comprar: handleHeadlessButton,
     verif_check:      onVerifCheck,
     anuncio_copiar:   handleCopiarAnuncio,
@@ -424,6 +433,7 @@ async function handleButton(interaction) {
     if (interaction.replied || interaction.deferred) return;
 
     const isSeg    = interaction.customId.startsWith('seg_');
+    const isAli    = interaction.customId.startsWith('ali_');
     const isCg     = interaction.customId.startsWith('cg_');
     const isReview = interaction.customId.startsWith('review_rate:');
     // Paging of the /groups license listing. Its message is ephemeral and
@@ -432,6 +442,7 @@ async function handleButton(interaction) {
     // for a different page of a list its clicker was already allowed to see.
     const isGroupList = interaction.customId.startsWith('gl_groups:');
     const fn = isSeg ? handleSeguidoresButton
+        : isAli ? handleAlianzaButton
         : isCg ? handleCheckGroupButton
         : isReview ? onReviewRate
         : isGroupList ? handleGroupsPageButton

@@ -19,6 +19,7 @@ const config                                               = require('../config'
 const { buildMetodosPayload }                               = require('../metodos');
 const { handleSeguidoresModal }                             = require('./seguidoresFlow');
 const { handleCheckGroupModal }                             = require('./checkGroupFlow');
+const { handleAlianzaModal }                                = require('./alianzaFlow');
 const { handleHeadlessModal }                               = require('./headlessFlow');
 const { buildCommunitySummary }                             = require('../utils/communityStatus');
 const v2                                                    = require('../utils/panelV2');
@@ -671,7 +672,8 @@ async function handleModal(interaction) {
     const isSeg    = interaction.customId.startsWith('seg_');
     const isCg     = interaction.customId.startsWith('cg_modal_');
     const isReview = interaction.customId.startsWith('review_modal:');
-    const fn = isSeg ? handleSeguidoresModal : isCg ? handleCheckGroupModal : isReview ? handleReviewModal : HANDLERS[interaction.customId];
+    const isAli    = interaction.customId.startsWith('ali_modal_');
+    const fn = isSeg ? handleSeguidoresModal : isAli ? handleAlianzaModal : isCg ? handleCheckGroupModal : isReview ? handleReviewModal : HANDLERS[interaction.customId];
     if (!fn) return;
 
     try {

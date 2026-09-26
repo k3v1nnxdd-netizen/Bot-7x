@@ -45,6 +45,20 @@ module.exports = {
         BOOST:              '1191157957556191263',
         GROUP_STATUS:       '1547140265003982888',
         ANUNCIO:            '1553268998765023293',
+        ALIANZA:            '1553269110551482408',
+    },
+
+    // ── Alianzas con otros servidores ────────────────────────────────────────
+    // El mínimo de miembros que se le pide a una comunidad para aliarse. Lo
+    // lee el panel del ticket (para decirlo), la comprobación de la invitación
+    // (para marcar si lo cumple) y la tarjeta de revisión del staff, así que
+    // subirlo o bajarlo es tocar SOLO esta línea.
+    //
+    // No rechaza nada por su cuenta: quien acepta una alianza es una persona,
+    // y un servidor de 900 miembros puede interesar igual. El bot lo enseña,
+    // no lo decide.
+    ALIANZA: {
+        MIN_MIEMBROS: 1000,
     },
 
     // La invitación del servidor. Verificada contra la API de Discord: el

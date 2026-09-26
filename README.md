@@ -625,6 +625,92 @@ diciendo cosas distintas. Cambian dos cosas, y las dos porque ahi publica una
 Discord: `7xcommuntiy` —con las dos ultimas letras cambiadas— devuelve 404
 "Unknown Invite".
 
+## Alianzas con otros servidores
+
+Un quinto boton en el panel de tickets, justo despues de **Comprar**, que abre
+un ticket `alianza-0001` para que otro servidor solicite aliarse con 7x.
+
+El ticket es un bloque gris con los requisitos, lo que no se acepta, los pasos
+y **cinco botones dentro**: los tres que rellenan la solicitud, **Completado** y
+**Cerrar Ticket**.
+
+### El tipo de ticket es `alianza`, no `comprar`
+
+A diferencia del Headless —que se guarda como `comprar` para heredar el flujo de
+pago— este va al reves: no tiene que heredar nada. De `comprar` cuelgan el boton
+de "PAGO REALIZADO" del owner, el registro en el canal de pedidos y el ranking de
+compradores. Con el tipo propio, una solicitud de alianza no se cuela en ninguno
+de los tres, y hay un test que lo fija.
+
+El boton de cerrar reutiliza el customId `cerrar_ticket` de siempre, asi que lo
+atiende el cierre con confirmacion que ya existia en vez de un cierre paralelo.
+
+### Lo que se pide
+
+| | |
+|---|---|
+| Tematica | Gaming. Tambien socializacion, ambiente, roleplay y venta de productos que **no** sean Robux |
+| Tamano | Mas de `config.ALIANZA.MIN_MIEMBROS` miembros (1.000) |
+| Fuera | Servidores que **vendan Robux**, pornografia, contenido subido de tono y actividades ilicitas |
+
+El minimo sale de `config.ALIANZA.MIN_MIEMBROS` y de ningun otro sitio: se dice
+en **tres** (el panel del ticket, la respuesta al pegar el enlace y la tarjeta que
+revisa el staff), y escrito a mano en alguno acabaria pidiendo una cosa distinta
+de la que comprueba el bot.
+
+### Los pasos
+
+1. Publicar nuestro anuncio de `CHANNELS.ANUNCIO` en su servidor.
+2. Subir **aqui** una captura donde se vea en que canal lo publicaron.
+3. Rellenar los tres botones: el mensaje que publicariamos de ellos en
+   `CHANNELS.ALIANZA`, el enlace de su servidor y de que trata.
+4. Pulsar **Completado**.
+
+Cada campo rellenado cambia su marca del panel de pendiente a hecho y su boton
+de azul a gris, asi que se ve de un vistazo lo que queda. Lo rellenado vive en
+`DATA_DIR/alianzas.json` con el id del canal como clave —no en memoria— porque
+el bot se reinicia en cada despliegue y estos tickets duran dias: perder lo
+escrito obligaria a rellenarlo todo otra vez sin que nadie avise de por que. Se
+borra solo cuando el canal se borra.
+
+### La comprobacion del enlace
+
+Al pegar la invitacion, el bot se la pregunta a Discord
+(`utils/discordInvite.js`, `/invites/<codigo>?with_counts=true`) y responde con
+el **nombre del servidor y cuantos miembros tiene**. Es lo unico de los
+requisitos que se puede comprobar de verdad, y evita fiarse de una captura.
+
+**No rechaza nada por su cuenta.** Un servidor por debajo del minimo lo ve
+dicho, pero puede enviar la solicitud igual; una invitacion que Discord no
+contesta, un limite de peticiones o un fallo de red quedan en **"no se pudo
+comprobar"**, nunca en un "no cumple". Decirle a alguien que su servidor es
+pequeno porque Discord tardo en contestar le niega algo que si tenia, y en
+pantalla se veria igual que un rechazo legitimo. Quien acepta una alianza es una
+persona.
+
+Lo unico que si es un dato firme es el **404**: esa invitacion esta caducada o
+mal escrita, y se le dice para que la corrija.
+
+### Completado
+
+Exige los tres campos **y** la captura. Si falta algo, dice exactamente que — no
+un error generico. La captura es la imagen mas reciente que haya subido quien
+abrio el ticket, buscada en los ultimos 50 mensajes cuando hace falta: asi no hay
+un escuchador mas por el que pase cada mensaje del servidor, y no puede quedarse
+desincronizada si alguien borra su captura.
+
+Con todo en su sitio, publica en el ticket una tarjeta de revision que menciona a
+`config.ADMIN_IDS` y reune el enlace, el nombre y los miembros reales del
+servidor, de que trata, el mensaje que publicariamos y la captura.
+
+**La captura se resube, no se enlaza.** Las URLs de adjuntos de Discord van
+firmadas y caducan en horas: una tarjeta que la enlazara se quedaria sin imagen
+justo cuando el staff volviera a mirarla. Si la resubida falla, la tarjeta sale
+igual con el enlace en el texto — lo que no puede pasar es que no salga nada.
+
+Pulsarlo dos veces no manda dos solicitudes: queda `enviadoEn` en el fichero y el
+segundo clic responde que ya esta en revision.
+
 ## Quien puede hacer cosas de owner
 
 `config.OWNER_ID` es el dueno: la persona concreta, la que sale nombrada en los

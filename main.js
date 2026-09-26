@@ -45,6 +45,7 @@ if (RUN_BOT) {
     const { updateLeaderboardMessage } = require('./utils/robuxLeaderboardPanel');
     const { backfillFromOrderLog } = require('./utils/robuxLeaderboardBackfill');
     const tickets             = require('./utils/tickets');
+    const alianzas            = require('./utils/alianzas');
     const { handleButton, clearTimers } = require('./handlers/buttons');
     const { handleModal }     = require('./handlers/modals');
     const { handleOutfit, handlePagos, handlePagoVerified, handleOffer, handleClose, handleHeadless, handleGroupActive, handleTopCompradores } = require('./handlers/commands');
@@ -457,6 +458,9 @@ if (RUN_BOT) {
         const ownerId = tickets.getOwner(channel.id);
         tickets.cleanup(channel.id, ownerId);
         clearTimers(channel.id);
+        // Lo rellenado de un ticket de alianza se va con el canal: sin esto,
+        // alianzas.json crecería para siempre con tickets que ya no existen.
+        alianzas.borrar(channel.id);
     });
 
     // ── Login ─────────────────────────────────────────────────────────────────

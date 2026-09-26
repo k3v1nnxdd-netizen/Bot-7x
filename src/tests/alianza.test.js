@@ -247,6 +247,9 @@ module.exports = async function run() {
     // ── 10. El flujo completo ────────────────────────────────────────────────
     for (const escenario of await simularFlujo()) assert(escenario.ok, escenario.msg);
 
+    // ── 11. Aceptar la alianza (solo owner) ──────────────────────────────────
+    for (const escenario of await simularAceptacion()) assert(escenario.ok, escenario.msg);
+
     if (fs.existsSync(ESTADO_FILE)) fs.unlinkSync(ESTADO_FILE);
     return finish();
 };
@@ -291,10 +294,10 @@ async function simularInvitaciones() {
 
 // ── El ticket, de principio a fin ────────────────────────────────────────────
 
-function canalFalso(userId, { mensajes = [] } = {}) {
+function canalFalso(userId, { mensajes = [], id = '555000111222333444' } = {}) {
     const enviados = [];
     const canal = {
-        id: '555000111222333444',
+        id,
         parentId: config.CATEGORIES.TICKETS,
         topic: config.TOPIC_PREFIX + JSON.stringify({ userId, type: 'alianza', ts: Date.now() }),
         enviados,
@@ -309,7 +312,11 @@ function canalFalso(userId, { mensajes = [] } = {}) {
                 return new Map(mensajes.map(m => [m.id, m]));
             },
         },
-        send: async payload => { enviados.push(payload); return { id: `env${enviados.length}` }; },
+        send: async payload => {
+            enviados.push(payload);
+            const n = enviados.length;
+            return { id: `env${n}`, url: `https://discord.com/channels/1/${id}/env${n}` };
+        },
     };
     return canal;
 }
@@ -425,6 +432,196 @@ async function simularFlujo() {
         });
 
         alianzas.borrar(CH);
+    } finally {
+        global.fetch = real;
+    }
+
+    return out;
+}
+
+// ── Aceptar la alianza ───────────────────────────────────────────────────────
+// Lo que se protege aquí es lo que sale del ticket y llega al servidor entero:
+// quién puede publicar, qué se publica y que no se publique dos veces.
+
+function tarjetaDeRevisionFalsa() {
+    // Como la que deja onCompletado: texto, la captura en una galería y la fila
+    // con el botón de aceptar.
+    const contenedor = {
+        type: 17,
+        accent_color: 0x2B2D31,
+        components: [
+            { type: 10, content: '## SOLICITUD DE ALIANZA — EN REVISIÓN\nDe: <@1>' },
+            { type: 12, items: [{ media: { url: 'https://cdn.discordapp.com/attachments/1/2/captura.png' } }] },
+            { type: 1, components: [{ type: 2, custom_id: 'ali_aceptar', label: 'Aceptar alianza', style: 3 }] },
+        ],
+    };
+    const msg = {
+        id: 'rev1',
+        editado: null,
+        components: [contenedor],
+        content: '',
+        embeds: [],
+        edit: async payload => { msg.editado = payload; return msg; },
+        delete: async () => {},
+    };
+    return msg;
+}
+
+async function simularAceptacion() {
+    const { __test: flujo, handleAlianzaButton } = require('../../handlers/alianzaFlow');
+    const OWNER = config.OWNER_ID;
+    const AJENO = '111111111111111111';
+    const SOLICITANTE = '222222222222222222';
+    const out = [];
+
+    const real = global.fetch;
+    global.fetch = async () => ({ ok: true, status: 200, json: async () => ({ approximate_member_count: 5000, guild: { name: 'Aliado RP' } }) });
+
+    // El canal de aliados y el cliente que lo devuelve.
+    const nuevoEntorno = (chId, { conCanalAlly = true } = {}) => {
+        const ally = canalFalso('bot', { id: config.CHANNELS.ALIANZA });
+        const ticket = canalFalso(SOLICITANTE, { id: chId });
+        const client = {
+            channels: {
+                cache: new Map(conCanalAlly ? [[config.CHANNELS.ALIANZA, ally]] : []),
+                fetch: async () => { if (!conCanalAlly) throw new Error('404'); return ally; },
+            },
+        };
+        return { ally, ticket, client };
+    };
+
+    const clic = (ticket, client, userId, customId, message) => interaccionFalsa(ticket, userId, {
+        customId,
+        client,
+        message: message ?? tarjetaDeRevisionFalsa(),
+    });
+
+    try {
+        // ── El botón está en la tarjeta de revisión ──────────────────────────
+        const fila = flujo.buildAceptarRow().toJSON().components;
+        out.push({ ok: fila[0]?.custom_id === 'ali_aceptar', msg: 'la tarjeta de revisión lleva el botón de aceptar' });
+
+        // ── Un tercero no puede aceptar ──────────────────────────────────────
+        const a = nuevoEntorno('700000000000000001');
+        alianzas.set(a.ticket.id, { userId: SOLICITANTE, mensaje: 'Ven a nuestro RP', link: 'https://discord.gg/aliado', descripcion: 'rp' });
+        const iAjeno = clic(a.ticket, a.client, AJENO, 'ali_aceptar');
+        await handleAlianzaButton(iAjeno);
+        out.push({ ok: /Solo el owner/.test(iAjeno.respuestas[0]?.content ?? ''), msg: 'quien no es owner no puede aceptar una alianza' });
+        out.push({ ok: a.ally.enviados.length === 0, msg: 'y no se publica nada' });
+
+        // El segundo paso se comprueba aparte, y no por gusto: el customId
+        // `ali_confirmar_aceptar` viaja por Discord, y fiarlo de que su botón
+        // sólo exista en un mensaje efímero del owner es fiarlo de dónde está
+        // el botón, no de quién lo pulsa.
+        const iAjenoConf = clic(a.ticket, a.client, AJENO, 'ali_confirmar_aceptar');
+        await handleAlianzaButton(iAjenoConf);
+        out.push({ ok: /Solo el owner/.test(iAjenoConf.respuestas[0]?.content ?? ''), msg: 'quien no es owner tampoco puede confirmar la publicación' });
+        out.push({ ok: a.ally.enviados.length === 0, msg: 'y por ahí tampoco se publica nada' });
+
+        // ── El owner: primero confirmación, sin publicar todavía ─────────────
+        const iOwner = clic(a.ticket, a.client, OWNER, 'ali_aceptar');
+        await handleAlianzaButton(iOwner);
+        const confirmacion = iOwner.respuestas[0];
+        const botonesConf = nodos((confirmacion?.components ?? []).map(c => c.toJSON()))
+            .filter(n => n.type === 2).map(n => n.custom_id);
+        out.push({ ok: a.ally.enviados.length === 0, msg: 'pulsar Aceptar no publica todavía: primero pide confirmación' });
+        out.push({ ok: botonesConf.includes('ali_confirmar_aceptar') && botonesConf.includes('ali_cancelar_aceptar'), msg: 'la confirmación trae "Sí, publicar" y "Cancelar"' });
+        out.push({ ok: (confirmacion?.flags & 64) === 64, msg: 'y es efímera: la ve solo el owner' });
+        out.push({
+            ok: nodos((confirmacion?.components ?? []).map(c => c.toJSON()))
+                .some(n => n.type === 10 && n.content.includes('Ven a nuestro RP')),
+            msg: 'y enseña el mensaje exacto que se va a publicar',
+        });
+
+        // ── Cancelar no publica ──────────────────────────────────────────────
+        const iCancel = clic(a.ticket, a.client, OWNER, 'ali_cancelar_aceptar');
+        await handleAlianzaButton(iCancel);
+        out.push({ ok: a.ally.enviados.length === 0, msg: 'cancelar no publica nada' });
+        out.push({ ok: !alianzas.get(a.ticket.id).aceptadoEn, msg: 'y la alianza sigue sin aceptar' });
+
+        // ── Confirmar: se publica ────────────────────────────────────────────
+        const b = nuevoEntorno('700000000000000002');
+        alianzas.set(b.ticket.id, { userId: SOLICITANTE, mensaje: 'Ven a nuestro RP', link: 'https://discord.gg/aliado', descripcion: 'rp' });
+        const tarjeta = tarjetaDeRevisionFalsa();
+        const iOk = clic(b.ticket, b.client, OWNER, 'ali_confirmar_aceptar', tarjeta);
+        await handleAlianzaButton(iOk);
+
+        const publicado = b.ally.enviados[0];
+        out.push({ ok: b.ally.enviados.length === 1, msg: 'confirmar publica en el canal de aliados' });
+        const textoPublicado = nodos((publicado?.components ?? []).map(c => c.toJSON()))
+            .filter(n => n.type === 10).map(n => n.content).join('\n');
+        out.push({ ok: textoPublicado.includes('Ven a nuestro RP'), msg: 'y publica el mensaje que escribió el solicitante' });
+        out.push({ ok: textoPublicado.includes('https://discord.gg/aliado'), msg: 'con el enlace de su servidor' });
+
+        // LO MÁS IMPORTANTE: el texto lo escribió otra persona. Sin esto, un
+        // @everyone metido en su mensaje haría que el bot mencionara al
+        // servidor entero justo al aceptar la alianza.
+        out.push({
+            ok: Array.isArray(publicado?.allowedMentions?.parse) && publicado.allowedMentions.parse.length === 0,
+            msg: 'el mensaje se publica SIN permitir menciones (un @everyone del solicitante no puede pingar al servidor)',
+        });
+
+        // El solicitante se entera, en público y dentro de su ticket.
+        const aviso = b.ticket.enviados[0];
+        const textoAviso = nodos((aviso?.components ?? []).map(c => c.toJSON()))
+            .filter(n => n.type === 10).map(n => n.content).join('\n');
+        out.push({ ok: b.ticket.enviados.length === 1, msg: 'y se avisa en el ticket' });
+        out.push({ ok: textoAviso.includes(`<@${SOLICITANTE}>`), msg: 'mencionando al solicitante' });
+        out.push({ ok: !('flags' in (aviso ?? {})) || (aviso.flags & 64) !== 64, msg: 'el aviso es público en el ticket, no efímero' });
+        out.push({ ok: /ACEPTADA/.test(textoAviso), msg: 'y le dice que su mensaje ya está publicado' });
+
+        // La tarjeta de revisión pierde el botón y conserva la captura.
+        const editado = tarjeta.editado;
+        const restantes = nodos(editado?.components ?? []).filter(n => n.type === 2);
+        out.push({ ok: restantes.length === 0, msg: 'la tarjeta de revisión se queda sin botón: no se publica dos veces' });
+        out.push({
+            ok: nodos(editado?.components ?? []).some(n => n.type === 12),
+            msg: 'y conserva la captura, que es la prueba que el staff querría volver a mirar',
+        });
+        out.push({
+            ok: nodos(editado?.components ?? []).some(n => n.type === 10 && /ALIANZA ACEPTADA/.test(n.content)),
+            msg: 'y pasa a decir ALIANZA ACEPTADA',
+        });
+
+        // ── Segunda vez: no se publica otra ──────────────────────────────────
+        const iOtra = clic(b.ticket, b.client, OWNER, 'ali_confirmar_aceptar', tarjetaDeRevisionFalsa());
+        await handleAlianzaButton(iOtra);
+        out.push({ ok: b.ally.enviados.length === 1, msg: 'aceptar dos veces seguidas no publica la alianza dos veces' });
+
+        // Y pasado el antispam tampoco: lo que lo impide de verdad es el
+        // `aceptadoEn` guardado, no el candado de 10 s. Se comprueba en un canal
+        // distinto —sin candado— con la alianza ya marcada como aceptada.
+        const d = nuevoEntorno('700000000000000004');
+        alianzas.set(d.ticket.id, {
+            userId: SOLICITANTE, mensaje: 'Ven a nuestro RP', link: 'https://discord.gg/aliado',
+            descripcion: 'rp', aceptadoEn: new Date().toISOString(),
+        });
+        for (const id of ['ali_aceptar', 'ali_confirmar_aceptar']) {
+            const iTarde = clic(d.ticket, d.client, OWNER, id);
+            await handleAlianzaButton(iTarde);
+            out.push({
+                ok: d.ally.enviados.length === 0,
+                msg: `una alianza ya aceptada no se vuelve a publicar con ${id}, aunque haya pasado el antispam`,
+            });
+            out.push({
+                ok: /ya (está|estaba)/i.test(iTarde.respuestas.map(r => r.content ?? '').join(' ')),
+                msg: `y ${id} lo dice en vez de quedarse callado`,
+            });
+        }
+        alianzas.borrar(d.ticket.id);
+
+        // ── Sin canal de aliados: no se da por publicado ─────────────────────
+        const c = nuevoEntorno('700000000000000003', { conCanalAlly: false });
+        alianzas.set(c.ticket.id, { userId: SOLICITANTE, mensaje: 'Hola', link: 'https://discord.gg/x', descripcion: 'y' });
+        const iSinCanal = clic(c.ticket, c.client, OWNER, 'ali_confirmar_aceptar');
+        await handleAlianzaButton(iSinCanal);
+        out.push({ ok: !alianzas.get(c.ticket.id).aceptadoEn, msg: 'si el canal de aliados no se puede abrir, la alianza NO queda marcada como aceptada' });
+        out.push({
+            ok: /no se pudo/i.test(iSinCanal.respuestas.map(r => r.content ?? '').join(' ')),
+            msg: 'y se dice, en vez de fingir que se publicó',
+        });
+
+        for (const id of ['700000000000000001', '700000000000000002', '700000000000000003']) alianzas.borrar(id);
     } finally {
         global.fetch = real;
     }

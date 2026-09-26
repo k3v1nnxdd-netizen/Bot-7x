@@ -1,12 +1,12 @@
 'use strict';
 
 const {
-    ActionRowBuilder, ButtonBuilder, ButtonStyle,
+    ActionRowBuilder, ButtonBuilder, ButtonStyle, MessageFlags,
     ModalBuilder, TextInputBuilder, TextInputStyle,
 } = require('discord.js');
 const { safeReply, safeEditReply, safeDeferReply, safeShowModal } = require('../utils/safe');
 const { isLocked, lock } = require('../utils/spam');
-const { puedeGestionarTicket } = require('../utils/permisos');
+const { puedeGestionarTicket, esAdminDeInteraccion } = require('../utils/permisos');
 const { fetchInvite } = require('../utils/discordInvite');
 const alianzas = require('../utils/alianzas');
 const tickets = require('../utils/tickets');
@@ -392,6 +392,7 @@ async function onCompletado(interaction) {
         mencion: config.ADMIN_IDS.map(id => `<@${id}>`).join(' '),
         texto: buildRevisionTexto(userId, datos, info),
         imagen: `attachment://${captura.nombre}`,
+        filas: [buildAceptarRow()],
     };
 
     // La captura se RESUBE, no se enlaza: las URLs de adjuntos de Discord van
@@ -444,14 +445,199 @@ function buildRevisionTexto(userId, datos, info) {
     ].join('\n');
 }
 
+// ── Paso 5: aceptar la alianza (solo owner) ──────────────────────────────────
+// El botón vive DENTRO de la tarjeta de revisión, que es un mensaje normal del
+// canal del ticket: lo ve el solicitante y lo ve el staff. Quien puede pulsarlo
+// es otra cosa, y de eso se encarga la comprobación de aquí abajo, no el hecho
+// de que el mensaje sea público.
+
+function buildAceptarRow() {
+    return new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+            .setCustomId('ali_aceptar')
+            .setLabel('Aceptar alianza')
+            .setStyle(ButtonStyle.Success)
+            .setEmoji(E.si),
+    );
+}
+
+function buildConfirmarRow() {
+    return new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+            .setCustomId('ali_confirmar_aceptar')
+            .setLabel('Sí, publicar')
+            .setStyle(ButtonStyle.Success)
+            .setEmoji('✅'),
+        new ButtonBuilder()
+            .setCustomId('ali_cancelar_aceptar')
+            .setLabel('Cancelar')
+            .setStyle(ButtonStyle.Secondary)
+            .setEmoji('❌'),
+    );
+}
+
+async function onAceptar(interaction) {
+    if (!esAdminDeInteraccion(interaction)) {
+        return safeReply(interaction, { content: '❌ Solo el owner puede aceptar una alianza.', ephemeral: true });
+    }
+
+    const datos = alianzas.get(interaction.channelId);
+    if (datos.aceptadoEn) {
+        return safeReply(interaction, { content: `${E.hecho} Esta alianza ya está aceptada y publicada.`, ephemeral: true });
+    }
+    if (!datos.mensaje) {
+        return safeReply(interaction, { content: '❌ Este ticket no tiene ningún mensaje que publicar.', ephemeral: true });
+    }
+
+    // Confirmación antes de publicar, igual que el cierre de ticket: publicar
+    // en un canal a la vista de todo el servidor no puede depender de un clic
+    // suelto, y el mensaje es de otra persona.
+    await safeReply(interaction, {
+        ...v2.tarjetaPayload({
+            color: ACCENT,
+            texto: [
+                `## ${E.alert} PUBLICAR ESTA ALIANZA`,
+                `Se va a publicar en <#${config.CHANNELS.ALIANZA}> el mensaje que escribió el solicitante:`,
+                '',
+                '>>> ' + datos.mensaje,
+            ].join('\n'),
+            filas: [buildConfirmarRow()],
+        }),
+        ephemeral: true,
+    });
+}
+
+async function onCancelarAceptar(interaction) {
+    if (!esAdminDeInteraccion(interaction)) {
+        return safeReply(interaction, { content: '❌ Solo el owner puede hacer esto.', ephemeral: true });
+    }
+    try { await interaction.message.delete(); } catch {}
+    await safeReply(interaction, { content: '✅ Publicación cancelada. La alianza sigue en revisión.', ephemeral: true });
+}
+
+// Lo que se publica en el canal de aliados: el mensaje que escribió el
+// solicitante, tal cual, y su enlace debajo.
+function buildAnuncioAliado(datos, info) {
+    return [
+        `## ${E.alianza} ${info.ok && info.nombre ? info.nombre : 'Servidor aliado'}`,
+        datos.mensaje,
+        '',
+        `${E.link} ${datos.link}`,
+    ].join('\n');
+}
+
+async function onConfirmarAceptar(interaction) {
+    if (!esAdminDeInteraccion(interaction)) {
+        return safeReply(interaction, { content: '❌ Solo el owner puede aceptar una alianza.', ephemeral: true });
+    }
+
+    const channelId = interaction.channelId;
+    const datos = alianzas.get(channelId);
+
+    if (datos.aceptadoEn) {
+        return safeReply(interaction, { content: `${E.hecho} Esta alianza ya estaba publicada.`, ephemeral: true });
+    }
+    if (!datos.mensaje) {
+        return safeReply(interaction, { content: '❌ Este ticket no tiene ningún mensaje que publicar.', ephemeral: true });
+    }
+
+    if (isLocked(`ali:aceptar:${channelId}`)) {
+        return safeReply(interaction, { content: '⏳ Ya se está publicando.', ephemeral: true });
+    }
+    lock(`ali:aceptar:${channelId}`, 10_000);
+
+    if (!await safeDeferReply(interaction, { ephemeral: true })) return;
+
+    const canal = interaction.client.channels.cache.get(config.CHANNELS.ALIANZA)
+        ?? await interaction.client.channels.fetch(config.CHANNELS.ALIANZA).catch(() => null);
+
+    if (!canal) {
+        return safeEditReply(interaction, { content: `❌ No se pudo abrir <#${config.CHANNELS.ALIANZA}>. No se ha publicado nada.` });
+    }
+
+    const info = await fetchInvite(datos.link);
+
+    let publicado;
+    try {
+        publicado = await canal.send({
+            ...v2.tarjetaPayload({ color: ACCENT, texto: buildAnuncioAliado(datos, info) }),
+            // El texto lo escribió otra persona. Sin esto, un `@everyone` metido
+            // en su mensaje de alianza haría que el bot mencionara al servidor
+            // entero en el momento de aceptarla.
+            allowedMentions: { parse: [] },
+        });
+    } catch (err) {
+        console.error('[alianza] No se pudo publicar en el canal de aliados:', err);
+        return safeEditReply(interaction, { content: `❌ No se pudo publicar: ${err.message}. La alianza sigue en revisión.` });
+    }
+
+    alianzas.set(channelId, { aceptadoEn: new Date().toISOString(), publicadoId: publicado.id, aceptadoPor: interaction.user.id });
+
+    // La tarjeta de revisión pierde el botón: sin esto, un segundo clic del
+    // owner publicaría la misma alianza otra vez.
+    await marcarAceptada(interaction, interaction.user.id);
+
+    // El aviso al solicitante va PÚBLICO en el ticket, no en efímero: es para
+    // él, y tiene que quedar escrito en el canal.
+    const ownerId = datos.userId ?? tickets.getOwner(interaction.channel);
+    await interaction.channel.send(v2.tarjetaPayload({
+        color: ACCENT,
+        mencion: ownerId ? `<@${ownerId}>` : null,
+        texto: [
+            `## ${E.si} ALIANZA ACEPTADA`,
+            `Tu mensaje ya está publicado en <#${config.CHANNELS.ALIANZA}>.`,
+            `${E.point} [Ver tu mensaje](${publicado.url})`,
+            '',
+            'Gracias por aliarte con **7x Community**.',
+        ].join('\n'),
+    })).catch(err => console.warn('[alianza] No se pudo avisar en el ticket:', err.message));
+
+    await safeEditReply(interaction, { content: `${E.hecho} Publicado en <#${config.CHANNELS.ALIANZA}>.` });
+}
+
+// Marca la tarjeta de revisión como aceptada y le quita el botón, para que un
+// segundo clic no pueda publicar la misma alianza otra vez.
+//
+// Se RETOCA el contenedor que ya hay en vez de construir uno nuevo: la captura
+// vive ahí dentro como adjunto del mensaje, y rehacer la tarjeta desde el texto
+// la perdería — que es justo la prueba que el staff querría volver a mirar.
+async function marcarAceptada(interaction, aceptadoPor) {
+    try {
+        const tarjeta = interaction.message;
+        const contenedor = (tarjeta.components ?? [])
+            .map(c => (typeof c.toJSON === 'function' ? c.toJSON() : c))[0];
+        if (!contenedor) return;
+
+        contenedor.components = (contenedor.components ?? [])
+            .filter(n => n.type !== 1)   // fuera la fila de botones
+            .map(n => (n.type === 10
+                ? { ...n, content: n.content.replace('SOLICITUD DE ALIANZA — EN REVISIÓN', 'ALIANZA ACEPTADA') }
+                : n));
+
+        contenedor.components.push({ type: 10, content: `-# ${E.hecho} Aceptada por <@${aceptadoPor}>.` });
+
+        await tarjeta.edit({ flags: MessageFlags.IsComponentsV2, components: [contenedor] });
+    } catch (err) {
+        console.warn('[alianza] No se pudo marcar la tarjeta como aceptada:', err.message);
+    }
+}
+
 // ── Enrutado ─────────────────────────────────────────────────────────────────
 // Un solo punto de entrada para todo lo que empieza por `ali_`, igual que el
 // flujo de seguidores: handlers/buttons.js no tiene que saber qué campos hay.
 
+const ACCIONES = {
+    ali_completado:        onCompletado,
+    ali_aceptar:           onAceptar,
+    ali_confirmar_aceptar: onConfirmarAceptar,
+    ali_cancelar_aceptar:  onCancelarAceptar,
+};
+
 async function handleAlianzaButton(interaction) {
     const id = interaction.customId;
 
-    if (id === 'ali_completado') return onCompletado(interaction);
+    const accion = ACCIONES[id];
+    if (accion) return accion(interaction);
 
     const campo = id.replace('ali_', '');
     if (alianzas.CAMPOS.includes(campo)) return onCampo(interaction, campo);
@@ -463,6 +649,7 @@ module.exports = {
     handleAlianzaModal,
     __test: {
         buildTexto, buildFilas, buildPanel, buildCampoModal, buildRevisionTexto,
-        textoLink, buscarCaptura, PRESENTACION, E, ACCENT, MIN_MIEMBROS,
+        textoLink, buscarCaptura, buildAceptarRow, buildConfirmarRow, buildAnuncioAliado,
+        marcarAceptada, PRESENTACION, E, ACCENT, MIN_MIEMBROS,
     },
 };

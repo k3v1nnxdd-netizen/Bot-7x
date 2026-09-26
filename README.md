@@ -711,6 +711,44 @@ igual con el enlace en el texto — lo que no puede pasar es que no salga nada.
 Pulsarlo dos veces no manda dos solicitudes: queda `enviadoEn` en el fichero y el
 segundo clic responde que ya esta en revision.
 
+### Aceptar la alianza (solo owner)
+
+La tarjeta de revision es un mensaje **normal del canal del ticket** —la ve el
+solicitante y la ve el staff— y lleva dentro un boton **Aceptar alianza**. Que
+sea publica y quien puede pulsarla son dos cosas distintas: lo segundo lo decide
+`utils/permisos.js`, no donde esta el boton.
+
+El flujo tiene dos pasos a proposito, igual que el cierre de ticket:
+
+1. **Aceptar alianza** → una confirmacion efimera que enseña el mensaje exacto
+   que se va a publicar, con **Si, publicar** y **Cancelar**. Publicar en un
+   canal a la vista de todo el servidor no puede depender de un clic suelto, y
+   ademas el texto es de otra persona.
+2. **Si, publicar** → el bot publica en `CHANNELS.ALIANZA` el mensaje que
+   escribio el solicitante junto al enlace de su servidor.
+
+Los **dos** pasos comprueban que quien pulsa es owner. El segundo no se fia de
+que su boton solo exista en un mensaje efimero: el customId viaja por Discord, y
+eso seria fiar el permiso de donde esta el boton en vez de quien lo pulsa.
+
+**Se publica sin permitir menciones** (`allowedMentions: { parse: [] }`). El
+texto lo escribio alguien de fuera: sin eso, un `@everyone` metido en su mensaje
+de alianza haria que el bot mencionara al servidor entero justo al aceptarla.
+
+Publicado, pasan tres cosas:
+
+- El solicitante recibe el aviso **en publico dentro de su ticket**, mencionado y
+  con enlace directo a su mensaje ya publicado.
+- La tarjeta de revision pasa a decir **ALIANZA ACEPTADA** y **pierde el boton**,
+  asi que un segundo clic no puede publicar lo mismo otra vez. Se retoca el
+  contenedor que ya hay en lugar de rehacerlo: la captura vive ahi dentro como
+  adjunto, y reconstruir la tarjeta desde el texto la perderia.
+- Queda `aceptadoEn` en el fichero. Eso es lo que impide republicar de verdad —
+  el antispam de 10 s solo tapa el doble clic.
+
+Si el canal de aliados no se puede abrir, **no se marca como aceptada** y se
+dice: lo contrario dejaria una alianza dada por publicada que no existe.
+
 ## Quien puede hacer cosas de owner
 
 `config.OWNER_ID` es el dueno: la persona concreta, la que sale nombrada en los

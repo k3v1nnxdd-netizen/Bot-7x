@@ -667,7 +667,23 @@ de la que comprueba el bot.
 4. Pulsar **Completado**.
 
 Cada campo rellenado cambia su marca del panel de pendiente a hecho y su boton
-de azul a gris, asi que se ve de un vistazo lo que queda. Lo rellenado vive en
+de azul a gris, asi que se ve de un vistazo lo que queda.
+
+**El enlace y la descripcion se rellenan una sola vez.** Puesto uno, su boton
+queda deshabilitado. Lo marca `unaVez` en la tabla `PRESENTACION`, y la regla
+vive en **una** funcion (`bloqueado`) que usan las tres puertas por las que se
+podria colar un cambio: el boton (para apagarse), el clic (para no abrir el
+formulario) y el envio del formulario (para no pisar lo guardado). Hace falta la
+tercera: un modal abierto ANTES de que se guardara el valor puede llegar
+despues, y sin comprobarlo ahi pisaria el bueno.
+
+El **mensaje de alianza** no se bloquea, y es a proposito: es el que se acaba
+publicando, asi que se puede seguir puliendo hasta que el owner lo acepte.
+
+El panel avisa de cuales son de una sola vez **antes** de rellenarlos, y los
+nombra desde la propia regla — avisar de unos y bloquear otros seria peor que no
+avisar. Si aun asi se equivocan, el aviso al reintentar les ensena lo que tienen
+puesto y les dice que lo escriban en el ticket para que lo corrija el staff. Lo rellenado vive en
 `DATA_DIR/alianzas.json` con el id del canal como clave —no en memoria— porque
 el bot se reinicia en cada despliegue y estos tickets duran dias: perder lo
 escrito obligaria a rellenarlo todo otra vez sin que nadie avise de por que. Se

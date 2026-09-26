@@ -250,6 +250,9 @@ module.exports = async function run() {
     // ── 11. Aceptar la alianza (solo owner) ──────────────────────────────────
     for (const escenario of await simularAceptacion()) assert(escenario.ok, escenario.msg);
 
+    // ── 12. Los campos que se rellenan una sola vez ──────────────────────────
+    for (const escenario of await simularBloqueo()) assert(escenario.ok, escenario.msg);
+
     if (fs.existsSync(ESTADO_FILE)) fs.unlinkSync(ESTADO_FILE);
     return finish();
 };
@@ -625,6 +628,130 @@ async function simularAceptacion() {
     } finally {
         global.fetch = real;
     }
+
+    return out;
+}
+
+// ── Los campos de una sola vez ───────────────────────────────────────────────
+// El enlace y la descripción se rellenan UNA vez. Lo protegido aquí son las
+// tres puertas por las que se podría colar un cambio: el botón (deshabilitado),
+// el clic (no abre el modal) y el envío del modal (no pisa lo guardado). Las
+// tres tienen que decir lo mismo, y salir de la misma regla.
+
+async function simularBloqueo() {
+    const { __test: flujo, handleAlianzaButton, handleAlianzaModal } = require('../../handlers/alianzaFlow');
+    const USER = config.OWNER_ID;
+    const out = [];
+
+    const deUnaVez = alianzas.CAMPOS.filter(c => flujo.PRESENTACION[c]?.unaVez);
+    const libres   = alianzas.CAMPOS.filter(c => !flujo.PRESENTACION[c]?.unaVez);
+
+    // Qué campos se bloquean se fija aquí a mano, y no derivado de
+    // PRESENTACION: derivarlo haría que el test siguiera a la regla en vez de
+    // sujetarla, y bloquear un campo de más pasaría sin que nada chistara.
+    out.push({ ok: deUnaVez.includes('link'), msg: 'el link del servidor se rellena una sola vez' });
+    out.push({ ok: deUnaVez.includes('descripcion'), msg: 'y de qué trata su servidor, también' });
+    out.push({ ok: deUnaVez.length === 2, msg: `y sólo esos dos (son ${deUnaVez.join(', ') || 'ninguno'})` });
+    out.push({
+        ok: libres.length === 1 && libres[0] === 'mensaje',
+        msg: 'el mensaje de alianza NO se bloquea: es el que se publica, y se pule hasta que el owner lo acepte',
+    });
+
+    // El aviso del panel nombra exactamente los campos que la regla bloquea:
+    // avisar de unos y bloquear otros es peor que no avisar.
+    const aviso = flujo.camposDeUnaVez();
+    const lineaAviso = flujo.buildTexto({}).split('\n').find(l => /una sola vez/.test(l)) ?? '';
+    out.push({ ok: Boolean(lineaAviso), msg: 'el panel avisa de que hay campos de una sola vez' });
+    out.push({ ok: lineaAviso.includes(aviso), msg: 'y los nombra desde la propia regla, no escritos a mano' });
+
+    for (const campo of deUnaVez) {
+        const titulo = flujo.PRESENTACION[campo].titulo;
+        out.push({ ok: aviso.includes(titulo), msg: `el aviso nombra "${titulo}"` });
+        out.push({ ok: lineaAviso.includes(titulo), msg: `y el panel lo dice: "${titulo}" es de una sola vez` });
+    }
+    for (const campo of libres) {
+        const titulo = flujo.PRESENTACION[campo].titulo;
+        out.push({ ok: !aviso.includes(titulo), msg: `y no nombra "${titulo}", que sí se puede cambiar` });
+        out.push({ ok: !lineaAviso.includes(titulo), msg: `ni el panel lo anuncia como bloqueado` });
+    }
+
+    // ── Puerta 1: el botón ───────────────────────────────────────────────────
+    const vacio = flujo.buildFilas({})[0].toJSON().components;
+    out.push({ ok: vacio.every(b => !b.disabled), msg: 'con el ticket vacío, los tres botones están activos' });
+
+    for (const campo of deUnaVez) {
+        const fila = flujo.buildFilas({ [campo]: 'ya puesto' })[0].toJSON().components;
+        const boton = fila.find(b => b.custom_id === `ali_${campo}`);
+        out.push({ ok: boton?.disabled === true, msg: `una vez puesto, el botón de "${campo}" queda deshabilitado` });
+
+        const otros = fila.filter(b => b.custom_id !== `ali_${campo}`);
+        out.push({ ok: otros.every(b => !b.disabled), msg: `y no arrastra a los demás botones` });
+    }
+    for (const campo of libres) {
+        const fila = flujo.buildFilas({ [campo]: 'ya puesto' })[0].toJSON().components;
+        const boton = fila.find(b => b.custom_id === `ali_${campo}`);
+        out.push({ ok: boton?.disabled !== true, msg: `"${campo}" se puede seguir cambiando hasta que se acepte` });
+    }
+
+    // ── Puertas 2 y 3: el clic y el envío del modal ──────────────────────────
+    let n = 0;
+    for (const campo of deUnaVez) {
+        const ch = `800000000000000${++n}`.slice(0, 19);
+        const canal = canalFalso(USER, { id: ch });
+        alianzas.set(ch, { userId: USER, [campo]: 'VALOR ORIGINAL' });
+
+        // Puerta 2: pulsar el botón (desde un panel viejo, sin repintar) no
+        // abre el modal.
+        const iClic = interaccionFalsa(canal, USER, { customId: `ali_${campo}` });
+        let abrioModal = false;
+        iClic.showModal = async () => { abrioModal = true; };
+        await handleAlianzaButton(iClic);
+        out.push({ ok: !abrioModal, msg: `pulsar "${campo}" ya relleno no abre el formulario` });
+        out.push({
+            ok: /no se puede cambiar/i.test(iClic.respuestas.map(r => r.content ?? '').join(' ')),
+            msg: `y se dice claramente, en vez de no hacer nada`,
+        });
+        out.push({
+            ok: iClic.respuestas.some(r => (r.content ?? '').includes('VALOR ORIGINAL')),
+            msg: `y se le enseña lo que tiene puesto, por si se equivocó`,
+        });
+
+        // Puerta 3: un modal que ya estuviera abierto tampoco pisa el valor.
+        const iModal = interaccionFalsa(canal, USER, {
+            customId: `ali_modal_${campo}`,
+            fields: { getTextInputValue: () => 'VALOR NUEVO' },
+        });
+        await handleAlianzaModal(iModal);
+        out.push({
+            ok: alianzas.get(ch)[campo] === 'VALOR ORIGINAL',
+            msg: `un modal de "${campo}" enviado a destiempo no pisa lo guardado`,
+        });
+
+        alianzas.borrar(ch);
+    }
+
+    // El campo libre sí se puede cambiar por modal.
+    for (const campo of libres) {
+        const ch = `800000000000000${++n}`.slice(0, 19);
+        const canal = canalFalso(USER, { id: ch });
+        alianzas.set(ch, { userId: USER, [campo]: 'VALOR ORIGINAL' });
+        const iModal = interaccionFalsa(canal, USER, {
+            customId: `ali_modal_${campo}`,
+            fields: { getTextInputValue: () => 'VALOR NUEVO' },
+        });
+        await handleAlianzaModal(iModal);
+        out.push({ ok: alianzas.get(ch)[campo] === 'VALOR NUEVO', msg: `"${campo}" sí se puede corregir` });
+        alianzas.borrar(ch);
+    }
+
+    // El aviso corta los valores largos: un texto de 1.000 caracteres no puede
+    // reventar el límite de 2.000 de un mensaje de Discord.
+    const chLargo = '800000000000000099'.slice(0, 19);
+    alianzas.set(chLargo, { descripcion: 'x'.repeat(900) });
+    const largo = flujo.textoBloqueado('descripcion', chLargo);
+    out.push({ ok: largo.length < 2000, msg: `el aviso cabe en un mensaje de Discord (${largo.length}/2000)` });
+    out.push({ ok: largo.includes('…'), msg: 'y recorta lo que no cabe en vez de mandarlo entero' });
+    alianzas.borrar(chLargo);
 
     return out;
 }

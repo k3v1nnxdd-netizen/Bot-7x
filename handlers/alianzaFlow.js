@@ -49,6 +49,12 @@ const fmt = n => n.toLocaleString('es-MX');
 // Cómo se presenta cada campo de utils/alianzas.js. Las claves son LAS MISMAS
 // que CAMPOS, y un test lo comprueba: si alguien añade un campo al almacén y se
 // olvida de aquí, el panel se quedaría sin su botón en silencio.
+//
+// `unaVez` = se rellena UNA sola vez y ya no se puede cambiar. El botón se
+// queda deshabilitado y, por si el clic llega igual (un modal abierto antes de
+// que se guardara, un customId repetido), la regla se vuelve a comprobar al
+// guardar. Va por campo y no para todos: el mensaje de alianza es el que se va
+// a publicar y se puede seguir puliendo hasta que el owner lo acepte.
 const PRESENTACION = {
     mensaje: {
         label:  'Agregar mensaje de alianza',
@@ -67,6 +73,7 @@ const PRESENTACION = {
         placeholder: 'https://discord.gg/tuservidor',
         estilo: TextInputStyle.Short,
         max: 200,
+        unaVez: true,
     },
     descripcion: {
         label:  'De qué trata tu servidor',
@@ -76,8 +83,28 @@ const PRESENTACION = {
         placeholder: 'Temática, a qué se dedica la comunidad y qué hacéis dentro.',
         estilo: TextInputStyle.Paragraph,
         max: 500,
+        unaVez: true,
     },
 };
+
+// La regla de "esto ya no se toca", en UN solo sitio: la usan el botón (para
+// deshabilitarlo), el clic (para no abrir el modal) y el guardado (para no
+// pisar lo que ya hay). En tres sitios distintos acabaría diciendo tres cosas.
+function bloqueado(campo, datos) {
+    return Boolean(PRESENTACION[campo]?.unaVez && datos[campo]);
+}
+
+// "El link del servidor y de qué trata tu servidor", sacado de PRESENTACION:
+// el aviso del panel no puede nombrar unos campos y la regla aplicarse a otros.
+function camposDeUnaVez() {
+    const titulos = alianzas.CAMPOS
+        .filter(campo => PRESENTACION[campo]?.unaVez)
+        .map(campo => `**${PRESENTACION[campo].titulo}**`);
+
+    if (!titulos.length) return 'Ningún campo';
+    if (titulos.length === 1) return titulos[0];
+    return `${titulos.slice(0, -1).join(', ')} y ${titulos.at(-1)}`;
+}
 
 // ── Texto del panel del ticket ────────────────────────────────────────────────
 
@@ -118,7 +145,11 @@ function buildTexto(datos) {
             return `${hecho ? E.hecho : E.pendiente} ${p.emoji} **${p.titulo}** — ${hecho ? 'listo' : 'pendiente'}`;
         }),
         '',
-        `-# ${E.alert} La captura del paso 2 se comprueba al pulsar Completado. ` +
+        // Se avisa ANTES de que lo rellenen, no después: el botón deshabilitado
+        // explica que ya no se puede, pero para entonces ya es tarde.
+        `-# ${E.alert} ${camposDeUnaVez()} se rellenan **una sola vez**: ` +
+        'compruébalo antes de enviarlo.',
+        `-# La captura del paso 2 se comprueba al pulsar Completado. ` +
         'Puedes cerrar el ticket cuando quieras con el botón de abajo.',
     ].join('\n');
 }
@@ -135,7 +166,8 @@ function buildFilas(datos) {
                 .setCustomId(`ali_${campo}`)
                 .setLabel(p.label)
                 .setStyle(datos[campo] ? ButtonStyle.Secondary : ButtonStyle.Primary)
-                .setEmoji(p.emoji);
+                .setEmoji(p.emoji)
+                .setDisabled(bloqueado(campo, datos));
         })
     );
 
@@ -266,6 +298,10 @@ async function onCampo(interaction, campo) {
         return safeReply(interaction, { content: '❌ Solo quien abrió el ticket puede rellenarlo.', ephemeral: true });
     }
 
+    if (bloqueado(campo, alianzas.get(interaction.channelId))) {
+        return safeReply(interaction, { content: textoBloqueado(campo, interaction.channelId), ephemeral: true });
+    }
+
     const ok = await safeShowModal(interaction, buildCampoModal(campo));
     if (!ok) await safeReply(interaction, { content: '❌ No se pudo abrir el formulario. Intenta de nuevo.', ephemeral: true });
 }
@@ -275,6 +311,13 @@ async function onCampo(interaction, campo) {
 async function handleAlianzaModal(interaction) {
     const campo = interaction.customId.replace('ali_modal_', '');
     if (!alianzas.CAMPOS.includes(campo)) return;
+
+    // Se vuelve a comprobar aquí, y no sólo al pulsar: el botón deshabilitado
+    // evita el clic, pero un modal que ya estuviera abierto puede llegar
+    // después. Sin esto, ese envío pisaría el valor bueno.
+    if (bloqueado(campo, alianzas.get(interaction.channelId))) {
+        return safeReply(interaction, { content: textoBloqueado(campo, interaction.channelId), ephemeral: true });
+    }
 
     const valor = interaction.fields.getTextInputValue('valor');
     if (!alianzas.setCampo(interaction.channelId, campo, valor)) {
@@ -298,6 +341,24 @@ async function handleAlianzaModal(interaction) {
             : `${E.hecho} Guardado. Ya lo tienes todo — pulsa **Completado** cuando hayas enviado la captura.`,
         ephemeral: true,
     });
+}
+
+// Qué se le contesta a quien intenta cambiar algo que ya no se cambia. Enseña
+// lo que hay guardado: si se equivocó, al menos sabe en qué, y puede decirlo
+// aquí mismo para que lo arregle el staff.
+function textoBloqueado(campo, channelId) {
+    const p = PRESENTACION[campo];
+    const valor = alianzas.get(channelId)[campo] ?? '';
+    const recorte = valor.length > 300 ? `${valor.slice(0, 300)}…` : valor;
+
+    // El aviso va ANTES de la cita: `>>>` se come todo lo que venga detrás, y
+    // la nota acabaría dentro del recuadro.
+    return [
+        `${E.alert} **${p.titulo}** ya está puesto y no se puede cambiar.`,
+        '-# ¿Te equivocaste? Escríbelo aquí en el ticket y el staff lo corrige.',
+        '',
+        '>>> ' + recorte,
+    ].join('\n');
 }
 
 function textoLink(info) {
@@ -649,7 +710,7 @@ module.exports = {
     handleAlianzaModal,
     __test: {
         buildTexto, buildFilas, buildPanel, buildCampoModal, buildRevisionTexto,
-        textoLink, buscarCaptura, buildAceptarRow, buildConfirmarRow, buildAnuncioAliado,
+        textoLink, textoBloqueado, bloqueado, camposDeUnaVez, buscarCaptura, buildAceptarRow, buildConfirmarRow, buildAnuncioAliado,
         marcarAceptada, PRESENTACION, E, ACCENT, MIN_MIEMBROS,
     },
 };

@@ -11,10 +11,11 @@
 //   2. LAS DOS VERSIONES DICEN LO MISMO. Hay dos textos a propósito (ver 3), y
 //      lo fácil es tocar uno y dejar el otro anunciando otra cosa. Los dos
 //      salen de VENTAJAS, y esto lo comprueba.
-//   3. LA VERSIÓN PORTABLE NO LLEVA EMOJIS DEL SERVIDOR NI ENLACES OCULTOS. Es
-//      la razón de que exista: pegados por una PERSONA, Discord imprime los dos
-//      en crudo. "Simplificar" esto a un solo texto rompe justo lo que el botón
-//      promete, y en silencio: aquí se ve bien, y mal en el servidor ajeno.
+//   3. LA VERSIÓN A REENVIAR NO LLEVA ENLACES OCULTOS. Es la única diferencia
+//      real con el panel: `[texto](url)` sólo lo renderiza Discord en mensajes
+//      de bot o webhook, y pegado por una persona se imprime con los corchetes
+//      a la vista. Devolverle el enlace oculto rompe el anuncio en silencio —
+//      aquí se vería bien, y mal en el servidor ajeno.
 //   4. EL BOTÓN VA DENTRO DEL BLOQUE Y DEBAJO DEL GIF. Es lo que se pidió, y es
 //      lo único que se pierde al volver a un embed clásico.
 //   5. EL MENSAJE NO LLEVA content NI embeds. Un mensaje con el flag de
@@ -98,30 +99,32 @@ module.exports = async function run() {
         assert(texto.includes(parte) && portable.includes(parte), `las dos versiones comparten: ${parte.slice(0, 40)}…`);
     }
 
-    // ── 4. La versión portable es realmente portable ──────────────────────────
-    // Los emojis del servidor sólo se ven para quien tenga Nitro Y esté en el
-    // servidor de origen: en un mensaje pegado por una persona, para el resto
-    // quedan como `<:sale:1501…>` en crudo.
-    assert(!/<a?:\w+:\d+>/.test(portable), 'la versión portable no lleva emojis del servidor (se verían en crudo fuera)');
-    assert(/<a?:\w+:\d+>/.test(texto), 'el panel sí los lleva: ahí los publica el bot y se ven');
+    // ── 4. La versión a reenviar ─────────────────────────────────────────────
+    // Los emojis de 7x van en las DOS: Discord los pinta por id para cualquiera
+    // que LEA el mensaje. Lo que pide Nitro es escribirlos fuera del servidor,
+    // y eso ya es cosa de quien lo pegue.
+    for (const v of anuncio.VENTAJAS) {
+        assert(portable.includes(v.emoji), `el texto a reenviar lleva el emoji de 7x de "${v.texto.slice(0, 24)}…"`);
+    }
 
     // Los enlaces enmascarados son cosa de bots y webhooks. Pegado por una
-    // persona, `[texto](url)` se imprime con los corchetes a la vista.
-    assert(!/\[[^\]]+\]\(https?:/.test(portable), 'la versión portable no lleva enlaces ocultos (una persona no puede)');
+    // persona, `[texto](url)` se imprime con los corchetes a la vista, y no hay
+    // Nitro que lo arregle: ésta es la única diferencia real con el panel.
+    assert(!/\[[^\]]+\]\(https?:/.test(portable), 'el texto a reenviar no lleva enlaces ocultos (una persona no puede)');
+    assert(/\[[^\]]+\]\(https?:/.test(texto), 'el panel sí: ahí lo publica el bot y se ve');
     assert(portable.includes(config.INVITE_URL), 'lleva la invitación a la vista, que es lo que sí funciona');
 
-    // Que no arrastre la explicación: el aviso va en OTRO mensaje para que el
-    // "Copiar texto" de Discord entregue el anuncio y nada más.
-    assert(!portable.includes(anuncio.AVISO_COPIAR), 'el texto a reenviar no incluye el aviso de cómo usarlo');
-
-    // Los emojis Unicode sustituyen a los del servidor uno a uno.
-    for (const v of anuncio.VENTAJAS) {
-        assert(Boolean(v.unicode) && !/<a?:/.test(v.unicode), `"${v.texto.slice(0, 24)}…" tiene su emoji Unicode de repuesto`);
-    }
+    // El GIF viaja como URL, y sólo si se le pasa una: es la del mensaje del
+    // panel, que va firmada y caduca, así que no puede estar escrita en el
+    // código ni inventarse cuando no la hay.
+    const conGif = anuncio.buildPortable('https://cdn.discordapp.com/attachments/1/2/7xwidebanner.gif?ex=abc');
+    assert(conGif.includes('?ex=abc'), 'si hay URL del GIF, va en el texto para que Discord lo pinte al pegarlo');
+    assert(conGif.endsWith('?ex=abc'), 'y va al final, después de la invitación');
+    assert(!/cdn\.discordapp/.test(portable), 'sin URL, el texto sale sin GIF en vez de con una caducada a mano');
 
     // ── 5. El bloque: color, GIF dentro y botón debajo del GIF ───────────────
     assert(json.type === 17, 'el anuncio es un Container (Components V2), no un embed');
-    assert(json.accent_color === anuncio.ACCENT, 'conserva el morado de 7x');
+    assert(json.accent_color === 0x2B2D31, 'la barra es gris, la misma del resto de paneles del bot');
 
     const iGaleria = planos.findIndex(n => n.type === 12);
     const iBoton   = planos.findIndex(n => n.type === 2 && n.custom_id === 'anuncio_copiar');
@@ -186,48 +189,51 @@ module.exports = async function run() {
 
 async function simularBoton() {
     const anuncio = require('../../anuncio').__test;
-    const llamadas = [];
-    const interaction = {
-        replied: false,
-        deferred: false,
-        deferReply: async opciones => { interaction.deferred = true; llamadas.push({ tipo: 'defer', opciones }); },
-        editReply: async opciones => { llamadas.push({ tipo: 'edit', opciones }); },
-        followUp: async opciones => { llamadas.push({ tipo: 'followUp', opciones }); },
-        reply: async opciones => { interaction.replied = true; llamadas.push({ tipo: 'reply', opciones }); },
-    };
-
-    await require('../../anuncio').handleCopiarAnuncio(interaction);
-
+    const { handleCopiarAnuncio } = require('../../anuncio');
     const out = [];
     const EFIMERO = 64;
 
-    // Subir 9 MB no cabe en los 3 segundos que da Discord antes de invalidar el
-    // token: sin diferir, la respuesta se pierde con "Unknown interaction".
-    out.push({ ok: llamadas[0]?.tipo === 'defer', msg: 'el botón difiere antes de subir el GIF (9 MB no caben en 3 s)' });
-    // El efímero se decide al diferir y al hacer followUp; el editReply de en
-    // medio hereda el del defer y no vuelve a pedirlo.
+    // El clic llega con el mensaje del panel dentro, y ahí van los adjuntos con
+    // la URL recién firmada. De ahí sale la del GIF.
+    const URL_GIF = 'https://cdn.discordapp.com/attachments/155/999/7xwidebanner-ab12cd34.gif?ex=68f&is=68e&hm=deadbeef';
+    const clic = adjuntos => {
+        const llamadas = [];
+        const interaction = {
+            replied: false,
+            deferred: false,
+            message: { attachments: { first: () => adjuntos } },
+            reply: async opciones => { interaction.replied = true; llamadas.push(opciones); },
+            editReply: async opciones => { llamadas.push(opciones); },
+        };
+        return { interaction, llamadas };
+    };
+
+    const a = clic({ url: URL_GIF });
+    await handleCopiarAnuncio(a.interaction);
+
+    out.push({ ok: a.llamadas.length === 1, msg: `el botón entrega UN solo mensaje (fueron ${a.llamadas.length})` });
+    out.push({ ok: (a.llamadas[0]?.flags & EFIMERO) === EFIMERO, msg: 'y es efímero: no vuelve a llenar el canal' });
+    out.push({ ok: !a.llamadas[0]?.files, msg: 'sin adjuntos: el GIF viaja como enlace, no como 9 MB por clic' });
     out.push({
-        ok: llamadas
-            .filter(l => l.tipo === 'defer' || l.tipo === 'followUp')
-            .every(l => (l.opciones?.flags & EFIMERO) === EFIMERO),
-        msg: 'todo lo que entrega es efímero: no vuelve a llenar el canal',
+        ok: a.llamadas[0]?.content === anuncio.buildPortable(URL_GIF),
+        msg: 'el mensaje es EXACTAMENTE el anuncio a reenviar, con el enlace del GIF',
     });
+    out.push({ ok: a.llamadas[0]?.content?.includes(URL_GIF), msg: 'y la URL del GIF sale del mensaje del panel, no escrita a mano' });
 
-    const primero = llamadas.find(l => l.tipo === 'edit');
-    out.push({ ok: primero?.opciones?.content === anuncio.buildPortable(), msg: 'el primer mensaje es EXACTAMENTE el anuncio a reenviar' });
-    out.push({ ok: !primero?.opciones?.files, msg: 'y sin adjuntos, para que "Copiar texto" entregue sólo el texto' });
-
-    const segundo = llamadas.find(l => l.tipo === 'followUp');
-    out.push({ ok: segundo?.opciones?.content === anuncio.AVISO_COPIAR, msg: 'el segundo lleva el aviso de cómo usarlo' });
+    // Panel sin adjunto (el GIF no estaba al publicarlo): el anuncio sale igual,
+    // sin GIF, en vez de con un "undefined" pegado al final.
+    const b = clic(undefined);
+    await handleCopiarAnuncio(b.interaction);
     out.push({
-        ok: !anuncio.BANNER.exists || Boolean(segundo?.opciones?.files?.length),
-        msg: 'y el GIF adjunto, no una URL de la CDN que caduca',
+        ok: b.llamadas[0]?.content === anuncio.buildPortable(),
+        msg: 'sin adjunto en el panel, el anuncio sale sin GIF y sin romperse',
     });
+    out.push({ ok: !/undefined|null/.test(b.llamadas[0]?.content ?? ''), msg: 'y sin un undefined pegado al final' });
 
-    // Interacción ya caducada: ni un throw, y no se intenta responder igual.
-    const muerta = { replied: true, deferred: false, deferReply: async () => { throw new Error('no debería'); } };
+    // Interacción ya caducada: ni un throw.
     let exploto = false;
-    try { await require('../../anuncio').handleCopiarAnuncio(muerta); } catch { exploto = true; }
+    try { await handleCopiarAnuncio({ replied: true, reply: async () => { throw new Error('no debería'); } }); }
+    catch { exploto = true; }
     out.push({ ok: !exploto, msg: 'una interacción ya respondida no revienta el handler' });
 
     return out;

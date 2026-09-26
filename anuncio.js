@@ -4,7 +4,7 @@ const { ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
 const config = require('./config');
 const precios = require('./data/prices');
 const v2 = require('./utils/panelV2');
-const { safeDeferReply, safeEditReply, safeFollowUp } = require('./utils/safe');
+const { safeReply } = require('./utils/safe');
 
 // ── Anuncio del servidor ──────────────────────────────────────────────────────
 // El escaparate: qué vende 7x y por cuánto. Se publica y se fija solo al
@@ -14,7 +14,7 @@ const { safeDeferReply, safeEditReply, safeFollowUp } = require('./utils/safe');
 // El botón "Copiar" entrega el mismo anuncio listo para pegar en OTROS
 // servidores, y por eso existen dos versiones del texto (ver buildPortable).
 
-const ACCENT = 0xA855F7; // morado, el color de 7x
+const ACCENT = 0x2B2D31; // gris, el mismo del resto de paneles del bot
 
 const BANNER = v2.pickBanner(['./7xwidebanner.gif'], '7xwidebanner.gif');
 
@@ -39,19 +39,18 @@ const E = {
 };
 
 // Las ventajas, en un solo sitio: de aquí salen LAS DOS versiones del anuncio,
-// la del panel y la portable, así que no pueden acabar diciendo cosas distintas.
-// Cada una lleva su emoji del servidor y su equivalente Unicode, por lo mismo.
+// la del panel y la que entrega el botón, así que no pueden acabar diciendo
+// cosas distintas.
 const VENTAJAS = [
     PRECIO_REF && {
-        emoji:   E.precio,
-        unicode: '🏷️',
-        texto:   `**${REF_ROBUX.toLocaleString('en-US')} Robux por ${PRECIO_REF} MXN** · aún más baratos por volumen`,
+        emoji: E.precio,
+        texto: `**${REF_ROBUX.toLocaleString('en-US')} Robux por ${PRECIO_REF} MXN** · aún más baratos por volumen`,
     },
-    { emoji: E.pagos,     unicode: '🪙', texto: '**Crypto · Transferencia · Depósito · Gift Cards**' },
-    { emoji: E.sorteos,   unicode: '🎁', texto: 'Sorteos de Robux, Nitro y decoraciones' },
-    { emoji: E.comunidad, unicode: '👥', texto: 'Comunidad grande, activa y amable' },
-    { emoji: E.servicios, unicode: '⚙️', texto: 'Servicios automatizados para una mejor experiencia' },
-    { emoji: E.soporte,   unicode: '💬', texto: 'Atención rápida y soporte al instante' },
+    { emoji: E.pagos,     texto: '**Crypto · Transferencia · Depósito · Gift Cards**' },
+    { emoji: E.sorteos,   texto: 'Sorteos de Robux, Nitro y decoraciones' },
+    { emoji: E.comunidad, texto: 'Comunidad grande, activa y amable' },
+    { emoji: E.servicios, texto: 'Servicios automatizados para una mejor experiencia' },
+    { emoji: E.soporte,   texto: 'Atención rápida y soporte al instante' },
 ].filter(Boolean);
 
 const TITULO  = '7x COMMUNITY';
@@ -75,40 +74,35 @@ function buildTexto() {
 }
 
 // ── El anuncio portable ───────────────────────────────────────────────────────
-// El que entrega el botón "Copiar", para pegarlo en otros servidores. NO es el
-// mismo texto, y no por capricho — pegado por una PERSONA, Discord no renderiza
-// ni una cosa ni la otra:
+// El que entrega el botón "Copiar", para pegarlo en otros servidores. Es el
+// mismo anuncio, con los mismos emojis de 7x —Discord los pinta por id para
+// cualquiera que LEA el mensaje, con Nitro o sin él; lo que hace falta Nitro es
+// para ESCRIBIRLOS fuera del servidor, y eso ya es cosa de quien lo pegue—.
 //
-//   - Los emojis del servidor (<:x:123>) sólo se ven para quien tenga Nitro y
-//     esté en el servidor de origen. Para el resto quedan como texto crudo, que
-//     es peor que no poner nada. Por eso la versión portable usa emojis
-//     Unicode, que se ven en todas partes.
-//   - Los enlaces enmascarados ([texto](url)) son cosa de bots y webhooks: en un
-//     mensaje de usuario se imprimen tal cual, con los corchetes. Por eso el
-//     enlace va desnudo — y así, además, Discord despliega debajo la tarjeta de
-//     invitación del servidor, que para anunciarse es mejor que esconderlo.
+// Cambian dos cosas, y las dos porque aquí publica una PERSONA y no el bot:
 //
-// El GIF no puede ir como URL: la de la CDN de Discord viene firmada y caduca.
-// Se adjunta el fichero a la respuesta para que se pueda volver a subir.
-function buildPortable() {
+//   - EL TÍTULO NO LLEVA EL ENLACE OCULTO. `[texto](url)` es cosa de bots y
+//     webhooks: en un mensaje de usuario se imprime tal cual, con los
+//     corchetes. No hay Nitro que arregle eso. Así que el enlace va desnudo — y
+//     así, además, Discord despliega debajo la tarjeta de invitación del
+//     servidor, que para anunciarse es mejor que esconderla.
+//   - EL GIF VA COMO ENLACE, no adjunto: pegada la URL, Discord la reconoce y
+//     lo pinta solo. Pero no se puede escribir a mano aquí, porque las URLs de
+//     la CDN de Discord van firmadas y caducan; sale del PROPIO mensaje del
+//     panel, que es el que lleva el botón (ver handleCopiarAnuncio).
+function buildPortable(gifUrl = null) {
     return [
-        `**${TITULO}**`,
-        `🤑 **${GANCHO}**`,
+        `# ${TITULO}`,
+        `### ${E.robux} ${GANCHO}`,
         ENTRADA,
         '',
-        ...VENTAJAS.map(v => `${v.unicode} ${v.texto}`),
+        ...VENTAJAS.map(v => `${v.emoji} ${v.texto}`),
         '',
-        `💜 ${CIERRE}`,
+        `${E.cierre} ${CIERRE}`,
         config.INVITE_URL,
+        ...(gifUrl ? [gifUrl] : []),
     ].join('\n');
 }
-
-const AVISO_COPIAR = [
-    '-# Copia el mensaje de arriba y pégalo tal cual en otro servidor.',
-    '-# Lleva emojis normales y el enlace a la vista **a propósito**: los emojis de 7x y los',
-    '-# enlaces con el texto oculto sólo se ven cuando los publica un bot, no una persona.',
-    '-# El GIF va adjunto aquí para que puedas subirlo junto al mensaje.',
-].join('\n');
 
 // ── Botón ─────────────────────────────────────────────────────────────────────
 
@@ -138,26 +132,19 @@ function buildPayload() {
     return v2.payload(buildContainer(), BANNER);
 }
 
-// Lo que entrega el botón, siempre en efímero: es para quien va a reenviarlo,
-// no para volver a llenar el canal.
+// Lo que entrega el botón: UN mensaje efímero con el anuncio y nada más, para
+// que el "Copiar texto" de Discord entregue justo eso. Efímero porque es para
+// quien va a reenviarlo, no para volver a llenar el canal.
 //
-// Van DOS mensajes a propósito. El primero lleva el anuncio y NADA más, para
-// que el "Copiar texto" de Discord entregue justo eso y no arrastre la
-// explicación. El segundo lleva el aviso y el GIF adjunto.
-//
-// Y se difiere antes de responder porque el GIF pesa ~9 MB: subirlo dentro de
-// la ventana de 3 segundos de la interacción no cabe, y sin diferir la
-// respuesta se pierde con "Unknown interaction".
+// La URL del GIF sale del mensaje del panel, que es el mismo que lleva el
+// botón: `interaction.message` llega con los adjuntos ya firmados de nuevo en
+// cada clic. Escribirla a mano no vale —las de la CDN de Discord caducan en
+// horas— y adjuntar el fichero tampoco: son 9 MB por clic, y pegado en otro
+// servidor lo que hace falta es una URL que Discord reconozca, no un adjunto.
 async function handleCopiarAnuncio(interaction) {
-    if (!await safeDeferReply(interaction, { ephemeral: true })) return;
+    const gif = interaction.message?.attachments?.first?.()?.url ?? null;
 
-    await safeEditReply(interaction, { content: buildPortable() });
-
-    await safeFollowUp(interaction, {
-        content: AVISO_COPIAR,
-        ephemeral: true,
-        ...(BANNER.exists && { files: [{ attachment: BANNER.path, name: '7xwidebanner.gif' }] }),
-    });
+    await safeReply(interaction, { content: buildPortable(gif), ephemeral: true });
 }
 
 // ── Identificación ────────────────────────────────────────────────────────────
@@ -239,7 +226,7 @@ module.exports = {
     handleCopiarAnuncio,
     __test: {
         buildContainer, buildTexto, buildPortable, buildRow, buildPayload, isAnuncioMsg,
-        VENTAJAS, TITULO, GANCHO, ENTRADA, CIERRE, ACCENT, BANNER, E, AVISO_COPIAR,
+        VENTAJAS, TITULO, GANCHO, ENTRADA, CIERRE, ACCENT, BANNER, E,
         REF_ROBUX, PRECIO_REF,
     },
 };

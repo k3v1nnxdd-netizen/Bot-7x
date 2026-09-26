@@ -44,7 +44,13 @@ module.exports = {
         HEADLESS:           '1546348969255370762',
         BOOST:              '1191157957556191263',
         GROUP_STATUS:       '1547140265003982888',
+        ANUNCIO:            '1553268998765023293',
     },
+
+    // La invitación del servidor. Verificada contra la API de Discord: el
+    // código correcto es "7xcommunity" (discord.gg/7xcommuntiy, con las dos
+    // últimas letras cambiadas, devuelve 404 "Unknown Invite").
+    INVITE_URL: 'https://discord.gg/7xcommunity',
 
     ROBLOX_GROUP_ID:       282134403,
     ROBLOX_GROUP_DAYS_REQ: 15,

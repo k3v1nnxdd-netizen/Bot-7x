@@ -21,6 +21,7 @@ const { handleHeadlessButton } = require('./headlessFlow');
 const { handleGroupsPageButton } = require('./groupLicenses');
 const { handleMetodosButton, handleCopiarButton, BOTONES: METODOS_BUTTONS, COPY_BOTONES } = require('../metodos');
 const v2                 = require('../utils/panelV2');
+const { handleCopiarAnuncio } = require('../anuncio');
 const config             = require('../config');
 
 // ── Countdown timers per ticket channel ───────────────────────────────────────
@@ -50,6 +51,7 @@ const PANEL_BUTTONS  = new Set(['comprar', 'otra_cosa', 'duels', 'seguidores']);
 const CALC_BUTTONS   = new Set(['calc_dinero', 'calc_robux']);
 const HEADLESS_BUTTONS = new Set(['headless_comprar']);
 const VERIF_BUTTONS  = new Set(['verif_check']);
+const ANUNCIO_BUTTONS = new Set(['anuncio_copiar']);
 const TICKET_BUTTONS = new Set(['confirmar_pago', 'cerrar_ticket', 'confirmar_cerrar', 'cancelar_cerrar']);
 // Derivado de config.CHECK_GROUPS en vez de escrito a mano: el customId de
 // cada boton del panel es literalmente `cg_<clave>`, asi que anadir una cuarta
@@ -100,6 +102,12 @@ async function guardButton(interaction) {
     // Verif buttons must come from the verif channel
     if (VERIF_BUTTONS.has(interaction.customId) && interaction.channelId !== config.CHANNELS.VERIF) {
         await safeReply(interaction, { content: 'Usa los botones del canal de verificación.', ephemeral: true });
+        return false;
+    }
+
+    // El botón de copiar el anuncio sólo existe en el canal del anuncio
+    if (ANUNCIO_BUTTONS.has(interaction.customId) && interaction.channelId !== config.CHANNELS.ANUNCIO) {
+        await safeReply(interaction, { content: 'Usa el botón del panel oficial del anuncio.', ephemeral: true });
         return false;
     }
 
@@ -394,6 +402,7 @@ const HANDLERS = {
     seguidores:       startSeguidoresTicket,
     headless_comprar: handleHeadlessButton,
     verif_check:      onVerifCheck,
+    anuncio_copiar:   handleCopiarAnuncio,
     calc_dinero:      onCalcDinero,
     calc_robux:       onCalcRobux,
     confirmar_pago:      onConfirmarPago,

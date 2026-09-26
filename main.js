@@ -41,6 +41,7 @@ if (RUN_BOT) {
     const { ensureCheckGroupPanel } = require('./checkGroup');
     const { ensureHeadlessPanel }   = require('./headless');
     const { ensureGroupStatusPanel } = require('./groupStatus');
+    const { ensureAnuncioPanel }    = require('./anuncio');
     const { updateLeaderboardMessage } = require('./utils/robuxLeaderboardPanel');
     const { backfillFromOrderLog } = require('./utils/robuxLeaderboardBackfill');
     const tickets             = require('./utils/tickets');
@@ -315,6 +316,10 @@ if (RUN_BOT) {
 
         await ensureGroupStatusPanel(client).catch(err =>
             console.error('[bot] ensureGroupStatusPanel failed:', err)
+        );
+
+        await ensureAnuncioPanel(client).catch(err =>
+            console.error('[bot] ensureAnuncioPanel failed:', err)
         );
 
         await backfillFromOrderLog(client).catch(err =>

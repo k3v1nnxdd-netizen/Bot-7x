@@ -562,6 +562,74 @@ puede recibir porque Roblox tardo en contestar le niega algo que si tenia, y en
 pantalla se veria igual que un no legitimo. Con Roblox entero caido, el resumen
 sale con las cinco en "no se pudo comprobar" y el ticket funciona igual.
 
+## Anuncio del servidor
+
+Un panel en `CHANNELS.ANUNCIO` (`anuncio.js`) que dice que vendemos Robux
+baratos y por cuanto: titulo `7x COMMUNITY` como **enlace oculto** a la
+invitacion, las ventajas del servidor, el GIF `7xwidebanner.gif` al final del
+bloque y, debajo del GIF, un boton **Copiar**.
+
+Se publica y se fija solo al arrancar. **Un reinicio no lo reenvia**: se busca
+primero entre los mensajes fijados —no solo en los ultimos 100, que es lo que
+acaba duplicandolo en un canal con movimiento— y solo se reedita si lo que dice
+ha cambiado.
+
+### El precio sale de `data/prices`
+
+La linea del precio no esta escrita en `anuncio.js`: la lee de la misma tabla
+con la que cobra el ticket. Es un anuncio publico, y un precio viejo ahi es peor
+que no anunciarlo — subir precios ya es tocar un fichero, no dos. Si la tabla no
+devolviera precio, esa linea desaparece sola en vez de publicar un numero
+inventado.
+
+Tampoco se anuncia un precio en dolares: en este repo no hay tipo de cambio en
+ninguna parte, asi que seria un numero a mano que envejece igual.
+
+### El boton Copiar entrega OTRO texto, a proposito
+
+Hay **dos versiones** del anuncio, y las dos salen de la misma lista `VENTAJAS`
+para que no puedan acabar diciendo cosas distintas:
+
+| | Panel | Lo que da el boton |
+|---|---|---|
+| Emojis | Del servidor (`<a:robuxxx:1510…>`) | Unicode (🏷️ 🪙 🎁 …) |
+| Invitacion | Enlace oculto en el titulo | URL a la vista |
+
+No es una inconsistencia: el panel lo publica **el bot** y el otro lo va a pegar
+**una persona**, y ahi Discord no renderiza ni una cosa ni la otra.
+
+- Los emojis del servidor solo se ven para quien tenga Nitro **y** este en el
+  servidor de origen. Para el resto quedan como `<:sale:1501…>` en crudo, que es
+  peor que no poner emoji.
+- Los enlaces enmascarados (`[texto](url)`) son cosa de bots y webhooks: en un
+  mensaje de usuario se imprimen con los corchetes a la vista. Y con la URL
+  desnuda, Discord despliega debajo la tarjeta de invitacion del servidor, que
+  para anunciarse es mejor que esconderla.
+
+Unificar los dos textos en uno rompe justo lo que el boton promete, **y en
+silencio**: aqui se veria bien y mal en el servidor ajeno. `src/tests/
+anuncio.test.js` lo comprueba.
+
+### Dos mensajes efimeros, no uno
+
+El boton responde **siempre en efimero** —es para quien va a reenviarlo, no para
+volver a llenar el canal— y manda dos mensajes:
+
+1. El anuncio y **nada mas**, para que el "Copiar texto" de Discord entregue
+   justo eso y no arrastre la explicacion.
+2. El aviso de como usarlo, con el GIF **adjunto**. No vale su URL: la de la CDN
+   de Discord viene firmada y caduca, asi que el fichero se vuelve a subir.
+
+Y **difiere antes de responder**: el GIF pesa 9,1 MB y subirlo no cabe en la
+ventana de 3 segundos de la interaccion. Sin diferir, la respuesta se perderia
+con "Unknown interaction".
+
+### La invitacion
+
+`config.INVITE_URL` es `discord.gg/7xcommunity`. Verificado contra la API de
+Discord: `7xcommuntiy` —con las dos ultimas letras cambiadas— devuelve 404
+"Unknown Invite".
+
 ## Quien puede hacer cosas de owner
 
 `config.OWNER_ID` es el dueno: la persona concreta, la que sale nombrada en los

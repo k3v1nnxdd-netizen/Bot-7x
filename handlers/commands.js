@@ -15,7 +15,8 @@ const headlessSale = require('../utils/headlessSale');
 const { ensureHeadlessPanel } = require('../headless');
 const groupActive = require('../utils/groupActive');
 const { ensureGroupStatusPanel } = require('../groupStatus');
-const { buildDetallePayload } = require('../metodos');
+const { buildDetallePayload, COPY_ID } = require('../metodos');
+const cripto = require('../utils/cryptoPrecios');
 const v2 = require('../utils/panelV2');
 
 async function handleOutfit(interaction) {
@@ -340,4 +341,110 @@ async function handleTopCompradores(interaction) {
     await safeEditReply(interaction, { embeds: [buildLeaderboardEmbed()] });
 }
 
-module.exports = { handleOutfit, handlePagos, handlePagoVerified, handleOffer, handleClose, handleHeadless, handleGroupActive, handleTopCompradores, refreshCouponEmbed };
+// ── /crypto ───────────────────────────────────────────────────────────────────
+// Cuánta cripto son X pesos (o dólares) al cambio de ahora, con las MISMAS
+// monedas que acepta el panel de pagos.
+//
+// NO difiere, y es deliberado: la tarjeta va en Components V2 y ese flag no se
+// puede añadir al editar una respuesta ya diferida, así que hay que contestar
+// dentro de los 3 s de Discord. Por eso la consulta de precios lleva un tope de
+// 2,5 s y una caché de 60 s (ver utils/cryptoPrecios.js).
+
+const CRYPTO_E = {
+    cripto: '<:cripto:1552521783406497822>',
+    point:  '<:point:1501212595464700104>',
+    alert:  '<:alert:1501220021035204658>',
+    copiar: { id: '1527509149758259371', name: 'copiar' },
+};
+
+function buildCryptoRow(ticker) {
+    return new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+            .setCustomId(COPY_ID(ticker.toLowerCase()))
+            .setLabel(ticker)
+            .setEmoji(CRYPTO_E.copiar)
+            .setStyle(ButtonStyle.Secondary)
+    );
+}
+
+function buildCryptoTexto({ moneda, cantidad, divisa, precioUnidad, monto, edadMs, rancio }) {
+    const lineas = [
+        `## ${CRYPTO_E.cripto} ${cripto.formatearDinero(cantidad, divisa)} EN ${moneda.ticker}`,
+        '',
+        `# ${cripto.formatearCripto(monto)} ${moneda.ticker}`,
+        `-# ${moneda.nombre} · red ${moneda.red}`,
+        '',
+        `${CRYPTO_E.point} 1 ${moneda.ticker} = **${cripto.formatearDinero(precioUnidad, divisa)}**`,
+        `${CRYPTO_E.point} Dirección de 7x: \`${moneda.direccion}\``,
+        '',
+    ];
+
+    // Un precio viejo NUNCA se presenta como actual: si la API no contestó y se
+    // está tirando de la última consulta buena, se dice de cuándo es.
+    lineas.push(rancio
+        ? `-# ${CRYPTO_E.alert} No se pudo consultar el precio ahora mismo: este es el de hace ${minutos(edadMs)}.`
+        : `-# Precio de CoinGecko, de hace ${segundos(edadMs)}.`);
+
+    lineas.push('-# El cambio se mueve a cada momento. Confirma el importe antes de enviar.');
+
+    return lineas.join('\n');
+}
+
+function segundos(ms) {
+    const s = Math.max(0, Math.round(ms / 1000));
+    return s < 5 ? 'unos segundos' : `${s} s`;
+}
+
+function minutos(ms) {
+    const m = Math.max(1, Math.round(ms / 60000));
+    return m === 1 ? 'un minuto' : `${m} minutos`;
+}
+
+async function handleCrypto(interaction) {
+    const cantidad = interaction.options.getNumber('cantidad');
+    const ticker   = interaction.options.getString('moneda');
+    const divisa   = interaction.options.getString('divisa') ?? 'MXN';
+    const publico  = interaction.options.getString('visibilidad') === 'todos';
+
+    const moneda = cripto.MONEDAS.find(m => m.ticker === ticker);
+    if (!moneda) {
+        return safeReply(interaction, { content: '❌ Esa moneda ya no está disponible.', ephemeral: true });
+    }
+
+    // La opción ya viene acotada por Discord (min/max), pero el número llega del
+    // cliente: un NaN o un negativo aquí daría una cantidad de cripto absurda.
+    if (!Number.isFinite(cantidad) || cantidad <= 0) {
+        return safeReply(interaction, { content: '❌ La cantidad tiene que ser un número mayor que cero.', ephemeral: true });
+    }
+
+    const datos = await cripto.obtenerPrecios(divisa);
+    const precioUnidad = datos.ok ? datos.precios[moneda.ticker] : null;
+    const monto = cripto.convertir(cantidad, precioUnidad);
+
+    // Sin precio no se inventa nada. Es dinero: un número aproximado "por no
+    // dejar el comando vacío" es peor que decir que no se pudo.
+    if (monto === null) {
+        return safeReply(interaction, {
+            content: `${CRYPTO_E.alert} No se pudo consultar el precio de **${moneda.nombre}** ahora mismo. Inténtalo en un momento.`,
+            ephemeral: true,
+        });
+    }
+
+    return safeReply(interaction, {
+        ...v2.tarjetaPayload({
+            color: 0x2B2D31,
+            texto: buildCryptoTexto({
+                moneda, cantidad, divisa, precioUnidad, monto,
+                edadMs: datos.edadMs, rancio: datos.rancio,
+            }),
+            filas: [buildCryptoRow(moneda.ticker)],
+        }),
+        ...(publico ? {} : { ephemeral: true }),
+    });
+}
+
+module.exports = {
+    handleOutfit, handlePagos, handlePagoVerified, handleOffer, handleClose,
+    handleHeadless, handleGroupActive, handleTopCompradores, handleCrypto, refreshCouponEmbed,
+    __test: { buildCryptoTexto, buildCryptoRow, segundos, minutos },
+};

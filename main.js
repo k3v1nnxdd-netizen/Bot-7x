@@ -48,7 +48,8 @@ if (RUN_BOT) {
     const alianzas            = require('./utils/alianzas');
     const { handleButton, clearTimers } = require('./handlers/buttons');
     const { handleModal }     = require('./handlers/modals');
-    const { handleOutfit, handlePagos, handlePagoVerified, handleOffer, handleClose, handleHeadless, handleGroupActive, handleTopCompradores } = require('./handlers/commands');
+    const { handleOutfit, handlePagos, handlePagoVerified, handleOffer, handleClose, handleHeadless, handleGroupActive, handleTopCompradores, handleCrypto } = require('./handlers/commands');
+    const cryptoPrecios       = require('./utils/cryptoPrecios');
     const {
         handleAddGroup, handleRegenerateToken, handleDeleteGroup, handleCheckGroup, handleGroups,
     } = require('./handlers/groupLicenses');
@@ -157,6 +158,51 @@ if (RUN_BOT) {
             {
                 name: 'topcompradores',
                 description: 'Muestra el ranking de los mayores compradores de Robux',
+            },
+
+            // Las monedas se DERIVAN de las que acepta el panel de pagos
+            // (metodos.js, via utils/cryptoPrecios): anadir una cripto a los
+            // pagos la pone aqui sola, y no se puede ofrecer una que no se cobre.
+            {
+                name: 'crypto',
+                description: 'Convierte dinero a cripto al cambio de ahora mismo',
+                options: [
+                    {
+                        name: 'cantidad',
+                        type: 10,
+                        description: 'Cuanto dinero quieres convertir (ej: 3579)',
+                        required: true,
+                        min_value: 0.01,
+                        max_value: 10000000,
+                    },
+                    {
+                        name: 'moneda',
+                        type: 3,
+                        description: 'A que cripto lo conviertes',
+                        required: true,
+                        choices: cryptoPrecios.MONEDAS.map(m => ({
+                            name:  `${m.nombre} (${m.ticker})`.slice(0, 100),
+                            value: m.ticker,
+                        })),
+                    },
+                    {
+                        name: 'divisa',
+                        type: 3,
+                        description: 'En que moneda esta esa cantidad (por defecto MXN)',
+                        required: false,
+                        choices: cryptoPrecios.DIVISAS.map(d => ({ name: d, value: d })),
+                    },
+                    {
+                        name: 'visibilidad',
+                        type: 3,
+                        description: 'Quien ve el resultado (por defecto, solo tu)',
+                        required: false,
+                        choices: [
+                            { name: 'Solo yo',  value: 'solo_yo' },
+                            { name: 'Todos',    value: 'todos' },
+                        ],
+                    },
+                ],
             },
 
             // Las opciones de comunidad se DERIVAN de config.CHECK_GROUPS, igual
@@ -348,6 +394,7 @@ if (RUN_BOT) {
             else if (interaction.isChatInputCommand() && interaction.commandName === 'offer')        await handleOffer(interaction);
             else if (interaction.isChatInputCommand() && interaction.commandName === 'connect')      await handleConnect(interaction);
             else if (interaction.isChatInputCommand() && interaction.commandName === 'topcompradores') await handleTopCompradores(interaction);
+            else if (interaction.isChatInputCommand() && interaction.commandName === 'crypto')       await handleCrypto(interaction);
             else if (interaction.isChatInputCommand() && interaction.commandName === 'headless')      await handleHeadless(interaction);
             else if (interaction.isChatInputCommand() && interaction.commandName === 'groupactive')   await handleGroupActive(interaction);
             else if (interaction.isChatInputCommand() && interaction.commandName === 'addgroup')      await handleAddGroup(interaction);

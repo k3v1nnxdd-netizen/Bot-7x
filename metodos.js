@@ -478,6 +478,10 @@ module.exports = {
     BOTONES,
     METODOS,
     CLAVES,
+    // Exportadas para que /crypto trabaje con LAS MISMAS monedas que se
+    // cobran y con el mismo boton de copiar, en vez de una segunda lista.
+    CRIPTO,
+    COPY_ID,
     OXXO_PATH,
     OXXO_NAME,
     OXXO_EXISTS,

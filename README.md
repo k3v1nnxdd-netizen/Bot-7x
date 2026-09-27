@@ -790,6 +790,46 @@ Publicado, pasan tres cosas:
 Si el canal de aliados no se puede abrir, **no se marca como aceptada** y se
 dice: lo contrario dejaria una alianza dada por publicada que no existe.
 
+## /crypto — dinero a cripto al cambio de ahora
+
+```
+/crypto cantidad:3579 moneda:Bitcoin (BTC) [divisa:MXN|USD] [visibilidad:Solo yo|Todos]
+```
+
+Dice cuanta cripto son esos pesos (o dolares) ahora mismo, a cuanto esta la
+moneda y la direccion de 7x, con un boton para copiarla. **Por defecto lo ve
+solo quien lo usa**; con `visibilidad: Todos` se publica en el canal.
+
+Las monedas se derivan de `metodos.js`, la misma lista con la que se cobra:
+anadir una cripto al panel de pagos la pone en el comando sola, y no se puede
+ofrecer una que 7x no acepte. El boton de copiar reutiliza el customId de los
+botones del panel de pagos, asi que lo atiende el handler que ya existia.
+
+El precio sale de **CoinGecko**, que da MXN y USD directamente — encadenar un
+tipo de cambio seria un error mas que cometer. No pide clave.
+
+### Nunca se inventa un precio
+
+Es dinero. Sin dato, el comando lo dice y no pinta nada; un numero aproximado
+"por no dejarlo vacio" acabaria cobrando de menos o de mas. Si la API no
+contesta pero hay un precio reciente se usa **diciendo de cuando es**, y pasados
+**10 minutos** ya no: ahi se prefiere no dar numero.
+
+Un 429, un 500, un cuerpo vacio o un JSON roto caen todos en "no se pudo
+consultar", nunca en un precio a medias.
+
+### Dos detalles de implementacion
+
+- **No difiere.** El flag de Components V2 no se puede anadir al editar una
+  respuesta ya diferida, asi que la tarjeta obliga a contestar dentro de los 3 s
+  de Discord. Por eso la consulta lleva un tope de **2,5 s** (medido: CoinGecko
+  tarda ~250 ms) y una **cache de 60 s** que ademas protege el limite de la API
+  gratuita de un comando que se usa en rafaga. Las dos divisas se rellenan de la
+  misma respuesta, asi que cambiar de divisa no gasta otra peticion.
+- **Los decimales se adaptan al valor.** 0,0024 BTC y 20,75 UNI son el mismo
+  dinero: con decimales fijos uno sale como "0,00" y el otro con ceros de
+  relleno.
+
 ## Quien puede hacer cosas de owner
 
 `config.OWNER_ID` es el dueno: la persona concreta, la que sale nombrada en los

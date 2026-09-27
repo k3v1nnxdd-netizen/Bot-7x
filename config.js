@@ -61,6 +61,14 @@ module.exports = {
         MIN_MIEMBROS: 1000,
     },
 
+    // El emoji del logo de Roblox Premium, para la insignia de /avatar. En
+    // null sale como texto (`PREMIUM`), que es lo correcto mientras no haya un
+    // emoji de verdad: mejor eso que un `<:premium:123>` en crudo.
+    //
+    // Para ponerlo: sube el logo como emoji al servidor y escribe aquí la
+    // forma completa, por ejemplo '<:premium:1553269490748366928>'.
+    ROBLOX_PREMIUM_EMOJI: null,
+
     // La invitación del servidor. Verificada contra la API de Discord: el
     // código correcto es "7xcommunity" (discord.gg/7xcommuntiy, con las dos
     // últimas letras cambiadas, devuelve 404 "Unknown Invite").

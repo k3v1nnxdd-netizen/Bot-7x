@@ -443,8 +443,101 @@ async function handleCrypto(interaction) {
     });
 }
 
+// ── /avatar ───────────────────────────────────────────────────────────────────
+// La ficha de un usuario de Roblox: su avatar en grande, la insignia de Premium
+// si la tiene y sus números de seguidores, amigos y seguidos.
+//
+// Va como embed clásico y no como tarjeta V2 por una razón concreta: el PIE de
+// un embed ya se pinta pequeño y EN GRIS, y debajo de la imagen. Es exactamente
+// donde tienen que ir los tres números, y en un contenedor habría que imitarlo
+// a mano. El nombre va en la DESCRIPCIÓN como encabezado, no en `setTitle()`,
+// porque Discord no pinta los emojis del servidor en el título de un embed —
+// ahí la insignia de Premium saldría como `<:premium:123>` en crudo.
+
+function buildAvatarEmbed({ user, uid, avatarUrl, premium, seguidores, amigos, siguiendo }) {
+    const perfil = `https://www.roblox.com/users/${uid}/profile`;
+    const mostrado = user.displayName || user.name;
+
+    // La insignia sólo aparece con un `true` explícito. `null` es "no se pudo
+    // comprobar", y eso NO es lo mismo que "no tiene Premium": sin el dato no
+    // se afirma nada.
+    const insignia = premium === true
+        ? ` ${config.ROBLOX_PREMIUM_EMOJI ?? '`PREMIUM`'}`
+        : '';
+
+    const cabecera = [
+        `## ${mostrado}${insignia}`,
+        `-# @${user.name} · \`${uid}\` · [Ver perfil](${perfil})`,
+    ];
+    if (user.hasVerifiedBadge) cabecera.push('-# <:true:1501213776878501899> Cuenta verificada por Roblox');
+
+    const embed = new EmbedBuilder()
+        .setColor(0x2B2D31)
+        .setDescription(cabecera.join('\n'))
+        .setURL(perfil);
+
+    if (avatarUrl) embed.setImage(avatarUrl);
+
+    // El pie: pequeño, gris y bajo la imagen. Un número que no se pudo
+    // consultar sale como "—" en vez de como 0, que sería decir que no tiene
+    // ninguno.
+    embed.setFooter({ text: buildAvatarPie({ seguidores, amigos, siguiendo }) });
+
+    return embed;
+}
+
+function buildAvatarPie({ seguidores, amigos, siguiendo }) {
+    const n = v => (typeof v === 'number' ? v.toLocaleString('es-MX') : '—');
+    return `${n(seguidores)} seguidores · ${n(amigos)} amigos · ${n(siguiendo)} siguiendo`;
+}
+
+async function handleAvatar(interaction) {
+    const ok = await safeDeferReply(interaction);
+    if (!ok) return;
+
+    const username = (interaction.options.getString('usuario') ?? '').trim();
+    if (!username) {
+        return safeEditReply(interaction, { content: '❌ Debes escribir un nombre de usuario de Roblox.' });
+    }
+
+    try {
+        const user = await roblox.getUserByUsername(username);
+        const uid  = user.id;
+
+        // Todo en paralelo y tolerando fallos: la ficha se pinta con lo que
+        // haya. Que Roblox no dé el número de amigos no puede dejar sin avatar.
+        const [avatarUrl, seguidores, amigos, siguiendo, avanzado] = await Promise.allSettled([
+            roblox.getAvatarImage(uid),
+            roblox.getFollowerCount(uid),
+            roblox.getFriendCount(uid),
+            roblox.getFollowingCount(uid),
+            roblox.getUserAdvanced(uid),
+        ]).then(r => r.map(x => (x.status === 'fulfilled' ? x.value : null)));
+
+        await safeEditReply(interaction, {
+            embeds: [buildAvatarEmbed({
+                user, uid, avatarUrl,
+                premium: avanzado?.premium ?? null,
+                seguidores, amigos, siguiendo,
+            })],
+        });
+    } catch (err) {
+        const status = err?.response?.status;
+        console.error('[avatar] Error:', status, err?.message);
+        const msg =
+            (status === 404 || err?.message === 'not_found')
+                ? '❌ Usuario no encontrado. Revisa el nombre e inténtalo de nuevo.'
+            : status === 429
+                ? '⏱️ Roblox está limitando las peticiones. Espera unos segundos e inténtalo de nuevo.'
+                : '❌ No pude obtener la información. Revisa el nombre e inténtalo de nuevo.';
+        await interaction.deleteReply().catch(() => {});
+        await safeFollowUp(interaction, { content: msg, ephemeral: true });
+    }
+}
+
 module.exports = {
     handleOutfit, handlePagos, handlePagoVerified, handleOffer, handleClose,
-    handleHeadless, handleGroupActive, handleTopCompradores, handleCrypto, refreshCouponEmbed,
-    __test: { buildCryptoTexto, buildCryptoRow, segundos, minutos },
+    handleHeadless, handleGroupActive, handleTopCompradores, handleCrypto, handleAvatar,
+    refreshCouponEmbed,
+    __test: { buildCryptoTexto, buildCryptoRow, segundos, minutos, buildAvatarEmbed, buildAvatarPie },
 };

@@ -790,6 +790,60 @@ Publicado, pasan tres cosas:
 Si el canal de aliados no se puede abrir, **no se marca como aceptada** y se
 dice: lo contrario dejaria una alianza dada por publicada que no existe.
 
+## /avatar — la ficha de un usuario de Roblox
+
+```
+/avatar usuario:sombrapapoi
+```
+
+Su avatar en grande, el nombre con la insignia de **Premium** si la tiene, y
+abajo, en gris, **seguidores · amigos · siguiendo**.
+
+Es un embed clasico y no una tarjeta V2 a proposito: el **pie** de un embed ya
+se pinta pequeno, en gris y debajo de la imagen, que es justo donde van los tres
+numeros. En un contenedor habria que imitarlo a mano.
+
+El **nombre va en la descripcion** como encabezado, no en `setTitle()`. Es el
+mismo motivo de siempre: Discord no pinta los emojis del servidor en el titulo
+de un embed, y la insignia de Premium saldria como `<:premium:123>` en crudo.
+Por lo mismo, el pie no lleva emojis.
+
+### Premium es el unico dato que no es publico
+
+La API abierta de Roblox **no** publica el Premium de nadie:
+`premiumfeatures.roblox.com` pide sesion. El unico camino sin cookie es **Open
+Cloud** (`GET /cloud/v2/users/{id}`), que necesita el permiso
+**`user.advanced:read`** en la misma API key que ya se usa para las membresias
+de comunidad.
+
+Si la key no lo tiene, el dato llega como `null` y **la insignia simplemente no
+sale** — nunca como "no tiene Premium". `null` es "no se sabe", y colgarle a
+alguien ese cartel por un fallo de permisos es afirmar algo que no se ha
+comprobado, y en pantalla se veria igual que un dato real. Se avisa **una vez**
+por arranque en consola, no en cada uso.
+
+Lo mismo con los tres numeros: el que no se pueda consultar sale como **"—"**,
+no como 0. Decir que alguien tiene 0 amigos porque Roblox no contesto es
+inventar.
+
+### Los fondos de avatar NO se pueden mostrar
+
+Roblox no expone el fondo de avatar de **otros** usuarios. Comprobado contra su
+API:
+
+- `avatar.roblox.com/v1/avatar/thumbnail-customizations` responde **401**: es
+  solo del usuario autenticado.
+- La variante por usuario (`/v1/users/{id}/avatar/thumbnail-customizations`)
+  responde **404**: no existe.
+- La miniatura publica (`thumbnails.roblox.com/v1/users/avatar`) viene **sin
+  fondo**, con transparencia. Se verifico descargando varias, incluida una con
+  pose personalizada: la pose si viaja en la miniatura, el fondo no.
+
+Hay una peticion abierta en el DevForum pidiendo exactamente ese endpoint. Los
+bots que si ensenan un fondo lo estan **componiendo ellos** con arte propio
+detras del PNG transparente, no sacandolo de Roblox. Hacerlo aqui pediria una
+libreria de imagen (`sharp` o similar), que hoy el proyecto no tiene.
+
 ## /crypto — dinero a cripto al cambio de ahora
 
 ```

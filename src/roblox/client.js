@@ -98,6 +98,62 @@ async function getFriendCount(userId) {
     return res.data?.count ?? 0;
 }
 
+// A cuánta gente SIGUE, que no es lo mismo que cuántos le siguen. Roblox lo
+// llama "followings" (con la ese en medio): "followers" es el contrario, y
+// confundirlos deja los dos números intercambiados sin que nada falle.
+async function getFollowingCount(userId) {
+    const res = await limitedFriendsRequest(() => api.get(`https://friends.roblox.com/v1/users/${userId}/followings/count`));
+    observeFriendsLimit(res.headers);
+    return res.data?.count ?? 0;
+}
+
+// Si el usuario tiene Roblox Premium.
+//
+// Es el ÚNICO dato de /avatar que no es público: la API abierta de Roblox no
+// lo publica (premiumfeatures.roblox.com pide sesión), y el único camino sin
+// cookie es Open Cloud, que además necesita el scope `user.advanced:read` en
+// la API key — el mismo key que ya se usa para las membresías de comunidad.
+//
+// NUNCA lanza y nunca dice "no es Premium" por un fallo: devuelve null, que
+// significa "no se sabe". Colgarle a alguien la etiqueta de no-Premium porque
+// la key no tiene permisos sería afirmar algo que no se ha comprobado, y en
+// pantalla se vería igual que un dato real.
+async function getUserAdvanced(userId) {
+    if (!OPEN_CLOUD_KEY) return null;
+
+    try {
+        const res = await limitedOpenCloudGroupsRequest(() => api.get(
+            `https://apis.roblox.com/cloud/v2/users/${encodeURIComponent(userId)}`,
+            { headers: { 'x-api-key': OPEN_CLOUD_KEY } }
+        ));
+        observeOpenCloudGroupsLimit(res.headers);
+
+        return {
+            premium:    typeof res.data?.premium === 'boolean' ? res.data.premium : null,
+            idVerified: typeof res.data?.idVerified === 'boolean' ? res.data.idVerified : null,
+        };
+    } catch (err) {
+        // 403 = la key no tiene `user.advanced:read`. Es lo más probable si
+        // nadie ha tocado los permisos, y se avisa UNA vez para que se pueda
+        // arreglar, en vez de en cada uso.
+        avisarFaltaScope(err);
+        return null;
+    }
+}
+
+let yaAvisadoScope = false;
+function avisarFaltaScope(err) {
+    const status = err?.response?.status;
+    if (status !== 401 && status !== 403) return;
+    if (yaAvisadoScope) return;
+    yaAvisadoScope = true;
+    console.warn(
+        '[roblox] La API key de Open Cloud no puede leer usuarios ' +
+        `(HTTP ${status}). /avatar funcionará sin la insignia de Premium hasta ` +
+        'que la key tenga el permiso "user.advanced:read".'
+    );
+}
+
 async function getAvatarImage(userId) {
     const res = await limitedThumbnailRequest(() => api.get(
         `https://thumbnails.roblox.com/v1/users/avatar?userIds=${userId}&size=420x420&format=Png&isCircular=false`
@@ -452,6 +508,8 @@ module.exports = {
     getUserProfile,
     getFollowerCount,
     getFriendCount,
+    getFollowingCount,
+    getUserAdvanced,
     getAvatarImage,
     getHeadshot,
     isUserInGroup,

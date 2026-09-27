@@ -48,7 +48,7 @@ if (RUN_BOT) {
     const alianzas            = require('./utils/alianzas');
     const { handleButton, clearTimers } = require('./handlers/buttons');
     const { handleModal }     = require('./handlers/modals');
-    const { handleOutfit, handlePagos, handlePagoVerified, handleOffer, handleClose, handleHeadless, handleGroupActive, handleTopCompradores, handleCrypto } = require('./handlers/commands');
+    const { handleOutfit, handlePagos, handlePagoVerified, handleOffer, handleClose, handleHeadless, handleGroupActive, handleTopCompradores, handleCrypto, handleAvatar } = require('./handlers/commands');
     const cryptoPrecios       = require('./utils/cryptoPrecios');
     const {
         handleAddGroup, handleRegenerateToken, handleDeleteGroup, handleCheckGroup, handleGroups,
@@ -158,6 +158,17 @@ if (RUN_BOT) {
             {
                 name: 'topcompradores',
                 description: 'Muestra el ranking de los mayores compradores de Robux',
+            },
+
+            {
+                name: 'avatar',
+                description: 'Muestra el avatar de un usuario de Roblox con sus seguidores, amigos y seguidos',
+                options: [{
+                    name: 'usuario',
+                    type: 3,
+                    description: 'Nombre de usuario de Roblox (ej: sombrapapoi)',
+                    required: true,
+                }],
             },
 
             // Las monedas se DERIVAN de las que acepta el panel de pagos
@@ -395,6 +406,7 @@ if (RUN_BOT) {
             else if (interaction.isChatInputCommand() && interaction.commandName === 'connect')      await handleConnect(interaction);
             else if (interaction.isChatInputCommand() && interaction.commandName === 'topcompradores') await handleTopCompradores(interaction);
             else if (interaction.isChatInputCommand() && interaction.commandName === 'crypto')       await handleCrypto(interaction);
+            else if (interaction.isChatInputCommand() && interaction.commandName === 'avatar')       await handleAvatar(interaction);
             else if (interaction.isChatInputCommand() && interaction.commandName === 'headless')      await handleHeadless(interaction);
             else if (interaction.isChatInputCommand() && interaction.commandName === 'groupactive')   await handleGroupActive(interaction);
             else if (interaction.isChatInputCommand() && interaction.commandName === 'addgroup')      await handleAddGroup(interaction);

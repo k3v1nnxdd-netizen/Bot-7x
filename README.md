@@ -826,23 +826,26 @@ Lo mismo con los tres numeros: el que no se pueda consultar sale como **"—"**,
 no como 0. Decir que alguien tiene 0 amigos porque Roblox no contesto es
 inventar.
 
-### Los fondos de avatar NO se pueden mostrar
+### El fondo de avatar: `includeBackground`
 
-Roblox no expone el fondo de avatar de **otros** usuarios. Comprobado contra su
-API:
+Roblox devuelve el **Avatar Background** equipado ya compuesto con el outfit y
+con la pose que el usuario tenga puesta en su miniatura, todo en un PNG. No hay
+que componer nada ni hace falta una libreria de imagen.
 
-- `avatar.roblox.com/v1/avatar/thumbnail-customizations` responde **401**: es
-  solo del usuario autenticado.
-- La variante por usuario (`/v1/users/{id}/avatar/thumbnail-customizations`)
-  responde **404**: no existe.
-- La miniatura publica (`thumbnails.roblox.com/v1/users/avatar`) viene **sin
-  fondo**, con transparencia. Se verifico descargando varias, incluida una con
-  pose personalizada: la pose si viaja en la miniatura, el fondo no.
+La clave es que **hay que pedirlo**: el parametro `includeBackground` de
+`thumbnails.roblox.com/v1/users/avatar` va en `false` por defecto, y sin el la
+imagen vuelve transparente. No aparece en el Creator Hub; esta en el esquema que
+publica el propio servicio, en `thumbnails.roblox.com/docs/json/v1`, junto con
+`includeProfileFrame` para los headshots.
 
-Hay una peticion abierta en el DevForum pidiendo exactamente ese endpoint. Los
-bots que si ensenan un fondo lo estan **componiendo ellos** con arte propio
-detras del PNG transparente, no sacandolo de Roblox. Hacerlo aqui pediria una
-libreria de imagen (`sharp` o similar), que hoy el proyecto no tiene.
+En `getAvatarImage` el parametro tambien va en **false por defecto**, igual que
+en la API de Roblox: `/outfit` lleva tiempo ensenando el avatar recortado sobre
+el fondo del embed, y activarlo para todos cambiaria ese comando sin que nadie
+lo haya pedido. `/avatar` lo pide explicitamente, y a `720x720`.
+
+Quien no tenga fondo equipado recibe la imagen transparente de siempre: el
+parametro no falla, simplemente no hay nada que pintar. Se puede saber cual es
+cual por la URL — la de la CDN lleva el sufijo `-Png-Background`.
 
 ## /crypto — dinero a cripto al cambio de ahora
 

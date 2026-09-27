@@ -507,7 +507,9 @@ async function handleAvatar(interaction) {
         // Todo en paralelo y tolerando fallos: la ficha se pinta con lo que
         // haya. Que Roblox no dé el número de amigos no puede dejar sin avatar.
         const [avatarUrl, seguidores, amigos, siguiendo, avanzado] = await Promise.allSettled([
-            roblox.getAvatarImage(uid),
+            // Con fondo y a 720: el fondo de avatar que tenga equipado viene
+            // ya pintado por Roblox, con su pose incluida.
+            roblox.getAvatarImage(uid, { conFondo: true, size: '720x720' }),
             roblox.getFollowerCount(uid),
             roblox.getFriendCount(uid),
             roblox.getFollowingCount(uid),

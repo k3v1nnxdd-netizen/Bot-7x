@@ -154,9 +154,23 @@ function avisarFaltaScope(err) {
     );
 }
 
-async function getAvatarImage(userId) {
+// El render de cuerpo entero del usuario.
+//
+// `conFondo` activa `includeBackground`, y con eso Roblox devuelve la imagen YA
+// compuesta: el outfit, la pose que tenga puesta en su miniatura y el Avatar
+// Background que lleve equipado, todo en un PNG. No hay que componer nada por
+// nuestra cuenta ni hace falta una librería de imagen.
+//
+// Va en false por defecto A PROPÓSITO, igual que en la API de Roblox: /outfit
+// lleva años enseñando el avatar recortado sobre el fondo del embed, y activarlo
+// para todo el mundo cambiaría ese comando sin que nadie lo haya pedido.
+//
+// Quien no tenga fondo equipado recibe exactamente la misma imagen transparente
+// de siempre — el parámetro no falla, simplemente no hay nada que pintar.
+async function getAvatarImage(userId, { conFondo = false, size = '420x420' } = {}) {
     const res = await limitedThumbnailRequest(() => api.get(
-        `https://thumbnails.roblox.com/v1/users/avatar?userIds=${userId}&size=420x420&format=Png&isCircular=false`
+        `https://thumbnails.roblox.com/v1/users/avatar?userIds=${userId}&size=${size}` +
+        `&format=Png&isCircular=false&includeBackground=${conFondo ? 'true' : 'false'}`
     ));
     observeThumbnailLimit(res.headers);
     return res.data?.data?.[0]?.imageUrl ?? null;

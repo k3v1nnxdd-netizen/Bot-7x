@@ -149,7 +149,24 @@ module.exports = async function run() {
     assert(!/\/followers\/count/.test(deFollowing), 'y no el de seguidores, que dejaría los dos números iguales');
     assert(typeof roblox.getFollowingCount === 'function', 'getFollowingCount se exporta');
 
-    // ── 9. Premium: nunca revienta ni afirma sin dato ────────────────────────
+    // ── 9. El fondo de avatar ────────────────────────────────────────────────
+    // Roblox devuelve el fondo equipado YA compuesto con el outfit y la pose,
+    // pero sólo si se pide: `includeBackground` va en false por defecto en su
+    // API. Sin pasarlo, la imagen vuelve transparente — que es justo lo que
+    // pasaba antes de encontrar el parámetro.
+    const deAvatar = CLIENTE.match(/async function getAvatarImage[\s\S]*?\n\}/)?.[0] ?? '';
+    assert(/includeBackground=/.test(deAvatar), 'getAvatarImage sabe pedir el fondo');
+    assert(/conFondo = false/.test(deAvatar), 'y por defecto NO lo pide, para no cambiar /outfit sin que nadie lo pida');
+
+    const HANDLERS = fs.readFileSync(path.join(RAIZ, 'handlers', 'commands.js'), 'utf8');
+    const deHandler = HANDLERS.match(/async function handleAvatar[\s\S]*?\n\}/)?.[0] ?? '';
+    assert(/conFondo: true/.test(deHandler), '/avatar SÍ lo pide: el fondo es lo que se pidió enseñar');
+    assert(/size: '720x720'/.test(deHandler), 'y a 720, el tamaño más grande que publica Roblox');
+
+    const deOutfit = HANDLERS.match(/async function handleOutfit[\s\S]*?\n\}/)?.[0] ?? '';
+    assert(!/conFondo/.test(deOutfit), '/outfit se queda como estaba, sin fondo');
+
+    // ── 10. Premium: nunca revienta ni afirma sin dato ───────────────────────
     const deAvanzado = CLIENTE.match(/async function getUserAdvanced[\s\S]*?\n\}/)?.[0] ?? '';
     assert(/if \(!OPEN_CLOUD_KEY\) return null;/.test(deAvanzado), 'sin API key devuelve null, no false');
     assert(/catch[\s\S]*return null;/.test(deAvanzado), 'y un fallo de permisos también: null es "no se sabe"');

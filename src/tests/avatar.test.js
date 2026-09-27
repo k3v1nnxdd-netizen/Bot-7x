@@ -37,7 +37,7 @@ function ficha(extra = {}) {
         user: USUARIO,
         uid: USUARIO.id,
         avatarUrl: 'https://tr.rbxcdn.com/algo/420/420/Avatar/Png/noFilter',
-        premium: null,
+        plus: null,
         seguidores: 2742038,
         amigos: 971,
         siguiendo: 82,
@@ -54,39 +54,39 @@ module.exports = async function run() {
     assert(/commandName === 'avatar'/.test(MAIN), 'y enrutado');
 
     // ── 2. Premium: sólo con un `true` explícito ─────────────────────────────
-    const conPremium = ficha({ premium: true });
-    const sinPremium = ficha({ premium: false });
-    const sinDato    = ficha({ premium: null });
+    const conPlus = ficha({ plus: true });
+    const sinPlus  = ficha({ plus: false });
+    const sinDato  = ficha({ plus: null });
 
-    const marca = config.ROBLOX_PREMIUM_EMOJI ?? '`PREMIUM`';
-    assert(conPremium.description.includes(marca), 'con Premium se enseña la insignia');
-    assert(!sinPremium.description.includes(marca), 'sin Premium no aparece');
+    const marca = config.ROBLOX_PLUS_EMOJI ?? '`PLUS`';
+    assert(conPlus.description.includes(marca), 'con Plus se enseña la insignia');
+    assert(!sinPlus.description.includes(marca), 'sin Plus no aparece');
     assert(
-        !sinDato.description.includes(marca) && !/premium/i.test(sinDato.description),
+        !sinDato.description.includes(marca) && !/\bplus\b/i.test(sinDato.description),
         'y si no se pudo comprobar, NO se dice nada: null no es "no tiene"'
     );
     // El caso que importa de verdad: sin el permiso de Open Cloud, la ficha
     // sale igual que la de alguien que no tiene Premium — pero sin afirmarlo.
     assert(
-        sinDato.description === sinPremium.description,
+        sinDato.description === sinPlus.description,
         'la ficha de "no se sabe" no inventa una diferencia con la de "no tiene"'
     );
 
     // La insignia sale de config: quien tenga un emoji del logo lo pone ahí y
     // no hay que tocar el código. Se comprueba poniéndolo de verdad, no sólo
     // mirando que la clave exista — el handler podría ignorarla igual.
-    assert('ROBLOX_PREMIUM_EMOJI' in config, 'el emoji de Premium está en config');
-    const antes = config.ROBLOX_PREMIUM_EMOJI;
+    assert('ROBLOX_PLUS_EMOJI' in config, 'el emoji de Plus está en config');
+    const antes = config.ROBLOX_PLUS_EMOJI;
     try {
-        config.ROBLOX_PREMIUM_EMOJI = '<:premiumdeprueba:1553269490748366928>';
-        const conEmoji = ficha({ premium: true });
+        config.ROBLOX_PLUS_EMOJI = '<:plusdeprueba:1553269490748366928>';
+        const conEmoji = ficha({ plus: true });
         assert(
-            conEmoji.description.includes('<:premiumdeprueba:1553269490748366928>'),
+            conEmoji.description.includes('<:plusdeprueba:1553269490748366928>'),
             'y el handler lo usa: poner el emoji en config basta para que salga'
         );
-        assert(!conEmoji.description.includes('`PREMIUM`'), 'y entonces ya no sale el texto de respaldo');
+        assert(!conEmoji.description.includes('`PLUS`'), 'y entonces ya no sale el texto de respaldo');
     } finally {
-        config.ROBLOX_PREMIUM_EMOJI = antes;
+        config.ROBLOX_PLUS_EMOJI = antes;
     }
 
     // ── 3. El nombre, en la descripción ──────────────────────────────────────
@@ -131,7 +131,7 @@ module.exports = async function run() {
     // ── 7. La insignia de verificado ─────────────────────────────────────────
     const verificado = cmd.buildAvatarEmbed({
         user: { ...USUARIO, hasVerifiedBadge: true },
-        uid: USUARIO.id, avatarUrl: null, premium: null,
+        uid: USUARIO.id, avatarUrl: null, plus: null,
         seguidores: 1, amigos: 1, siguiendo: 1,
     }).toJSON();
     assert(/verificad/i.test(verificado.description), 'una cuenta verificada por Roblox lo dice');

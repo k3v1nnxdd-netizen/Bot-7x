@@ -808,19 +808,29 @@ mismo motivo de siempre: Discord no pinta los emojis del servidor en el titulo
 de un embed, y la insignia de Premium saldria como `<:premium:123>` en crudo.
 Por lo mismo, el pie no lleva emojis.
 
-### Premium es el unico dato que no es publico
+### Roblox Plus: el unico dato que no es publico
 
-La API abierta de Roblox **no** publica el Premium de nadie:
+Roblox renombro **Premium** a **Plus** el 30 de abril de 2026. El campo de la
+API sigue llamandose `premium`, y ahi se respeta el nombre de Roblox; de cara al
+usuario, Plus.
+
+La API abierta **no** publica la suscripcion de nadie:
 `premiumfeatures.roblox.com` pide sesion. El unico camino sin cookie es **Open
-Cloud** (`GET /cloud/v2/users/{id}`), que necesita el permiso
-**`user.advanced:read`** en la misma API key que ya se usa para las membresias
-de comunidad.
+Cloud** (`GET /cloud/v2/users/{id}`), y hacen falta dos cosas:
 
-Si la key no lo tiene, el dato llega como `null` y **la insignia simplemente no
-sale** — nunca como "no tiene Premium". `null` es "no se sabe", y colgarle a
-alguien ese cartel por un fallo de permisos es afirmar algo que no se ha
-comprobado, y en pantalla se veria igual que un dato real. Se avisa **una vez**
-por arranque en consola, no en cada uso.
+1. **El permiso `user.advanced:read`** en la misma API key que ya se usa para
+   las membresias de comunidad (Creator Hub -> Open Cloud -> API Keys -> editar
+   la key -> anadir el recurso **User** con ese permiso). No hay que tocar
+   codigo ni volver a desplegar.
+2. **El emoji del logo**, en `config.ROBLOX_PLUS_EMOJI`. En null la insignia
+   sale como texto (`PLUS`), que es lo correcto mientras no haya emoji: mejor
+   eso que un `<:plus:123>` en crudo.
+
+Si la key no tiene el permiso, el dato llega como `null` y **la insignia
+simplemente no sale** — nunca como "no tiene Plus". `null` es "no se sabe", y
+colgarle a alguien ese cartel por un fallo de permisos es afirmar algo que no se
+ha comprobado, y en pantalla se veria igual que un dato real. Se avisa **una
+vez** por arranque en consola, no en cada uso.
 
 Lo mismo con los tres numeros: el que no se pueda consultar sale como **"—"**,
 no como 0. Decir que alguien tiene 0 amigos porque Roblox no contesto es

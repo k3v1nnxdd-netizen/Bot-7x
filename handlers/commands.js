@@ -454,15 +454,15 @@ async function handleCrypto(interaction) {
 // porque Discord no pinta los emojis del servidor en el título de un embed —
 // ahí la insignia de Premium saldría como `<:premium:123>` en crudo.
 
-function buildAvatarEmbed({ user, uid, avatarUrl, premium, seguidores, amigos, siguiendo }) {
+function buildAvatarEmbed({ user, uid, avatarUrl, plus, seguidores, amigos, siguiendo }) {
     const perfil = `https://www.roblox.com/users/${uid}/profile`;
     const mostrado = user.displayName || user.name;
 
     // La insignia sólo aparece con un `true` explícito. `null` es "no se pudo
-    // comprobar", y eso NO es lo mismo que "no tiene Premium": sin el dato no
-    // se afirma nada.
-    const insignia = premium === true
-        ? ` ${config.ROBLOX_PREMIUM_EMOJI ?? '`PREMIUM`'}`
+    // comprobar", y eso NO es lo mismo que "no tiene Plus": sin el dato no se
+    // afirma nada.
+    const insignia = plus === true
+        ? ` ${config.ROBLOX_PLUS_EMOJI ?? '`PLUS`'}`
         : '';
 
     const cabecera = [
@@ -519,7 +519,9 @@ async function handleAvatar(interaction) {
         await safeEditReply(interaction, {
             embeds: [buildAvatarEmbed({
                 user, uid, avatarUrl,
-                premium: avanzado?.premium ?? null,
+                // El campo de Roblox se llama `premium` desde antes del
+                // cambio de nombre; lo que representa hoy es Plus.
+                plus: avanzado?.premium ?? null,
                 seguidores, amigos, siguiendo,
             })],
         });

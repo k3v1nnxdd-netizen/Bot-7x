@@ -819,9 +819,11 @@ La API abierta **no** publica la suscripcion de nadie:
 Cloud** (`GET /cloud/v2/users/{id}`), y hacen falta dos cosas:
 
 1. **El permiso `user.advanced:read`** en la misma API key que ya se usa para
-   las membresias de comunidad (Creator Hub -> Open Cloud -> API Keys -> editar
-   la key -> anadir el recurso **User** con ese permiso). No hay que tocar
-   codigo ni volver a desplegar.
+   las membresias de comunidad. En
+   [create.roblox.com/dashboard/credentials](https://create.roblox.com/dashboard/credentials),
+   editar la key y anadir el sistema **`users`** (en plural; el buscador filtra
+   por nombre de sistema, asi que escribir el scope entero no encuentra nada).
+   No hay que tocar codigo ni volver a desplegar.
 2. **El emoji del logo**, en `config.ROBLOX_PLUS_EMOJI`. En null la insignia
    sale como texto (`PLUS`), que es lo correcto mientras no haya emoji: mejor
    eso que un `<:plus:123>` en crudo.

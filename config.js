@@ -71,7 +71,12 @@ module.exports = {
     // Se llama Plus y no Premium porque Roblox renombró la suscripción el 30
     // de abril de 2026. El campo de su API sigue llamándose `premium`, y ahí
     // se respeta el nombre de Roblox; de cara al usuario, Plus.
-    ROBLOX_PLUS_EMOJI: null,
+    //
+    // El nombre del emoji es el que le puso Discord al subirlo, y da igual: lo
+    // que Discord usa para pintarlo es el ID. Renombrarlo en el servidor no
+    // rompe nada; cambiarlo por otro emoji distinto, sí — ahí hay que traer el
+    // ID nuevo.
+    ROBLOX_PLUS_EMOJI: '<:d137004833fc4fe4933e6182008082b5:1553594318634094702>',
 
     // La invitación del servidor. Verificada contra la API de Discord: el
     // código correcto es "7xcommunity" (discord.gg/7xcommuntiy, con las dos

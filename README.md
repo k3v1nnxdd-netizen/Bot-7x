@@ -743,6 +743,31 @@ El flujo tiene dos pasos a proposito, igual que el cierre de ticket:
 2. **Si, publicar** → el bot publica en `CHANNELS.ALIANZA` el mensaje que
    escribio el solicitante junto al enlace de su servidor.
 
+#### El anuncio publicado NO es un contenedor V2
+
+Es la unica pieza del flujo que no lo es, y por una razon concreta: **la tarjeta
+de "Ir al servidor"** —la que trae el icono, los miembros en linea y el boton de
+unirse— la dibuja el cliente de Discord al ver un enlace `discord.gg` en el
+**content** del mensaje. No es un embed que devuelva la API; comprobado,
+`GET /channels/…/messages/…` devuelve cero embeds para un mensaje con solo el
+enlace. Y un mensaje con el flag de Components V2 **no puede llevar content**.
+
+Publicado como contenedor, el enlace se quedaba en texto azul y nadie podia
+unirse de un clic. Asi que el anuncio va como mensaje clasico:
+
+- **content** = el enlace, y solo el enlace → Discord pinta la tarjeta de unirse.
+- **embed** = el resto: el nombre y el icono del servidor aliado como autor, el
+  mensaje del solicitante como descripcion, y **su foto de perfil de miniatura**,
+  igual que el resumen de un ticket de compra, para ver de quien es sin leer.
+
+El icono del servidor aliado sale de la misma consulta a la invitacion que ya se
+hacia para contar miembros, asi que no cuesta una peticion mas. Si el solicitante
+no se puede cargar (se fue, borro la cuenta, la API falla) la alianza **se
+publica igual, sin foto**: ya estaba aprobada, y perderla por no poder pintar un
+avatar seria cambiar lo importante por lo decorativo.
+
+La tarjeta de revision del ticket lleva esa misma foto de perfil.
+
 Los **dos** pasos comprueban que quien pulsa es owner. El segundo no se fia de
 que su boton solo exista en un mensaje efimero: el customId viaja por Discord, y
 eso seria fiar el permiso de donde esta el boton en vez de quien lo pulsa.

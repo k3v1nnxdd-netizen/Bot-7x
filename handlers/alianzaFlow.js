@@ -1,7 +1,7 @@
 'use strict';
 
 const {
-    ActionRowBuilder, ButtonBuilder, ButtonStyle, MessageFlags,
+    ActionRowBuilder, ButtonBuilder, ButtonStyle, EmbedBuilder, MessageFlags,
     ModalBuilder, TextInputBuilder, TextInputStyle,
 } = require('discord.js');
 const { safeReply, safeEditReply, safeDeferReply, safeShowModal } = require('../utils/safe');
@@ -384,6 +384,16 @@ function textoLink(info) {
 
 // ── Paso 4: Completado ───────────────────────────────────────────────────────
 
+// El avatar de Discord de quien abrió el ticket, para ponerle cara a la
+// solicitud igual que hacen los tickets de compra. Nunca lanza ni bloquea: si
+// el usuario no se puede cargar (se fue del servidor, la API falla), la tarjeta
+// sale sin foto en vez de no salir.
+async function avatarDe(client, userId) {
+    if (!userId || !client?.users?.fetch) return null;
+    const user = await client.users.fetch(userId).catch(() => null);
+    return user?.displayAvatarURL?.({ size: 128, extension: 'png' }) ?? null;
+}
+
 // La captura del paso 2: la imagen más reciente que haya subido quien abrió el
 // ticket. Se busca cuando hace falta en vez de guardarla al vuelo — así no hay
 // un escuchador más por el que pase cada mensaje del servidor, y no puede
@@ -452,6 +462,9 @@ async function onCompletado(interaction) {
         color: ACCENT,
         mencion: config.ADMIN_IDS.map(id => `<@${id}>`).join(' '),
         texto: buildRevisionTexto(userId, datos, info),
+        // El avatar de quien la envía, arriba a la derecha, igual que el
+        // resumen de un ticket de compra: se ve de quién es sin leer.
+        thumbnail: await avatarDe(interaction.client, userId),
         imagen: `attachment://${captura.nombre}`,
         filas: [buildAceptarRow()],
     };
@@ -576,15 +589,46 @@ async function onCancelarAceptar(interaction) {
     await safeReply(interaction, { content: '✅ Publicación cancelada. La alianza sigue en revisión.', ephemeral: true });
 }
 
-// Lo que se publica en el canal de aliados: el mensaje que escribió el
-// solicitante, tal cual, y su enlace debajo.
-function buildAnuncioAliado(datos, info) {
-    return [
-        `## ${E.alianza} ${info.ok && info.nombre ? info.nombre : 'Servidor aliado'}`,
-        datos.mensaje,
-        '',
-        `${E.link} ${datos.link}`,
-    ].join('\n');
+// Lo que se publica en el canal de aliados.
+//
+// Esto NO es un contenedor V2, y es la única cosa del flujo que no lo es. La
+// tarjeta de "Ir al servidor" que pinta Discord bajo una invitación sale del
+// `content` del mensaje: la dibuja el cliente al ver un enlace discord.gg ahí.
+// Un mensaje con el flag de Components V2 no puede llevar `content` —todo va en
+// componentes—, así que dentro de un contenedor el enlace se queda en texto
+// azul y nadie puede unirse de un clic. Comprobado: publicado como contenedor,
+// en #ally sólo salía el enlace pelado.
+//
+// Por eso el enlace va en `content` y el resto en un embed clásico:
+//   - autor      -> el nombre y el icono del servidor aliado
+//   - miniatura  -> el avatar de quien envió la alianza, como en los tickets
+//   - descripción-> su mensaje, tal cual lo escribió
+function buildAnuncioAliado(datos, info, { userId = null, avatarUrl = null } = {}) {
+    const embed = new EmbedBuilder()
+        .setColor(ACCENT)
+        .setDescription(
+            datos.userId || userId
+                ? `${datos.mensaje}\n\n-# Alianza enviada por <@${userId ?? datos.userId}>`
+                : datos.mensaje
+        );
+
+    embed.setAuthor({
+        name: (info.ok && info.nombre) || 'Servidor aliado',
+        ...(info.ok && info.iconoUrl ? { iconURL: info.iconoUrl } : {}),
+    });
+
+    if (avatarUrl) embed.setThumbnail(avatarUrl);
+
+    return {
+        // El enlace, y sólo el enlace: es lo que hace que Discord pinte debajo
+        // la tarjeta con el icono, los miembros y el botón de unirse.
+        content: datos.link,
+        embeds: [embed],
+        // El texto lo escribió alguien de fuera. Sin esto, un `@everyone` metido
+        // en su mensaje de alianza haría que el bot mencionara al servidor
+        // entero en el momento de aceptarla.
+        allowedMentions: { parse: [] },
+    };
 }
 
 async function onConfirmarAceptar(interaction) {
@@ -618,15 +662,12 @@ async function onConfirmarAceptar(interaction) {
 
     const info = await fetchInvite(datos.link);
 
+    const ownerId  = datos.userId ?? tickets.getOwner(interaction.channel);
+    const avatarUrl = await avatarDe(interaction.client, ownerId);
+
     let publicado;
     try {
-        publicado = await canal.send({
-            ...v2.tarjetaPayload({ color: ACCENT, texto: buildAnuncioAliado(datos, info) }),
-            // El texto lo escribió otra persona. Sin esto, un `@everyone` metido
-            // en su mensaje de alianza haría que el bot mencionara al servidor
-            // entero en el momento de aceptarla.
-            allowedMentions: { parse: [] },
-        });
+        publicado = await canal.send(buildAnuncioAliado(datos, info, { userId: ownerId, avatarUrl }));
     } catch (err) {
         console.error('[alianza] No se pudo publicar en el canal de aliados:', err);
         return safeEditReply(interaction, { content: `❌ No se pudo publicar: ${err.message}. La alianza sigue en revisión.` });
@@ -640,7 +681,6 @@ async function onConfirmarAceptar(interaction) {
 
     // El aviso al solicitante va PÚBLICO en el ticket, no en efímero: es para
     // él, y tiene que quedar escrito en el canal.
-    const ownerId = datos.userId ?? tickets.getOwner(interaction.channel);
     await interaction.channel.send(v2.tarjetaPayload({
         color: ACCENT,
         mencion: ownerId ? `<@${ownerId}>` : null,
@@ -710,7 +750,7 @@ module.exports = {
     handleAlianzaModal,
     __test: {
         buildTexto, buildFilas, buildPanel, buildCampoModal, buildRevisionTexto,
-        textoLink, textoBloqueado, bloqueado, camposDeUnaVez, buscarCaptura, buildAceptarRow, buildConfirmarRow, buildAnuncioAliado,
+        textoLink, textoBloqueado, bloqueado, camposDeUnaVez, buscarCaptura, avatarDe, buildAceptarRow, buildConfirmarRow, buildAnuncioAliado,
         marcarAceptada, PRESENTACION, E, ACCENT, MIN_MIEMBROS,
     },
 };

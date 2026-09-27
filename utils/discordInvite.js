@@ -57,11 +57,20 @@ async function fetchInvite(entrada, { token = process.env.TOKEN } = {}) {
         const data = await res.json();
         const miembros = Number(data?.approximate_member_count);
 
+        const guildId = data?.guild?.id ?? null;
+        const icono   = data?.guild?.icon ?? null;
+
         return {
             ok: true,
             codigo,
             nombre:   data?.guild?.name ?? null,
-            guildId:  data?.guild?.id ?? null,
+            guildId,
+            // El icono del servidor, ya como URL lista para usar. Discord lo
+            // devuelve como hash suelto, y montar el enlace a mano en cada
+            // sitio que lo pinte acabaría con una versión rota en alguno.
+            iconoUrl: guildId && icono
+                ? `https://cdn.discordapp.com/icons/${guildId}/${icono}.${icono.startsWith('a_') ? 'gif' : 'png'}?size=128`
+                : null,
             // null y no 0 cuando Discord no lo manda: 0 miembros diría que el
             // servidor está vacío, que es una afirmación muy distinta.
             miembros: Number.isFinite(miembros) ? miembros : null,

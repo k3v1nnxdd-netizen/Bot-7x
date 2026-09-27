@@ -394,7 +394,10 @@ async function simularFlujo() {
         // Con captura: se manda la tarjeta de revisión.
         const foto = mensajeConImagen('m1', USER);
         const canal3 = canalFalso(USER, { mensajes: [foto] });
-        const i3 = interaccionFalsa(canal3, USER, { customId: 'ali_completado' });
+        const i3 = interaccionFalsa(canal3, USER, {
+            customId: 'ali_completado',
+            client: { users: { fetch: async id => ({ displayAvatarURL: () => `https://cdn.discordapp.com/avatars/${id}/foto.png` }) } },
+        });
         await handleAlianzaButton(i3);
 
         const tarjeta = canal3.enviados[0];
@@ -414,6 +417,14 @@ async function simularFlujo() {
         const url = galeria?.items?.[0]?.media?.url ?? '';
         out.push({ ok: url.startsWith('attachment://'), msg: 'la captura se resube como adjunto, no se enlaza a una URL que caduca' });
         out.push({ ok: Boolean(tarjeta?.files?.length), msg: 'y el fichero viaja con el mensaje' });
+
+        // El avatar de quien la envía, arriba a la derecha, como el resumen de
+        // un ticket de compra.
+        const mini = planos.find(n => n.type === 11);
+        out.push({
+            ok: mini?.media?.url?.includes(USER),
+            msg: 'la tarjeta de revisión lleva la foto de perfil de quien la envió',
+        });
 
         // Segundo clic: no se manda otra vez.
         const canal4 = canalFalso(USER, { mensajes: [foto] });
@@ -481,13 +492,19 @@ async function simularAceptacion() {
     global.fetch = async () => ({ ok: true, status: 200, json: async () => ({ approximate_member_count: 5000, guild: { name: 'Aliado RP' } }) });
 
     // El canal de aliados y el cliente que lo devuelve.
-    const nuevoEntorno = (chId, { conCanalAlly = true } = {}) => {
+    const nuevoEntorno = (chId, { conCanalAlly = true, usuarioRoto = false } = {}) => {
         const ally = canalFalso('bot', { id: config.CHANNELS.ALIANZA });
         const ticket = canalFalso(SOLICITANTE, { id: chId });
         const client = {
             channels: {
                 cache: new Map(conCanalAlly ? [[config.CHANNELS.ALIANZA, ally]] : []),
                 fetch: async () => { if (!conCanalAlly) throw new Error('404'); return ally; },
+            },
+            users: {
+                fetch: async id => {
+                    if (usuarioRoto) throw new Error('Unknown User');
+                    return { displayAvatarURL: () => `https://cdn.discordapp.com/avatars/${id}/foto.png` };
+                },
             },
         };
         return { ally, ticket, client };
@@ -551,10 +568,35 @@ async function simularAceptacion() {
 
         const publicado = b.ally.enviados[0];
         out.push({ ok: b.ally.enviados.length === 1, msg: 'confirmar publica en el canal de aliados' });
-        const textoPublicado = nodos((publicado?.components ?? []).map(c => c.toJSON()))
-            .filter(n => n.type === 10).map(n => n.content).join('\n');
-        out.push({ ok: textoPublicado.includes('Ven a nuestro RP'), msg: 'y publica el mensaje que escribió el solicitante' });
-        out.push({ ok: textoPublicado.includes('https://discord.gg/aliado'), msg: 'con el enlace de su servidor' });
+
+        // LA RAZÓN DE QUE ESTO NO SEA UN CONTENEDOR V2. La tarjeta de "Ir al
+        // servidor" la dibuja el cliente de Discord al ver un enlace
+        // discord.gg en el CONTENT del mensaje. Un mensaje con el flag de
+        // Components V2 no puede llevar content, así que dentro de un
+        // contenedor el enlace se queda en texto azul y nadie puede unirse de
+        // un clic. Pasó: publicado como contenedor, en #ally sólo salía el
+        // enlace pelado.
+        out.push({
+            ok: publicado?.content === 'https://discord.gg/aliado',
+            msg: 'el enlace va en el CONTENT, que es lo que hace que Discord pinte la tarjeta de unirse',
+        });
+        out.push({
+            ok: !('flags' in (publicado ?? {})) && !publicado?.components,
+            msg: 'y por eso el anuncio NO es un contenedor V2: ahí no hay content y no habría tarjeta',
+        });
+
+        const embed = publicado?.embeds?.[0]?.toJSON?.() ?? publicado?.embeds?.[0];
+        out.push({ ok: Boolean(embed), msg: 'el resto va en un embed clásico' });
+        out.push({ ok: embed?.description?.includes('Ven a nuestro RP'), msg: 'y publica el mensaje que escribió el solicitante' });
+        out.push({ ok: embed?.author?.name === 'Aliado RP', msg: 'con el nombre de su servidor' });
+        out.push({
+            ok: embed?.thumbnail?.url?.includes(SOLICITANTE),
+            msg: 'y la foto de perfil de quien la envió, como en los tickets',
+        });
+        out.push({
+            ok: embed?.description?.includes(`<@${SOLICITANTE}>`),
+            msg: 'y dice quién la envió',
+        });
 
         // LO MÁS IMPORTANTE: el texto lo escribió otra persona. Sin esto, un
         // @everyone metido en su mensaje haría que el bot mencionara al
@@ -612,6 +654,21 @@ async function simularAceptacion() {
             });
         }
         alianzas.borrar(d.ticket.id);
+
+        // ── El solicitante ya no existe: se publica igual, sin foto ──────────
+        // Se fue del servidor, borró la cuenta o la API falla. La alianza ya
+        // está aprobada: quedarse sin publicar por no poder pintar un avatar
+        // sería perder lo importante por lo decorativo.
+        const e = nuevoEntorno('700000000000000005', { usuarioRoto: true });
+        alianzas.set(e.ticket.id, { userId: SOLICITANTE, mensaje: 'Hola', link: 'https://discord.gg/aliado', descripcion: 'y' });
+        const iSinUsuario = clic(e.ticket, e.client, OWNER, 'ali_confirmar_aceptar');
+        let exploto = false;
+        try { await handleAlianzaButton(iSinUsuario); } catch { exploto = true; }
+        out.push({ ok: !exploto, msg: 'si no se puede cargar al solicitante, el handler no revienta' });
+        out.push({ ok: e.ally.enviados.length === 1, msg: 'y la alianza se publica igual' });
+        const sinFoto = e.ally.enviados[0]?.embeds?.[0]?.toJSON?.();
+        out.push({ ok: !sinFoto?.thumbnail, msg: 'sencillamente sin foto de perfil' });
+        alianzas.borrar(e.ticket.id);
 
         // ── Sin canal de aliados: no se da por publicado ─────────────────────
         const c = nuevoEntorno('700000000000000003', { conCanalAlly: false });

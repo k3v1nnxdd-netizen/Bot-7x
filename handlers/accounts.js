@@ -29,7 +29,7 @@ function keyFor(name) {
 }
 
 function isOwner(interaction) {
-    return interaction.user?.id === config.OWNER_ID;
+    return config.ADMIN_IDS.includes(interaction.user?.id);
 }
 
 function buildEmbed(listing) {

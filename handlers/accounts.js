@@ -147,4 +147,20 @@ async function handleAccDispo(interaction) {
     }
 }
 
-module.exports = { handleAcc, handleAccDispo, __test: { buildEmbed, keyFor } };
+async function handleAccDispoAutocomplete(interaction) {
+    if (!isOwner(interaction)) return interaction.respond([]);
+
+    const focused = interaction.options.getFocused().trim().toLocaleLowerCase('es-MX');
+    const choices = Object.values(load())
+        .filter(listing => listing?.disponible === true && typeof listing.nombre === 'string')
+        .filter(listing => listing.nombre.toLocaleLowerCase('es-MX').includes(focused))
+        .slice(0, 25)
+        .map(listing => ({
+            name: `${listing.nombre} · $${Number(listing.precio).toLocaleString('es-MX')} MXN`.slice(0, 100),
+            value: listing.nombre,
+        }));
+
+    return interaction.respond(choices);
+}
+
+module.exports = { handleAcc, handleAccDispo, handleAccDispoAutocomplete, __test: { buildEmbed, keyFor } };

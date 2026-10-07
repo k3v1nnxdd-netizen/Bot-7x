@@ -48,7 +48,7 @@ if (RUN_BOT) {
     const alianzas            = require('./utils/alianzas');
     const { handleButton, clearTimers } = require('./handlers/buttons');
     const { handleModal }     = require('./handlers/modals');
-    const { handleAcc, handleAccDispo } = require('./handlers/accounts');
+    const { handleAcc, handleAccDispo, handleAccDispoAutocomplete } = require('./handlers/accounts');
     const { handleOutfit, handlePagos, handlePagoVerified, handleOffer, handleClose, handleHeadless, handleGroupActive, handleTopCompradores, handleCrypto, handleAvatar } = require('./handlers/commands');
     const cryptoPrecios       = require('./utils/cryptoPrecios');
     const {
@@ -319,7 +319,7 @@ if (RUN_BOT) {
                 name: 'accdispo',
                 description: 'Actualiza la disponibilidad de una cuenta (solo owner)',
                 options: [
-                    { name: 'nombre',     type: 3, description: 'Nombre usado al publicar la cuenta', required: true },
+                    { name: 'nombre',     type: 3, description: 'Selecciona una cuenta disponible', required: true, autocomplete: true },
                     { name: 'disponible', type: 5, description: '¿Sigue disponible para comprar?',    required: true },
                 ],
             },
@@ -422,7 +422,8 @@ if (RUN_BOT) {
         if (interaction.replied || interaction.deferred) return;
 
         try {
-            if      (interaction.isChatInputCommand() && interaction.commandName === 'outfit') await handleOutfit(interaction);
+            if      (interaction.isAutocomplete() && interaction.commandName === 'accdispo') await handleAccDispoAutocomplete(interaction);
+            else if (interaction.isChatInputCommand() && interaction.commandName === 'outfit') await handleOutfit(interaction);
             else if (interaction.isChatInputCommand() && interaction.commandName === 'pagos')          await handlePagos(interaction);
             else if (interaction.isChatInputCommand() && interaction.commandName === 'pagoverified') await handlePagoVerified(interaction);
             else if (interaction.isChatInputCommand() && interaction.commandName === 'close')        await handleClose(interaction);

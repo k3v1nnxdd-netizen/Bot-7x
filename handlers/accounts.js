@@ -4,7 +4,7 @@ const fs = require('fs');
 const { EmbedBuilder } = require('discord.js');
 const config = require('../config');
 const { dataPath, ensureDataDir } = require('../utils/dataDir');
-const { safeReply } = require('../utils/safe');
+const { safeDeferReply, safeEditReply, safeReply } = require('../utils/safe');
 
 const FILE = dataPath('accountListings.json');
 const TMP = `${FILE}.tmp`;
@@ -58,23 +58,27 @@ async function handleAcc(interaction) {
         return safeReply(interaction, { content: '❌ Solo el owner puede usar este comando.', ephemeral: true });
     }
 
+    // Acknowledge before transferring media. Discord expires an interaction
+    // after a few seconds, while a video upload can take considerably longer.
+    const deferred = await safeDeferReply(interaction, { ephemeral: true });
+    if (!deferred) return;
+
     const nombre = interaction.options.getString('nombre', true).trim();
     const key = keyFor(nombre);
     const listings = load();
     if (listings[key]) {
-        return safeReply(interaction, {
+        return safeEditReply(interaction, {
             content: `❌ Ya existe una ficha para **${listings[key].nombre}**. Usa otro nombre o actualiza su disponibilidad con /accdispo.`,
-            ephemeral: true,
         });
     }
 
     const imagenes = ['imagen1', 'imagen2'].map(name => interaction.options.getAttachment(name)).filter(Boolean);
     const videos = ['video1', 'video2'].map(name => interaction.options.getAttachment(name)).filter(Boolean);
     if (imagenes.some(file => !file.contentType?.startsWith('image/'))) {
-        return safeReply(interaction, { content: '❌ Los archivos de imagen deben ser imágenes válidas.', ephemeral: true });
+        return safeEditReply(interaction, { content: '❌ Los archivos de imagen deben ser imágenes válidas.' });
     }
     if (videos.some(file => !file.contentType?.startsWith('video/'))) {
-        return safeReply(interaction, { content: '❌ Los archivos de video deben ser videos válidos.', ephemeral: true });
+        return safeEditReply(interaction, { content: '❌ Los archivos de video deben ser videos válidos.' });
     }
 
     const listing = {
@@ -90,27 +94,45 @@ async function handleAcc(interaction) {
         createdAt: new Date().toISOString(),
     };
 
+    let message = null;
     try {
-        await interaction.reply({
-            embeds: [buildEmbed(listing)],
-            files: [...imagenes, ...videos].map((file, index) => ({
+        await safeEditReply(interaction, { content: '⏳ Preparando la ficha y subiendo los archivos…' });
+
+        const channel = interaction.channel;
+        if (!channel?.isTextBased() || typeof channel.send !== 'function') {
+            return safeEditReply(interaction, { content: '❌ Usa `/acc` en un canal de texto donde el bot pueda publicar.' });
+        }
+
+        const files = [...imagenes, ...videos].map((file, index) => {
+            const originalName = file.name || '';
+            const extension = originalName.includes('.')
+                ? originalName.split('.').pop().replace(/[^a-z0-9]/gi, '').toLowerCase()
+                : '';
+            const kind = file.contentType.startsWith('video/') ? 'video' : 'imagen';
+            return {
                 attachment: file.url,
-                name: `${file.contentType.startsWith('video/') ? 'video' : 'imagen'}-${index + 1}.${(file.name.split('.').pop() || 'bin').replace(/[^a-z0-9]/gi, '')}`,
-            })),
-            allowedMentions: { parse: [] },
-            fetchReply: true,
+                name: `${kind}-${index + 1}.${extension || 'bin'}`,
+            };
         });
-        const message = await interaction.fetchReply();
+
+        message = await channel.send({
+            embeds: [buildEmbed(listing)],
+            files,
+            allowedMentions: { parse: [] },
+        });
         listing.messageId = message.id;
         listings[key] = listing;
         save(listings);
+
+        return safeEditReply(interaction, {
+            content: `✅ Ficha publicada correctamente. Identificador interno: **${listing.nombre}**.`,
+        });
     } catch (err) {
         console.error('[accounts] No se pudo publicar o guardar la ficha:', err?.message);
-        if (interaction.replied) {
-            await interaction.followUp({ content: '⚠️ La ficha se publicó, pero no pude guardar sus datos para futuras actualizaciones.', ephemeral: true }).catch(() => {});
-        } else {
-            await safeReply(interaction, { content: '❌ No pude publicar la ficha. Revisa los archivos adjuntos e inténtalo de nuevo.', ephemeral: true });
-        }
+        const messageText = message
+            ? `⚠️ La publicación ${message.url} se envió, pero no pude guardar sus datos para futuras actualizaciones.`
+            : '❌ No pude publicar la ficha. Revisa el tamaño y formato de los archivos, los permisos del bot y vuelve a intentarlo.';
+        return safeEditReply(interaction, { content: messageText });
     }
 }
 

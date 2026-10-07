@@ -48,6 +48,7 @@ if (RUN_BOT) {
     const alianzas            = require('./utils/alianzas');
     const { handleButton, clearTimers } = require('./handlers/buttons');
     const { handleModal }     = require('./handlers/modals');
+    const { handleAcc, handleAccDispo } = require('./handlers/accounts');
     const { handleOutfit, handlePagos, handlePagoVerified, handleOffer, handleClose, handleHeadless, handleGroupActive, handleTopCompradores, handleCrypto, handleAvatar } = require('./handlers/commands');
     const cryptoPrecios       = require('./utils/cryptoPrecios');
     const {
@@ -299,6 +300,29 @@ if (RUN_BOT) {
                 name: 'groups',
                 description: 'Lista todas las licencias de grupos (solo owner)',
             },
+            {
+                name: 'acc',
+                description: 'Publica una ficha de cuenta en venta (solo owner)',
+                options: [
+                    { name: 'nombre',      type: 3,  description: 'Nombre para identificar esta cuenta', required: true, max_length: 100 },
+                    { name: 'titulo',      type: 3,  description: 'Título de la publicación',             required: true, max_length: 256 },
+                    { name: 'descripcion', type: 3,  description: 'Descripción de la cuenta',              required: true, max_length: 4000 },
+                    { name: 'precio',      type: 10, description: 'Precio de venta',                       required: true, min_value: 0 },
+                    { name: 'disponible',  type: 5,  description: '¿Está disponible para comprar?',       required: true },
+                    { name: 'imagen1',     type: 11, description: 'Primera imagen (opcional)',             required: false },
+                    { name: 'imagen2',     type: 11, description: 'Segunda imagen (opcional)',             required: false },
+                    { name: 'video1',      type: 11, description: 'Primer video (opcional)',               required: false },
+                    { name: 'video2',      type: 11, description: 'Segundo video (opcional)',               required: false },
+                ],
+            },
+            {
+                name: 'accdispo',
+                description: 'Actualiza la disponibilidad de una cuenta (solo owner)',
+                options: [
+                    { name: 'nombre',     type: 3, description: 'Nombre usado al publicar la cuenta', required: true },
+                    { name: 'disponible', type: 5, description: '¿Sigue disponible para comprar?',    required: true },
+                ],
+            },
         ]).catch(err => console.error('[bot] commands.set failed:', err));
 
         // Aviso temprano y explicito: sin estas variables los cuatro comandos
@@ -414,6 +438,8 @@ if (RUN_BOT) {
             else if (interaction.isChatInputCommand() && interaction.commandName === 'deletegroup')   await handleDeleteGroup(interaction);
             else if (interaction.isChatInputCommand() && interaction.commandName === 'checkgroup')    await handleCheckGroup(interaction);
             else if (interaction.isChatInputCommand() && interaction.commandName === 'groups')        await handleGroups(interaction);
+            else if (interaction.isChatInputCommand() && interaction.commandName === 'acc')           await handleAcc(interaction);
+            else if (interaction.isChatInputCommand() && interaction.commandName === 'accdispo')      await handleAccDispo(interaction);
             else if (interaction.isButton())           await handleButton(interaction);
             else if (interaction.isModalSubmit())      await handleModal(interaction);
             else if (interaction.isStringSelectMenu() && interaction.customId.startsWith('seg_')) await handleSeguidoresSelect(interaction);

@@ -33,16 +33,20 @@ function isOwner(interaction) {
 }
 
 function buildEmbed(listing) {
+    const estado = listing.disponible
+        ? '<:disponible:1540603311890104321> Disponible'
+        : '<:nodisponible:1540604743234228364> No disponible';
+
     const embed = new EmbedBuilder()
-        .setColor(listing.disponible ? 0x2ecc71 : 0xe74c3c)
+        .setColor(listing.disponible ? 0x168A62 : 0x62666D)
+        .setAuthor({ name: '7x Community · Catálogo de cuentas' })
         .setTitle(listing.titulo)
         .setDescription(listing.descripcion)
         .addFields(
-            { name: 'Cuenta', value: listing.nombre, inline: true },
-            { name: 'Precio', value: `$${listing.precio.toLocaleString('es-MX')} MXN`, inline: true },
-            { name: 'Disponibilidad', value: listing.disponible ? '✅ Disponible' : '❌ No disponible', inline: true },
+            { name: '💰 Precio', value: `**$${listing.precio.toLocaleString('es-MX')} MXN**`, inline: true },
+            { name: 'Estado', value: estado, inline: true },
         )
-        .setFooter({ text: '7x Community' })
+        .setFooter({ text: '7x Community · Consulta al staff para más información' })
         .setTimestamp();
 
     if (listing.imagenUrl) embed.setImage(listing.imagenUrl);

@@ -790,6 +790,36 @@ Publicado, pasan tres cosas:
 Si el canal de aliados no se puede abrir, **no se marca como aceptada** y se
 dice: lo contrario dejaria una alianza dada por publicada que no existe.
 
+## Calculadora de Robux
+
+El panel de `CHANNELS.CALC` (`calc.js`) es un Container de Components V2, como
+el de tickets: barra gris a la izquierda y, **dentro del mismo bloque**, el
+texto y los dos botones. Antes era un embed clasico, y un embed no admite
+botones — quedaban colgando debajo del marco.
+
+### Lo que hay que cuidar al convertir un embed en tarjeta
+
+**Un mensaje V2 no tiene `embeds`.** La deteccion del panel exigia
+`msg.embeds.length > 0`, y con la tarjeta eso no se cumple nunca: cada arranque
+habria publicado otro panel. No avisa de nada — el bot arranca bien, no hay
+error en consola y el canal se va llenando de calculadoras. Ahora se reconoce
+por el `customId` del boton, que es lo unico que no cambia al retocar el texto.
+
+**El panel viejo sigue ahi.** El que esta publicado y fijado hoy es un embed, y
+tiene que encontrarse igual para convertirlo en su sitio en vez de dejarlo
+huerfano al lado del nuevo. Por eso la deteccion mira tambien el texto y el
+titulo del embed. De eso se encarga `v2.editOrRecreate`: intenta el edit que le
+anade el flag V2 y, si Discord lo rechaza, sustituye el mensaje y lo vuelve a
+fijar.
+
+**Los `customId` no cambian** (`calc_dinero`, `calc_robux`): son los que enruta
+`handlers/buttons.js` y los que su guarda de canal nombra para que solo
+funcionen en el canal de la calculadora.
+
+De paso la busqueda pasa a mirar **los fijados primero**, como el resto de
+paneles: buscar solo en los ultimos 100 mensajes acaba duplicando el panel en
+cuanto el canal acumula mas de 100 por encima.
+
 ## /avatar — la ficha de un usuario de Roblox
 
 ```

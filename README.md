@@ -856,8 +856,9 @@ comprueba que los cuatro sitios lo siguen — mirar el fichero no basta, porque 
 115 escrito a mano da el mismo resultado mientras config diga 115, y el fallo
 solo apareceria el dia que se suba el precio.
 
-`MIN_ROBUX` y `MAX_ROBUX` (100 y 100.000) son un rango razonable para rechazar
-un 0 o un millon, no algo que se pidiera: se cambian ahi.
+`MIN_ROBUX` y `MAX_ROBUX` son el rango que se vende por gamepass: **500 y
+100.000**. Los dos salen de config y los lee tanto el panel como las dos
+calculadoras.
 
 ### Las dos calculadoras
 

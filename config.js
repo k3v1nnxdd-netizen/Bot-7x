@@ -75,12 +75,13 @@ module.exports = {
     // ÚNICA fuente de verdad del precio: lo leen el panel y las dos
     // calculadoras, así que subirlo es tocar esta línea y ninguna más.
     //
-    // MIN_ROBUX y MAX_ROBUX son un rango razonable, no algo que se pidiera:
-    // están para rechazar un 0 o un millón, y se cambian aquí.
+    // MIN_ROBUX y MAX_ROBUX son el rango que se vende por gamepass. Los dos
+    // los lee el panel y las dos calculadoras, así que cambiarlos es tocar
+    // estas líneas y ninguna más.
     GAMEPASS: {
         PRECIO_POR_1K: 115,
         TASA_ROBLOX:   0.30,
-        MIN_ROBUX:     100,
+        MIN_ROBUX:     500,
         MAX_ROBUX:     100000,
     },
 

@@ -24,6 +24,20 @@ module.exports = {
 
     FEATURES: {
         ANTI_SCAM: false,
+
+        // La venta de seguidores. En false desaparece de todos los sitios por
+        // los que se podía empezar una: la opción y el botón del panel de
+        // tickets, y el panel del canal de seguidores (que deja de publicarse
+        // y de reeditarse).
+        //
+        // Lo que NO apaga es el flujo de dentro de un ticket ya abierto. Es
+        // deliberado: alguien a medio pedido se quedaría con un ticket muerto
+        // y sin forma de terminarlo. Se corta la entrada, no lo que ya empezó.
+        //
+        // Volver a venderlos es poner esto en true y reiniciar. El código
+        // entero sigue aquí y sus tests siguen pasando, así que no se pudre
+        // mientras esté apagado.
+        SEGUIDORES: false,
     },
 
     CHANNELS: {

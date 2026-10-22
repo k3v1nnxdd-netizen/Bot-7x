@@ -96,8 +96,20 @@ function buildPlatformRow() {
     );
 }
 
+// Lo que se le dice a quien pulse el botón con la venta apagada. Pasa de
+// verdad: un panel viejo sin reeditar, o alguien con el mensaje abierto desde
+// antes del cambio. Mejor decirlo que dejar el botón sin hacer nada.
+const VENTA_APAGADA =
+    '<:alert:1501220021035204658> **La venta de seguidores está cerrada.**\n' +
+    'Ya no se abren tickets de seguidores. Si necesitas otra cosa, usa los demás ' +
+    'botones del panel.';
+
 async function startSeguidoresTicket(interaction) {
     if (interaction.replied || interaction.deferred) return;
+
+    if (config.FEATURES.SEGUIDORES !== true) {
+        return safeReply(interaction, { content: VENTA_APAGADA, ephemeral: true });
+    }
 
     const userId = interaction.user.id;
 

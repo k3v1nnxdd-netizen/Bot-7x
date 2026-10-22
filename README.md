@@ -790,6 +790,39 @@ Publicado, pasan tres cosas:
 Si el canal de aliados no se puede abrir, **no se marca como aceptada** y se
 dice: lo contrario dejaria una alianza dada por publicada que no existe.
 
+## Venta de seguidores (apagada)
+
+`config.FEATURES.SEGUIDORES` esta en **false**: ya no se venden seguidores. No
+se ha borrado nada — el codigo entero sigue en el repo y sus tests siguen
+pasando, asi que no se pudre mientras este apagado. **Volver a venderlos es
+ponerlo en true y reiniciar.**
+
+Apagado cierra las **cuatro** entradas por las que se podia empezar una venta.
+Hacen falta las cuatro: dejarse una deja la venta medio abierta.
+
+| Entrada | Apagada |
+|---|---|
+| La linea del panel de tickets | No aparece |
+| El boton del panel | No existe |
+| El panel del canal de seguidores | No se publica ni se reedita |
+| Un clic desde un panel viejo sin reeditar | Responde que la venta esta cerrada |
+
+La linea y el boton salen ahora de **una sola lista** (`OPCIONES` en
+`panel.js`). Antes eran dos listas escritas a mano, y apagar una opcion habria
+dejado el panel anunciando algo que ya no tiene boton.
+
+### Lo que NO apaga: los tickets ya abiertos
+
+Se corta la entrada, no lo que ya empezo. Los botones `seg_*`, su desplegable
+de plataforma, sus modales, el registro de pedidos y el flujo de resenas siguen
+funcionando con el tipo `seguidores`. Es deliberado: alguien a medio pedido se
+quedaria con un ticket muerto y sin forma de terminarlo.
+
+El panel que ya estuviera publicado en el canal **se queda como este**: borrarlo
+por nuestra cuenta seria tirar un mensaje del canal sin que nadie lo haya
+pedido, y su boton ya responde que la venta esta cerrada. Si no lo quieres a la
+vista, esconde el canal.
+
 ## Calculadora de Robux
 
 El panel de `CHANNELS.CALC` (`calc.js`) es un Container de Components V2, como

@@ -52,7 +52,16 @@ function isSeguidoresMsg(msg, botId) {
     );
 }
 
+// Con la venta apagada no se publica ni se reedita nada. El panel que ya
+// estuviera publicado se queda como esté: borrarlo por nuestra cuenta sería
+// tirar un mensaje del canal sin que nadie lo haya pedido, y su botón ya
+// responde que la venta está cerrada.
 async function ensureSeguidoresPanel(client) {
+    if (config.FEATURES.SEGUIDORES !== true) {
+        console.log('[seguidores] Venta apagada (FEATURES.SEGUIDORES) — panel omitido.');
+        return null;
+    }
+
     const channel = client.channels.cache.get(config.CHANNELS.SEGUIDORES);
     if (!channel) {
         console.warn('[seguidores] Seguidores channel not found — skipping.');

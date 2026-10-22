@@ -64,17 +64,24 @@ module.exports = async function run() {
     if (fs.existsSync(ESTADO_FILE)) fs.unlinkSync(ESTADO_FILE);
 
     // ── 1. El botón del panel ────────────────────────────────────────────────
-    const PANEL = fs.readFileSync(path.join(RAIZ, 'panel.js'), 'utf8');
-    const orden = [...PANEL.matchAll(/setCustomId\('([a-z_]+)'\)/g)].map(m => m[1]);
-    assert(orden.includes('alianza'), 'el panel de tickets tiene el botón de Alianza');
+    // Se mira la lista de opciones del panel, no el texto del fichero: los
+    // botones se construyen a partir de ella, así que es la que manda. Se usa
+    // OPCIONES entera y no las activas, porque el orden es el de la lista y no
+    // debe depender de qué haya apagado en ese momento.
+    const { __test: panelTest } = require('../../panel');
+    const orden = panelTest.OPCIONES.map(o => o.id);
+    assert(orden.includes('alianza'), 'el panel de tickets tiene la opción de Alianza');
     assert(
         orden.indexOf('alianza') === orden.indexOf('comprar') + 1,
-        `el botón va justo después de Comprar (orden: ${orden.join(', ')})`
+        `va justo después de Comprar (orden: ${orden.join(', ')})`
     );
     // Discord no admite más de 5 botones por fila: el sexto haría que el panel
     // entero dejara de publicarse.
-    assert(orden.length <= 5, `caben en una fila de Discord (${orden.length}/5)`);
-    assert(PANEL.includes('1553269490748366928'), 'usa el emoji de alianza que se pidió');
+    assert(panelTest.buildButtons().toJSON().components.length <= 5, 'los botones caben en una fila de Discord');
+
+    const alianza = panelTest.OPCIONES.find(o => o.id === 'alianza');
+    assert(alianza.emoji.includes('1553269490748366928'), 'usa el emoji de alianza que se pidió');
+    assert(!alianza.activo, 'y no está detrás de ningún interruptor: la alianza siempre se puede pedir');
 
     // ── 2. Enrutado y guardas ────────────────────────────────────────────────
     const BOTONES = fs.readFileSync(path.join(RAIZ, 'handlers', 'buttons.js'), 'utf8');

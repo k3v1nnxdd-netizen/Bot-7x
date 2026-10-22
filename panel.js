@@ -50,13 +50,28 @@ const HEADER = [
     'Elige una opción abajo y se abrirá tu ticket al instante.',
 ].join('\n');
 
+// Las opciones del panel, en orden. De esta ÚNICA lista salen las dos cosas:
+// la línea de texto y el botón. Cuando estaban escritas por separado, apagar
+// una opción dejaba el texto anunciando algo que ya no tenía botón.
+//
+// `activo` decide si la opción existe. Se lee en cada construcción del panel y
+// no al cargar el módulo, para que cambiar el interruptor y reiniciar baste.
 const OPCIONES = [
-    `${E.buy} **Comprar** — Ticket para comprar **Robux**`,
-    `${E.alianza} **Alianza** — Ticket para **aliar tu servidor** con 7x`,
-    `${E.duels} **Duels** — Ticket para comprar **sets de Duels**`,
-    `${E.seguidores} **Seguidores** — Ticket para comprar **seguidores**`,
-    `${E.otra} **Otra cosa** — Dudas, problemas o consultas`,
-].join('\n');
+    { id: 'comprar',    label: 'Comprar',    emoji: E.buy,        texto: 'Ticket para comprar **Robux**' },
+    { id: 'alianza',    label: 'Alianza',    emoji: E.alianza,    texto: 'Ticket para **aliar tu servidor** con 7x' },
+    { id: 'duels',      label: 'Duels',      emoji: E.duels,      texto: 'Ticket para comprar **sets de Duels**' },
+    { id: 'seguidores', label: 'Seguidores', emoji: E.seguidores, texto: 'Ticket para comprar **seguidores**',
+      activo: () => config.FEATURES.SEGUIDORES === true },
+    { id: 'otra_cosa',  label: 'Otra cosa',  emoji: E.otra,       texto: 'Dudas, problemas o consultas' },
+];
+
+function opcionesActivas() {
+    return OPCIONES.filter(o => (o.activo ? o.activo() : true));
+}
+
+function buildOpciones() {
+    return opcionesActivas().map(o => `${o.emoji} **${o.label}** — ${o.texto}`).join('\n');
+}
 
 const AVISO = [
     `${E.alert} **Antes de abrir un ticket**`,
@@ -74,38 +89,20 @@ const AVISO = [
 
 function buildButtons() {
     return new ActionRowBuilder().addComponents(
-        new ButtonBuilder()
-            .setCustomId('comprar')
-            .setLabel('Comprar')
-            .setStyle(ButtonStyle.Secondary)
-            .setEmoji(E.buy),
-        new ButtonBuilder()
-            .setCustomId('alianza')
-            .setLabel('Alianza')
-            .setStyle(ButtonStyle.Secondary)
-            .setEmoji(E.alianza),
-        new ButtonBuilder()
-            .setCustomId('duels')
-            .setLabel('Duels')
-            .setStyle(ButtonStyle.Secondary)
-            .setEmoji(E.duels),
-        new ButtonBuilder()
-            .setCustomId('seguidores')
-            .setLabel('Seguidores')
-            .setStyle(ButtonStyle.Secondary)
-            .setEmoji(E.seguidores),
-        new ButtonBuilder()
-            .setCustomId('otra_cosa')
-            .setLabel('Otra cosa')
-            .setStyle(ButtonStyle.Secondary)
-            .setEmoji(E.otra),
+        ...opcionesActivas().map(o =>
+            new ButtonBuilder()
+                .setCustomId(o.id)
+                .setLabel(o.label)
+                .setStyle(ButtonStyle.Secondary)
+                .setEmoji(o.emoji)
+        )
     );
 }
 
 function buildContainer() {
     const container = new ContainerBuilder()
         .setAccentColor(ACCENT)
-        .addTextDisplayComponents(new TextDisplayBuilder().setContent(`${HEADER}\n\n${OPCIONES}`))
+        .addTextDisplayComponents(new TextDisplayBuilder().setContent(`${HEADER}\n\n${buildOpciones()}`))
         .addSeparatorComponents(
             new SeparatorBuilder().setDivider(true).setSpacing(SeparatorSpacingSize.Small)
         )
@@ -202,4 +199,4 @@ async function ensurePanel(client) {
     console.log('[panel] Panel sent and pinned.');
 }
 
-module.exports = { ensurePanel };
+module.exports = { ensurePanel, __test: { buildContainer, buildButtons, buildOpciones, opcionesActivas, OPCIONES } };

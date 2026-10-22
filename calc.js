@@ -14,6 +14,20 @@ const v2 = require('./utils/panelV2');
 
 const ACCENT = 0x2B2D31;
 
+// ── Banner ────────────────────────────────────────────────────────────────────
+// El GIF va DENTRO del contenedor, entre el texto y los botones. Se sube como
+// adjunto y se referencia con attachment://, igual que en panel.js y anuncio.js:
+// una URL de la CDN de Discord viene firmada y caduca, así que no sirve.
+//
+// pickBanner le mete el hash del fichero en el nombre, y eso es lo que permite
+// a isUpToDate() darse cuenta de que el GIF ha cambiado y reeditar el panel en
+// vez de dejar el viejo — y, al revés, no resubir 9 MB en cada arranque cuando
+// no ha cambiado nada.
+//
+// Pesa 9,2 MiB y el límite de subida de Discord son 10: si alguna vez se
+// cambia por otro más pesado, el panel dejará de publicarse.
+const BANNER = v2.pickBanner(['./7xCommunity_Comunidad_Discord.gif'], '7xcalc.gif');
+
 const TITULO = '7x Community - Robux';
 
 const E = {
@@ -54,11 +68,18 @@ function buildCalcRow() {
 }
 
 function buildContainer() {
-    return v2.tarjeta({ color: ACCENT, texto: buildTexto(), filas: [buildCalcRow()] });
+    return v2.tarjeta({
+        color: ACCENT,
+        texto: buildTexto(),
+        // Sin el fichero, el panel sale igual pero sin GIF: quedarse sin panel
+        // por una imagen que falta sería peor.
+        imagen: BANNER.exists ? `attachment://${BANNER.name}` : null,
+        filas: [buildCalcRow()],
+    });
 }
 
 function buildPayload() {
-    return v2.tarjetaPayload({ color: ACCENT, texto: buildTexto(), filas: [buildCalcRow()] });
+    return v2.payload(buildContainer(), BANNER);
 }
 
 // ── Identificación ────────────────────────────────────────────────────────────
@@ -91,6 +112,10 @@ async function ensureCalcPanel(client) {
         return null;
     }
 
+    if (!BANNER.exists) {
+        console.warn('[calc] 7xCommunity_Comunidad_Discord.gif no encontrado — el panel irá sin GIF.');
+    }
+
     const container = buildContainer();
 
     const aplicar = async (msg, comoLlego) => {
@@ -101,7 +126,7 @@ async function ensureCalcPanel(client) {
         // editOrRecreate se encarga del caso que importa aquí: el panel viejo
         // es un embed clásico, y Discord puede rechazar el edit que le añade el
         // flag de Components V2. Si lo rechaza, lo sustituye y lo vuelve a fijar.
-        const editado = await v2.editOrRecreate(msg, container, { exists: false }, 'calc');
+        const editado = await v2.editOrRecreate(msg, container, BANNER, 'calc');
         console.log(`[calc] Panel ${comoLlego} actualizado.`);
         return editado;
     };
@@ -136,5 +161,5 @@ async function ensureCalcPanel(client) {
 
 module.exports = {
     ensureCalcPanel,
-    __test: { buildContainer, buildPayload, buildTexto, buildCalcRow, isCalcMsg, TITULO, ACCENT },
+    __test: { buildContainer, buildPayload, buildTexto, buildCalcRow, isCalcMsg, TITULO, ACCENT, BANNER },
 };

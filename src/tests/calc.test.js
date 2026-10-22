@@ -67,13 +67,45 @@ module.exports = async function run() {
     assert(/CALC_BUTTONS\s*=\s*new Set\(\['calc_dinero', 'calc_robux'\]\)/.test(BOTONES),
         'y la guarda de canal sigue nombrándolos a los dos');
 
-    // ── 3. El mensaje que se envía ───────────────────────────────────────────
+    // ── 3. El GIF, dentro del bloque y encima de los botones ─────────────────
+    const visibles = planos.filter(n => [10, 12, 2].includes(n.type));
+    const iGif   = visibles.findIndex(n => n.type === 12);
+    const iBoton = visibles.findIndex(n => n.type === 2);
+
+    assert(calc.BANNER.exists, '7xCommunity_Comunidad_Discord.gif está en el repo');
+    if (calc.BANNER.exists) {
+        assert(iGif !== -1, 'el GIF va DENTRO del bloque');
+        assert(iGif < iBoton, 'entre el texto y los botones, no debajo de todo');
+        const url = visibles[iGif].items?.[0]?.media?.url ?? '';
+        assert(url === `attachment://${calc.BANNER.name}`,
+            'se referencia como adjunto, no por una URL de la CDN que caduca');
+        // El hash en el nombre es lo que deja ver a isUpToDate que el GIF
+        // cambió: sin él, cambiar la imagen no reeditaría el panel.
+        assert(/-[0-9a-f]{8}\.gif$/.test(calc.BANNER.name), 'con el hash del fichero en el nombre');
+
+        const bytes = fs.statSync(path.join(RAIZ, '7xCommunity_Comunidad_Discord.gif')).size;
+        assert(bytes < 10 * 1024 * 1024,
+            `cabe en el límite de subida (${(bytes / 1048576).toFixed(2)} MB < 10 MB)`);
+    }
+
+    // Sin el fichero el panel sale igual, sin GIF: quedarse sin panel por una
+    // imagen que falta sería peor.
+    const CALC = fs.readFileSync(path.join(RAIZ, 'calc.js'), 'utf8');
+    assert(/BANNER\.exists \?/.test(CALC), 'si el GIF no estuviera, el panel se publica sin él');
+    assert(v2.pickBanner(['./no-existe-este-gif.gif'], 'x.gif').exists === false,
+        'y pickBanner sabe decir que no está');
+
+    // ── 4. El mensaje que se envía ───────────────────────────────────────────
     const payload = calc.buildPayload();
     assert((payload.flags & 32768) === 32768, 'el mensaje lleva el flag de Components V2');
     assert(!('content' in payload) && !('embeds' in payload),
         'y sin content ni embeds, que Discord rechazaría con ese flag');
+    if (calc.BANNER.exists) {
+        assert(payload.files?.[0]?.name === calc.BANNER.name,
+            'el adjunto se llama igual que lo que referencia la galería');
+    }
 
-    // ── 4. El texto no se pierde en la conversión ────────────────────────────
+    // ── 5. El texto no se pierde en la conversión ────────────────────────────
     const texto = calc.buildTexto();
     for (const trozo of [
         calc.TITULO,
@@ -89,7 +121,7 @@ module.exports = async function run() {
     }
     assert(texto.startsWith('# '), 'el título va como encabezado del texto, donde Discord sí pinta los emojis');
 
-    // ── 5. Reconocer los DOS formatos ────────────────────────────────────────
+    // ── 6. Reconocer los DOS formatos ────────────────────────────────────────
     const nuevo = { author: { id: BOT }, content: '', embeds: [], components: [calc.buildContainer().toJSON()] };
     assert(calc.isCalcMsg(nuevo, BOT), 'reconoce el panel nuevo (tarjeta, sin embeds)');
     assert(!calc.isCalcMsg(nuevo, 'otro-bot'), 'y no adopta el de otro autor');
@@ -116,7 +148,7 @@ module.exports = async function run() {
 
     assert(v2.isUpToDate(nuevo, calc.buildContainer()), 'un panel recién publicado ya está al día: no se reedita');
 
-    // ── 6. Reiniciar no duplica, y el panel viejo se migra ───────────────────
+    // ── 7. Reiniciar no duplica, y el panel viejo se migra ───────────────────
     for (const escenario of await simularReinicios()) assert(escenario.ok, escenario.msg);
 
     return finish();

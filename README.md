@@ -853,6 +853,21 @@ De paso la busqueda pasa a mirar **los fijados primero**, como el resto de
 paneles: buscar solo en los ultimos 100 mensajes acaba duplicando el panel en
 cuanto el canal acumula mas de 100 por encima.
 
+### El GIF
+
+`7xCommunity_Comunidad_Discord.gif` (800x450, 9,2 MiB) va **dentro del bloque**,
+entre el texto y los botones. Se sube como adjunto y se referencia con
+`attachment://`, igual que en `panel.js` y `anuncio.js`: una URL de la CDN de
+Discord viene firmada y caduca, asi que no sirve.
+
+`pickBanner` le mete el **hash del fichero en el nombre**, y eso es lo que deja
+ver a `isUpToDate()` que el GIF ha cambiado para reeditar el panel — y, al
+reves, no resubir 9 MB en cada arranque cuando no ha cambiado nada.
+
+El limite de subida de Discord son **10 MiB**: si alguna vez se cambia por otro
+mas pesado, el panel dejara de publicarse. Hay un test que lo vigila. Y si el
+fichero faltara, el panel sale igual pero sin GIF.
+
 ## /avatar — la ficha de un usuario de Roblox
 
 ```

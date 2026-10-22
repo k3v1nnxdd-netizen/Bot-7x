@@ -60,6 +60,28 @@ module.exports = {
         GROUP_STATUS:       '1547140265003982888',
         ANUNCIO:            '1553268998765023293',
         ALIANZA:            '1553269110551482408',
+        GAMEPASS:           '1561898653030027335',
+    },
+
+    // ── Venta por gamepass ───────────────────────────────────────────────────
+    // La otra forma de entrega: el cliente crea un gamepass en su juego por el
+    // valor que va a comprar y 7x se lo compra.
+    //
+    // PRECIO_POR_1K es por cada 1.000 Robux de VALOR DEL GAMEPASS, no de lo que
+    // acaba recibiendo. La diferencia es TASA_ROBLOX, la comisión que se queda
+    // Roblox en toda venta de gamepass, y que 7x no cubre: quien crea un
+    // gamepass de 1.000 recibe 700. El panel enseña siempre las dos cifras.
+    //
+    // ÚNICA fuente de verdad del precio: lo leen el panel y las dos
+    // calculadoras, así que subirlo es tocar esta línea y ninguna más.
+    //
+    // MIN_ROBUX y MAX_ROBUX son un rango razonable, no algo que se pidiera:
+    // están para rechazar un 0 o un millón, y se cambian aquí.
+    GAMEPASS: {
+        PRECIO_POR_1K: 115,
+        TASA_ROBLOX:   0.30,
+        MIN_ROBUX:     100,
+        MAX_ROBUX:     100000,
     },
 
     // ── Alianzas con otros servidores ────────────────────────────────────────

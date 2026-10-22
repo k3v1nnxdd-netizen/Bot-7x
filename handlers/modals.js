@@ -16,6 +16,7 @@ const { finalizeReview }                                    = require('../utils/
 const roblox                                               = require('../src/roblox/client');
 const { getJoinDate, getLastChecked, trackIfNew, updateLastChecked, daysSince } = require('../utils/groupTracker');
 const config                                               = require('../config');
+const gamepass                                             = require('../utils/gamepassPrecios');
 const { buildMetodosPayload }                               = require('../metodos');
 const { handleSeguidoresModal }                             = require('./seguidoresFlow');
 const { handleCheckGroupModal }                             = require('./checkGroupFlow');
@@ -474,6 +475,108 @@ async function handleCalcRobuxModal(interaction) {
 
 // ── Verif modal builder ───────────────────────────────────────────────────────
 
+// ── Gamepass ──────────────────────────────────────────────────────────────────
+
+function buildGpDineroModal() {
+    const modal = new ModalBuilder().setCustomId('gp_dinero_modal').setTitle('¿Cuánto dinero tienes?');
+    modal.addComponents(
+        new ActionRowBuilder().addComponents(
+            new TextInputBuilder()
+                .setCustomId('presupuesto')
+                .setLabel('Tu presupuesto en MXN')
+                .setPlaceholder('Ejemplo: 500')
+                .setStyle(TextInputStyle.Short)
+                .setMaxLength(12)
+                .setRequired(true)
+        )
+    );
+    return modal;
+}
+
+function buildGpRobuxModal() {
+    const modal = new ModalBuilder().setCustomId('gp_robux_modal').setTitle('¿Cuántos Robux quieres?');
+    modal.addComponents(
+        new ActionRowBuilder().addComponents(
+            new TextInputBuilder()
+                .setCustomId('cantidad_robux')
+                .setLabel('Valor del gamepass en Robux')
+                .setPlaceholder('Ejemplo: 1000')
+                .setStyle(TextInputStyle.Short)
+                .setMaxLength(9)
+                .setRequired(true)
+        )
+    );
+    return modal;
+}
+
+// Las dos respuestas enseñan SIEMPRE las dos cifras: lo que paga y lo que le
+// llega a la cuenta. Dar sólo la primera sería cobrar por 1.000 y entregar 700
+// sin decirlo.
+function buildGamepassEmbed(campos, aviso = null) {
+    return new EmbedBuilder()
+        .setColor(0x2B2D31)
+        .setTitle('<a:shop:1190502129748676650> Precio por gamepass')
+        .setDescription(aviso)
+        .addFields(campos)
+        .setFooter({ text: `7x Community • Roblox se queda el ${Math.round(gamepass.G.TASA_ROBLOX * 100)}% de la venta` });
+}
+
+async function handleGpDineroModal(interaction) {
+    if (interaction.replied || interaction.deferred) return;
+    if (!await safeDeferReply(interaction, { ephemeral: true })) return;
+
+    const presupuesto = extractDecimal(interaction.fields.getTextInputValue('presupuesto'));
+    if (!presupuesto) {
+        return safeEditReply(interaction, { content: '<:alert:1501220021035204658> Ingresa una cantidad válida. Ejemplo: 500 o 150.50' });
+    }
+
+    const robux = gamepass.robuxPor(presupuesto);
+    if (!robux) {
+        return safeEditReply(interaction, {
+            content: `<:alert:1501220021035204658> Con ese presupuesto no alcanza. El mínimo por gamepass son ` +
+                `**${gamepass.fmtRobux(gamepass.G.MIN_ROBUX)} Robux** (${gamepass.fmtMXN(gamepass.precioDe(gamepass.G.MIN_ROBUX))}).`,
+        });
+    }
+
+    const tope = Math.min(robux, gamepass.G.MAX_ROBUX);
+    const precio = gamepass.precioDe(tope);
+    const sobra = Math.round((presupuesto - precio) * 100) / 100;
+
+    const embed = buildGamepassEmbed([
+        { name: '<:point:1501212595464700104> Tu presupuesto', value: gamepass.fmtMXN(presupuesto), inline: true },
+        { name: '<a:shop:1190502129748676650> Gamepass que creas', value: `${gamepass.fmtRobux(tope)} Robux`, inline: true },
+        { name: '<:point:1501212595464700104> Precio exacto', value: gamepass.fmtMXN(precio), inline: true },
+        { name: '<a:robuxxx:1510070809366892604> Recibes en tu cuenta', value: `${gamepass.fmtRobux(gamepass.recibe(tope))} Robux`, inline: false },
+    ], sobra > 0 ? `-# Te sobran ${gamepass.fmtMXN(sobra)}: el gamepass se ajusta a la baja para no pasarse de tu presupuesto.` : null);
+
+    await safeEditReply(interaction, { embeds: [embed] });
+}
+
+async function handleGpRobuxModal(interaction) {
+    if (interaction.replied || interaction.deferred) return;
+    if (!await safeDeferReply(interaction, { ephemeral: true })) return;
+
+    const robux = extractNumber(interaction.fields.getTextInputValue('cantidad_robux'));
+    if (!robux) {
+        return safeEditReply(interaction, { content: '<:alert:1501220021035204658> Ingresa una cantidad válida de Robux. Ejemplo: 1000' });
+    }
+
+    if (!gamepass.enRango(robux)) {
+        return safeEditReply(interaction, {
+            content: `<:alert:1501220021035204658> Por gamepass vendemos entre **${gamepass.fmtRobux(gamepass.G.MIN_ROBUX)}** ` +
+                `y **${gamepass.fmtRobux(gamepass.G.MAX_ROBUX)}** Robux.`,
+        });
+    }
+
+    const embed = buildGamepassEmbed([
+        { name: '<a:shop:1190502129748676650> Gamepass que creas', value: `${gamepass.fmtRobux(robux)} Robux`, inline: true },
+        { name: '<:point:1501212595464700104> Precio total', value: gamepass.fmtMXN(gamepass.precioDe(robux)), inline: true },
+        { name: '<a:robuxxx:1510070809366892604> Recibes en tu cuenta', value: `${gamepass.fmtRobux(gamepass.recibe(robux))} Robux`, inline: true },
+    ]);
+
+    await safeEditReply(interaction, { embeds: [embed] });
+}
+
 function buildVerifModal() {
     const modal = new ModalBuilder().setCustomId('verif_modal').setTitle('Verificación de Grupo Roblox');
     modal.addComponents(
@@ -661,6 +764,8 @@ const HANDLERS = {
     duels_modal:       handleDuelsModal,
     calc_dinero_modal: handleCalcDineroModal,
     calc_robux_modal:  handleCalcRobuxModal,
+    gp_dinero_modal:   handleGpDineroModal,
+    gp_robux_modal:    handleGpRobuxModal,
     verif_modal:       handleVerifModal,
     headless_modal:    handleHeadlessModal,
 };
@@ -685,4 +790,8 @@ async function handleModal(interaction) {
     }
 }
 
-module.exports = { handleModal, buildComprarModal, buildOtraCosaModal, buildDuelsModal, buildCalcDineroModal, buildCalcRobuxModal, buildVerifModal, buildReviewModal };
+module.exports = {
+    handleModal, buildComprarModal, buildOtraCosaModal, buildDuelsModal,
+    buildCalcDineroModal, buildCalcRobuxModal, buildGpDineroModal, buildGpRobuxModal,
+    buildVerifModal, buildReviewModal,
+};

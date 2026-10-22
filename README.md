@@ -823,6 +823,53 @@ por nuestra cuenta seria tirar un mensaje del canal sin que nadie lo haya
 pedido, y su boton ya responde que la venta esta cerrada. Si no lo quieres a la
 vista, esconde el canal.
 
+## Precios por gamepass
+
+Panel en `CHANNELS.GAMEPASS` (`gamepass.js`), mismo molde que el de la
+calculadora: Container de Components V2 con el texto, el GIF
+(`7xCommunity_Gamepass_Discord.gif`) y dos botones **dentro del bloque**.
+
+La entrega va al reves que por grupo: **el cliente crea un gamepass** en su
+juego por el valor que va a comprar, y 7x se lo compra.
+
+### Dos cifras, no una
+
+Roblox se queda su comision (`GAMEPASS.TASA_ROBLOX`, hoy el **30%**) de toda
+venta de gamepass, y **7x no la cubre**. Asi que hay dos numeros distintos y los
+dos se enseñan siempre, en el panel y en las dos calculadoras:
+
+| | |
+|---|---|
+| Lo que **paga** | Por el **valor del gamepass**: `GAMEPASS.PRECIO_POR_1K` por cada 1.000 |
+| Lo que **recibe** | Ese valor menos la comision de Roblox |
+
+Un gamepass de 1.000 cuesta $115 MXN y deja **700 Robux** en la cuenta. Dar solo
+el primer numero seria cobrar por 1.000 y entregar 700 sin decirlo, y el cliente
+tendria razon en quejarse. Por eso la segunda cifra esta en el panel, en el
+ejemplo del panel, en las dos fichas de resultado y en su pie.
+
+### El precio sale de config
+
+`GAMEPASS.PRECIO_POR_1K` es la **unica** fuente: lo leen el panel, su ejemplo y
+las dos calculadoras. Hay un test que **cambia el precio en caliente** y
+comprueba que los cuatro sitios lo siguen — mirar el fichero no basta, porque un
+115 escrito a mano da el mismo resultado mientras config diga 115, y el fallo
+solo apareceria el dia que se suba el precio.
+
+`MIN_ROBUX` y `MAX_ROBUX` (100 y 100.000) son un rango razonable para rechazar
+un 0 o un millon, no algo que se pidiera: se cambian ahi.
+
+### Las dos calculadoras
+
+- **Presupuesto -> gamepass**: redondea **a la baja** y a multiplos de 10, para
+  que el precio nunca pase del presupuesto y para no proponer un gamepass de
+  2.173 Robux. Lo que sobra se dice, no se esconde. Un test recorre ~2.800
+  presupuestos comprobando que el precio no se pasa en ninguno.
+- **Cantidad -> precio**: el precio exacto de ese gamepass y lo que recibe.
+
+Una entrada imposible (0, negativo, texto, fuera de rango) **no devuelve
+precio**: un "$0 MXN" en pantalla pareceria una oferta.
+
 ## Calculadora de Robux
 
 El panel de `CHANNELS.CALC` (`calc.js`) es un Container de Components V2, como

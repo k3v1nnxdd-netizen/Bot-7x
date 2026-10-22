@@ -33,6 +33,7 @@ if (RUN_BOT) {
     const config              = require('./config');
     const { ensurePanel }     = require('./panel');
     const { ensureCalcPanel }   = require('./calc');
+    const { ensureGamepassPanel } = require('./gamepass');
     const { ensureReglasPanel }  = require('./reglas');
     const { ensureMetodosPanel, handleMetodosSelect, METODOS } = require('./metodos');
     const { ensureVerifPanel }   = require('./verif');
@@ -362,6 +363,10 @@ if (RUN_BOT) {
 
         await ensurePanel(client).catch(err =>
             console.error('[bot] ensurePanel failed:', err)
+        );
+
+        await ensureGamepassPanel(client).catch(err =>
+            console.error('[bot] ensureGamepassPanel failed:', err)
         );
 
         await ensureCalcPanel(client).catch(err =>

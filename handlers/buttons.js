@@ -10,7 +10,7 @@ const { isGone, safeReply, safeEditReply, safeDeferReply, safeShowModal } = requ
 const { isLocked, lock } = require('../utils/spam');
 const { esAdminDeInteraccion, puedeGestionarTicket } = require('../utils/permisos');
 const tickets            = require('../utils/tickets');
-const { buildComprarModal, buildOtraCosaModal, buildDuelsModal, buildCalcDineroModal, buildCalcRobuxModal, buildVerifModal, buildReviewModal } = require('./modals');
+const { buildComprarModal, buildOtraCosaModal, buildDuelsModal, buildCalcDineroModal, buildCalcRobuxModal, buildGpDineroModal, buildGpRobuxModal, buildVerifModal, buildReviewModal } = require('./modals');
 const { buildRefRow, sendPurchaseDM } = require('../utils/purchaseDm');
 const reviews            = require('../utils/reviews');
 const { requestReview }  = require('../utils/reviewFlow');
@@ -50,6 +50,7 @@ function buildAutoCloseEmbed(minutes) {
 
 const PANEL_BUTTONS  = new Set(['comprar', 'alianza', 'otra_cosa', 'duels', 'seguidores']);
 const CALC_BUTTONS   = new Set(['calc_dinero', 'calc_robux']);
+const GAMEPASS_BUTTONS = new Set(['gp_dinero', 'gp_robux']);
 const HEADLESS_BUTTONS = new Set(['headless_comprar']);
 const VERIF_BUTTONS  = new Set(['verif_check']);
 const ANUNCIO_BUTTONS = new Set(['anuncio_copiar']);
@@ -91,6 +92,12 @@ async function guardButton(interaction) {
     // Calc buttons must come from the calc channel
     if (CALC_BUTTONS.has(interaction.customId) && interaction.channelId !== config.CHANNELS.CALC) {
         await safeReply(interaction, { content: 'Usa los botones del canal de calculadora.', ephemeral: true });
+        return false;
+    }
+
+    // Gamepass buttons must come from the gamepass channel
+    if (GAMEPASS_BUTTONS.has(interaction.customId) && interaction.channelId !== config.CHANNELS.GAMEPASS) {
+        await safeReply(interaction, { content: 'Usa los botones del canal de precios por gamepass.', ephemeral: true });
         return false;
     }
 
@@ -340,6 +347,20 @@ async function onVerifCheck(interaction) {
     if (!ok) await safeReply(interaction, { content: '❌ No se pudo abrir el formulario. Intenta de nuevo.', ephemeral: true });
 }
 
+// ── Gamepass handlers ─────────────────────────────────────────────────────────
+
+async function onGpDinero(interaction) {
+    if (interaction.replied || interaction.deferred) return;
+    const ok = await safeShowModal(interaction, buildGpDineroModal());
+    if (!ok) await safeReply(interaction, { content: '❌ No se pudo abrir el formulario. Intenta de nuevo.', ephemeral: true });
+}
+
+async function onGpRobux(interaction) {
+    if (interaction.replied || interaction.deferred) return;
+    const ok = await safeShowModal(interaction, buildGpRobuxModal());
+    if (!ok) await safeReply(interaction, { content: '❌ No se pudo abrir el formulario. Intenta de nuevo.', ephemeral: true });
+}
+
 // ── Calc handlers ─────────────────────────────────────────────────────────────
 
 async function onCalcDinero(interaction) {
@@ -414,6 +435,8 @@ const HANDLERS = {
     anuncio_copiar:   handleCopiarAnuncio,
     calc_dinero:      onCalcDinero,
     calc_robux:       onCalcRobux,
+    gp_dinero:        onGpDinero,
+    gp_robux:         onGpRobux,
     confirmar_pago:      onConfirmarPago,
     cerrar_ticket:       onCerrarTicket,
     confirmar_cerrar:    onConfirmarCerrar,

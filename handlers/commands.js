@@ -598,12 +598,12 @@ function buildRobuxGastadosTexto(userId) {
     ].join('\n');
 }
 
-function buildMisComprasTexto(userId) {
+function buildMisComprasTexto(userId, nombre = null) {
     const F = fidelidad.F;
     const e = fidelidad.estado(userId);
 
     const lineas = [
-        '## Tu fidelidad en 7x',
+        nombre ? `## Fidelidad de ${nombre} en 7x` : '## Tu fidelidad en 7x',
         `${fidelidad.barra(e.progreso)} **${e.progreso}/${F.CADA}** compras`,
         `Te ${e.faltan === 1 ? 'falta' : 'faltan'} **${e.faltan}** compra${e.faltan === 1 ? '' : 's'} para un **${F.DESCUENTO}% de descuento**.`,
     ];
@@ -636,11 +636,14 @@ async function handleRobuxGastados(interaction) {
     await safeReply(interaction, v2.tarjetaPayload({ color: 0x2B2D31, texto: buildRobuxGastadosTexto(interaction.user.id) }));
 }
 
+// Se publica en el canal, como los otros dos: el progreso de cada cliente
+// anima a los demás. Por eso lleva el nombre de quien lo pidió en el título —
+// "Tu fidelidad" a secas, leído por otro, no diría de quién es.
 async function handleMisCompras(interaction) {
-    await safeReply(interaction, {
-        ...v2.tarjetaPayload({ color: 0x2B2D31, texto: buildMisComprasTexto(interaction.user.id) }),
-        ephemeral: true,
-    });
+    await safeReply(interaction, v2.tarjetaPayload({
+        color: 0x2B2D31,
+        texto: buildMisComprasTexto(interaction.user.id, nombreDe(interaction)),
+    }));
 }
 
 module.exports = {

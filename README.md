@@ -831,7 +831,7 @@ vista, esconde el canal.
 |---|---|---|
 | `/compras` | Compras completadas en el servidor y por cuantos clientes, mas las tuyas | Publico |
 | `/robuxgastados` | Robux entregados en el servidor, mas los tuyos | Publico |
-| `/miscompras` | Tu barra de fidelidad, cuantas te faltan y tus descuentos guardados | Solo tu |
+| `/miscompras` | Tu barra de fidelidad, cuantas te faltan y tus descuentos guardados, con tu nombre | Publico |
 
 Los tres leen del **mismo registro que el ranking de compradores**
 (`robuxLeaderboard.json`): compras completadas, sin duplicados y reconstruidas

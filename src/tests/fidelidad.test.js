@@ -184,6 +184,15 @@ module.exports = async function run() {
     assert(/faltan \*\*3\*\*/.test(mias), 'y cuántas faltan');
     assert(/Tienes \*\*1\*\* descuento/.test(mias), 'y los descuentos guardados');
     assert(/Compras completadas: \*\*7\*\*/.test(mias), 'y sus totales');
+    assert(/Fidelidad de kəv en 7x/.test(cmd.buildMisComprasTexto('a', 'kəv')), 'publicado, el título dice de quién es');
+
+    // /miscompras se publica en el canal, no sólo para quien lo usa.
+    const enviado = [];
+    await require('../../handlers/commands').handleMisCompras({
+        user: { id: 'a', username: 'kev', globalName: null }, member: { displayName: 'kəv' },
+        replied: false, deferred: false, reply: async o => enviado.push(o),
+    });
+    assert(enviado.length === 1 && (enviado[0].flags & 64) !== 64, '/miscompras se publica, no es efímero');
 
     const MAIN = fs.readFileSync(path.join(RAIZ, 'main.js'), 'utf8').replace(/\r\n/g, '\n');
     for (const nombre of ['compras', 'robuxgastados', 'miscompras']) {

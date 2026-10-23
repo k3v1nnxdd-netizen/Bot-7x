@@ -71,13 +71,17 @@ module.exports = async function run() {
     const { __test: panelTest } = require('../../panel');
     const orden = panelTest.OPCIONES.map(o => o.id);
     assert(orden.includes('alianza'), 'el panel de tickets tiene la opción de Alianza');
+    // Va justo detrás de las formas de compra: primero se compra, luego todo
+    // lo demás.
+    const ultimaCompra = Math.max(orden.indexOf('comprar'), orden.indexOf('comprar_gamepass'));
     assert(
-        orden.indexOf('alianza') === orden.indexOf('comprar') + 1,
-        `va justo después de Comprar (orden: ${orden.join(', ')})`
+        orden.indexOf('alianza') === ultimaCompra + 1,
+        `va justo después de los botones de compra (orden: ${orden.join(', ')})`
     );
     // Discord no admite más de 5 botones por fila: el sexto haría que el panel
     // entero dejara de publicarse.
-    assert(panelTest.buildButtons().toJSON().components.length <= 5, 'los botones caben en una fila de Discord');
+    assert(panelTest.buildButtons().every(f => f.toJSON().components.length <= 5),
+        'ninguna fila de botones pasa de 5');
 
     const alianza = panelTest.OPCIONES.find(o => o.id === 'alianza');
     assert(alianza.emoji.includes('1553269490748366928'), 'usa el emoji de alianza que se pidió');

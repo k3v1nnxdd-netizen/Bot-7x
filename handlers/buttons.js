@@ -10,7 +10,7 @@ const { isGone, safeReply, safeEditReply, safeDeferReply, safeShowModal } = requ
 const { isLocked, lock } = require('../utils/spam');
 const { esAdminDeInteraccion, puedeGestionarTicket } = require('../utils/permisos');
 const tickets            = require('../utils/tickets');
-const { buildComprarModal, buildOtraCosaModal, buildDuelsModal, buildCalcDineroModal, buildCalcRobuxModal, buildGpDineroModal, buildGpRobuxModal, buildVerifModal, buildReviewModal } = require('./modals');
+const { buildOtraCosaModal, buildDuelsModal, buildCalcDineroModal, buildCalcRobuxModal, buildGpDineroModal, buildGpRobuxModal, buildVerifModal, buildReviewModal } = require('./modals');
 const { buildRefRow, sendPurchaseDM } = require('../utils/purchaseDm');
 const reviews            = require('../utils/reviews');
 const { requestReview }  = require('../utils/reviewFlow');
@@ -19,6 +19,7 @@ const { startSeguidoresTicket, handleSeguidoresButton } = require('./seguidoresF
 const { handleCheckGroupButton } = require('./checkGroupFlow');
 const { handleHeadlessButton } = require('./headlessFlow');
 const { startAlianzaTicket, handleAlianzaButton } = require('./alianzaFlow');
+const { buildCompraModal, handleCompraButton, onGpLink } = require('./compraFlow');
 const { handleGroupsPageButton } = require('./groupLicenses');
 const { handleMetodosButton, handleCopiarButton, BOTONES: METODOS_BUTTONS, COPY_BOTONES } = require('../metodos');
 const v2                 = require('../utils/panelV2');
@@ -48,13 +49,13 @@ function buildAutoCloseEmbed(minutes) {
 
 // ── Channel classification ────────────────────────────────────────────────────
 
-const PANEL_BUTTONS  = new Set(['comprar', 'alianza', 'otra_cosa', 'duels', 'seguidores']);
+const PANEL_BUTTONS  = new Set(['comprar', 'comprar_gamepass', 'alianza', 'otra_cosa', 'duels', 'seguidores']);
 const CALC_BUTTONS   = new Set(['calc_dinero', 'calc_robux']);
 const GAMEPASS_BUTTONS = new Set(['gp_dinero', 'gp_robux']);
 const HEADLESS_BUTTONS = new Set(['headless_comprar']);
 const VERIF_BUTTONS  = new Set(['verif_check']);
 const ANUNCIO_BUTTONS = new Set(['anuncio_copiar']);
-const TICKET_BUTTONS = new Set(['confirmar_pago', 'cerrar_ticket', 'confirmar_cerrar', 'cancelar_cerrar']);
+const TICKET_BUTTONS = new Set(['confirmar_pago', 'cerrar_ticket', 'confirmar_cerrar', 'cancelar_cerrar', 'gp_link']);
 // Derivado de config.CHECK_GROUPS en vez de escrito a mano: el customId de
 // cada boton del panel es literalmente `cg_<clave>`, asi que anadir una cuarta
 // comunidad en config no puede dejarse a medias aqui.
@@ -177,7 +178,24 @@ async function onComprar(interaction) {
     }
 
     // safeShowModal internally checks replied/deferred before calling showModal()
-    await safeShowModal(interaction, buildComprarModal());
+    await safeShowModal(interaction, buildCompraModal('comunidad'));
+}
+
+async function onComprarGamepass(interaction) {
+    if (interaction.replied || interaction.deferred) return;
+
+    const userId = interaction.user.id;
+
+    if (isLocked(`btn:comprar:${userId}`)) {
+        return safeReply(interaction, { content: '⏳ Espera un momento antes de intentar de nuevo.', ephemeral: true });
+    }
+    lock(`btn:comprar:${userId}`, config.TIMEOUTS.LOCK_MS);
+
+    if (await tickets.hasActiveTicket(interaction.guild, userId)) {
+        return safeReply(interaction, { content: '❌ Ya tienes un ticket abierto. Cierra el anterior antes de crear otro.', ephemeral: true });
+    }
+
+    await safeShowModal(interaction, buildCompraModal('gamepass'));
 }
 
 async function onOtraCosa(interaction) {
@@ -426,6 +444,8 @@ async function startAutoClose(channel) {
 
 const HANDLERS = {
     comprar:          onComprar,
+    comprar_gamepass: onComprarGamepass,
+    gp_link:          onGpLink,
     otra_cosa:        onOtraCosa,
     duels:            onDuels,
     seguidores:       startSeguidoresTicket,
@@ -457,6 +477,7 @@ async function handleButton(interaction) {
 
     const isSeg    = interaction.customId.startsWith('seg_');
     const isAli    = interaction.customId.startsWith('ali_');
+    const isCompra = interaction.customId.startsWith('compra_ok:') || interaction.customId.startsWith('compra_no:');
     const isCg     = interaction.customId.startsWith('cg_');
     const isReview = interaction.customId.startsWith('review_rate:');
     // Paging of the /groups license listing. Its message is ephemeral and
@@ -466,6 +487,7 @@ async function handleButton(interaction) {
     const isGroupList = interaction.customId.startsWith('gl_groups:');
     const fn = isSeg ? handleSeguidoresButton
         : isAli ? handleAlianzaButton
+        : isCompra ? handleCompraButton
         : isCg ? handleCheckGroupButton
         : isReview ? onReviewRate
         : isGroupList ? handleGroupsPageButton

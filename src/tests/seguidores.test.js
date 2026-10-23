@@ -37,8 +37,9 @@ async function con(valor, fn) {
     try { return await fn(); } finally { config.FEATURES.SEGUIDORES = antes; }
 }
 
+// Los botones de todas las filas, en orden: buildButtons reparte en filas de 5.
 function idsDeBotones() {
-    return panel.buildButtons().toJSON().components.map(b => b.custom_id);
+    return panel.buildButtons().flatMap(f => f.toJSON().components.map(b => b.custom_id));
 }
 
 // Panel falso: si se intentara publicar, se nota.
@@ -114,7 +115,11 @@ module.exports = async function run() {
                 assert(texto.includes(`**${o.label}**`), `con SEGUIDORES=${valor}, "${o.label}" sale en el texto`);
                 assert(ids.includes(o.id), `y tiene su botón`);
             }
-            assert(ids.length <= 5, 'y caben en una fila de Discord');
+            // El límite de Discord es por FILA, no por panel. Con las dos formas
+            // de compra, encender los seguidores lleva el panel a 6 botones: tiene
+            // que repartirlos, no meterlos todos en una y que Discord lo rechace.
+            const filas = panel.buildButtons().map(f => f.toJSON().components.length);
+            assert(filas.every(n => n <= 5), `con SEGUIDORES=${valor}, ninguna fila pasa de 5 (${filas.join(' + ')})`);
         });
     }
 

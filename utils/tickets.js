@@ -12,8 +12,22 @@ const pendingTickets = new Map(); // userId -> { token, expiresAt }
 
 const CREATE_LOCK_MS = config.TIMEOUTS.TICKET_CREATE_LOCK_MS ?? 30_000;
 
-function buildTopic(userId, type) {
-    return config.TOPIC_PREFIX + JSON.stringify({ userId, type, ts: Date.now() });
+// El topic del canal guarda quién abrió el ticket y de qué tipo es, y es lo que
+// permite reconstruir los tickets tras un reinicio.
+//
+// `pedido` son los datos de la compra que hacen falta DENTRO del ticket más
+// tarde —por ejemplo, la cantidad exacta que tiene que costar el gamepass y de
+// qué cuenta tiene que ser—. Van aquí y no en memoria porque el bot se reinicia
+// en cada despliegue y un ticket dura horas: en memoria se perderían, y el
+// botón del gamepass ya no sabría contra qué comprobar.
+//
+// Va anidado en su propia clave a propósito: nada de lo que llegue en `pedido`
+// puede pisar `userId` o `type`, que son los que deciden de quién es el
+// ticket y qué botones funcionan en él.
+function buildTopic(userId, type, pedido = null) {
+    const datos = { userId, type, ts: Date.now() };
+    if (pedido && typeof pedido === 'object') datos.pedido = pedido;
+    return config.TOPIC_PREFIX + JSON.stringify(datos);
 }
 
 function parseTopic(topic) {
@@ -147,7 +161,7 @@ function ticketExistsError(userId) {
     return err;
 }
 
-async function createTicket(guild, userId, type, name) {
+async function createTicket(guild, userId, type, name, pedido = null) {
     if (await hasActiveTicket(guild, userId)) throw ticketExistsError(userId);
 
     const reservation = reserveTicket(userId);
@@ -158,7 +172,7 @@ async function createTicket(guild, userId, type, name) {
             name,
             type: ChannelType.GuildText,
             parent: config.CATEGORIES.TICKETS,
-            topic: buildTopic(userId, type),
+            topic: buildTopic(userId, type, pedido),
             permissionOverwrites: [
                 { id: guild.id, deny: [PermissionFlagsBits.ViewChannel] },
                 { id: userId, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] },
@@ -189,6 +203,7 @@ function cleanup(channelId, userId) {
 }
 
 module.exports = {
+    __test: { buildTopic, parseTopic },
     rebuildFromGuild,
     hasActiveTicket,
     getOwner,

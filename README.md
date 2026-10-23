@@ -823,6 +823,104 @@ por nuestra cuenta seria tirar un mensaje del canal sin que nadie lo haya
 pedido, y su boton ya responde que la venta esta cerrada. Si no lo quieres a la
 vista, esconde el canal.
 
+## Compra de Robux: comunidad y gamepass
+
+El panel de tickets tiene dos botones de compra: **robux-comunidad** (el de
+siempre, entrega por comunidad de Roblox) y **robux-gamepass** (el cliente crea
+un gamepass y 7x se lo compra). Los dos siguen el mismo camino, en
+`handlers/compraFlow.js`:
+
+1. **El formulario**: usuario de Roblox y cantidad (y cupón, solo comunidad).
+   Ya **no pregunta si perteneces a una comunidad**: lo calcula el bot.
+2. **La confirmación**: el bot busca esa cuenta en Roblox y se la enseña, con
+   **su foto de perfil**, su nombre visible, su @usuario y su ID — y, por
+   comunidad, **en qué comunidades está y si ya puede recibir**. Solo al pulsar
+   **Continuar** se abre el ticket.
+3. **El ticket**.
+
+### Por qué la confirmación
+
+Antes el ticket se abria con lo que se tecleara, y un usuario con una letra mal
+no se veia hasta que el owner iba a enviar los Robux a una cuenta que no
+existia — o que existia y era de otra persona. Ahora un usuario que no existe
+**no abre ticket**, y uno que existe se le enseña para que diga si es el suyo.
+
+Lo que se escribio en el formulario espera en `utils/pedidosPendientes.js`,
+**en memoria y 10 minutos**: es una ventana corta, y si el bot se reinicia en
+medio solo pasa que la confirmacion dice que caduco. Cada pedido:
+
+- es **de quien lo envio** — otra persona no lo puede confirmar aunque tenga el
+  boton (el customId viaja por Discord);
+- se **consume al pulsar Continuar** — dos clics no abren dos tickets;
+- se **anula** si la misma persona envia otro formulario: vale el ultimo.
+
+El ticket guarda el **nombre real** que devuelve Roblox, con sus mayusculas, no
+lo tecleado.
+
+### El cupon
+
+Se **enseña** en la confirmacion pero **no se gasta** ahi: si la persona
+cancela, no puede haberse quedado sin un uso. Se vuelve a comprobar al abrir el
+ticket —entre medias alguien pudo gastar el ultimo— y se gasta entonces. Por
+gamepass no hay cupon: los cupones se pensaron para la tabla de comunidad, y
+sobre el precio de gamepass un 20% podria dejar la venta por debajo de coste.
+
+### Lo que no cambia
+
+Los dos se guardan con el tipo de ticket **`comprar`**, igual que el Headless:
+de ese tipo cuelga el boton de **PAGO REALIZADO** del owner, el "PAGO EXITOSO"
+del cliente, el registro de pedidos y el ranking. Lo que los distingue es el
+nombre del canal (`robux-comunidad-0001`, `robux-gamepass-0001`) y
+`pedido.modo` en el topic.
+
+Las etiquetas del resumen —**Usuario de Roblox**, **Robux a recibir**, **Precio
+a pagar**— son las que lee `utils/orderNotify.js` para el registro y el
+ranking, y siguen identicas en los dos. Los tests las comprueban con **las
+mismas expresiones regulares** de orderNotify: si dejan de casar, las compras
+dejarian de contar sin que nada avisara.
+
+En gamepass, **Robux a recibir** es lo que de verdad llega a la cuenta (700 por
+un gamepass de 1.000), no el valor del gamepass, que va en su propia linea
+**Valor del gamepass**. Es lo que dice la etiqueta, y es lo que cuenta el
+ranking.
+
+El boton de comunidad conserva su customId `comprar`: es por el que el panel
+se reconoce a si mismo para reeditarse en vez de publicar otro.
+
+### El enlace del gamepass
+
+El ticket de gamepass trae un paso propio: crear el gamepass por la **cantidad
+exacta**, ponerlo a la venta y pegar el enlace con el boton **Agregar link del
+gamepass**. El bot lo comprueba **contra Roblox** (`utils/gamepassInfo.js`) y
+publica el resultado en el ticket:
+
+| Comprobacion | Por que |
+|---|---|
+| Esta a la venta | Si no, no se puede comprar |
+| Cuesta **exactamente** lo pedido | Uno de 1.500 en un pedido de 1.000 regala 500; uno de 500 entrega la mitad |
+| Es **de la cuenta del comprador** | Si es de otra cuenta, o de un grupo, los Robux van ahi |
+
+Lo pedido sale del **topic del canal**, no de la memoria: un ticket de gamepass
+dura horas y tiene que sobrevivir a los reinicios. Por eso
+`tickets.createTicket` acepta ahora un `pedido`, que se guarda anidado en su
+propia clave para que nada de lo que traiga pueda pisar `userId` ni `type`.
+
+Nada se rechaza solo: el bot enseña lo que no cuadra y quien compra el gamepass
+es una persona. Pero lo que no cuadra se ve antes de pagar, no despues.
+
+### Tarjeta con respaldo
+
+La confirmacion necesita varios segundos de consultas a Roblox, asi que la
+respuesta se difiere y luego se edita como tarjeta (botones dentro). Si un dia
+Discord rechazara esa edicion, se usa un **embed clasico con los mismos datos**:
+es la entrada al flujo de compra, y sin respaldo nadie podria abrir un ticket.
+
+### Las filas del panel
+
+Con dos botones de compra el panel ya tiene **5**, el maximo por fila de Discord.
+Los botones se reparten en filas de 5, asi que volver a encender los seguidores
+(`FEATURES.SEGUIDORES`) no tumba el panel: el sexto pasa a una segunda fila.
+
 ## Precios por gamepass
 
 Panel en `CHANNELS.GAMEPASS` (`gamepass.js`), mismo molde que el de la

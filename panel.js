@@ -38,6 +38,7 @@ const E = {
     alianza:    '<:Proyectonuevo20260925T225153319:1553269490748366928>',
     duels:      '<:duels7x2:1525325282624540732>',
     seguidores: '<:followers7x:1525326777071960124>',
+    gamepass:   '<:roblox:1525317838938701967>',
     otra:       '<:up:1501217620437897227>',
     alert:      '<:alert:1501220021035204658>',
 };
@@ -57,7 +58,8 @@ const HEADER = [
 // `activo` decide si la opción existe. Se lee en cada construcción del panel y
 // no al cargar el módulo, para que cambiar el interruptor y reiniciar baste.
 const OPCIONES = [
-    { id: 'comprar',    label: 'Comprar',    emoji: E.buy,        texto: 'Ticket para comprar **Robux**' },
+    { id: 'comprar',          label: 'robux-comunidad', emoji: E.buy,      texto: 'Robux enviados por **comunidad** de Roblox' },
+    { id: 'comprar_gamepass', label: 'robux-gamepass',  emoji: E.gamepass, texto: 'Robux comprando tu **gamepass**' },
     { id: 'alianza',    label: 'Alianza',    emoji: E.alianza,    texto: 'Ticket para **aliar tu servidor** con 7x' },
     { id: 'duels',      label: 'Duels',      emoji: E.duels,      texto: 'Ticket para comprar **sets de Duels**' },
     { id: 'seguidores', label: 'Seguidores', emoji: E.seguidores, texto: 'Ticket para comprar **seguidores**',
@@ -87,16 +89,26 @@ const AVISO = [
 // Un único Container hace de "embed": barra de color a la izquierda, y dentro
 // del mismo bloque el GIF, el texto y los BOTONES.
 
+// Discord no admite más de 5 botones por fila, y con las dos formas de compra
+// el panel ya está justo en 5. Se reparten en filas para que encender otra
+// opción (los seguidores, por ejemplo) no tumbe el panel entero: un sexto botón
+// en una sola fila hace que Discord rechace el mensaje.
+const MAX_POR_FILA = 5;
+
 function buildButtons() {
-    return new ActionRowBuilder().addComponents(
-        ...opcionesActivas().map(o =>
-            new ButtonBuilder()
-                .setCustomId(o.id)
-                .setLabel(o.label)
-                .setStyle(ButtonStyle.Secondary)
-                .setEmoji(o.emoji)
-        )
+    const botones = opcionesActivas().map(o =>
+        new ButtonBuilder()
+            .setCustomId(o.id)
+            .setLabel(o.label)
+            .setStyle(ButtonStyle.Secondary)
+            .setEmoji(o.emoji)
     );
+
+    const filas = [];
+    for (let i = 0; i < botones.length; i += MAX_POR_FILA) {
+        filas.push(new ActionRowBuilder().addComponents(...botones.slice(i, i + MAX_POR_FILA)));
+    }
+    return filas;
 }
 
 function buildContainer() {
@@ -124,7 +136,7 @@ function buildContainer() {
             );
     }
 
-    return container.addActionRowComponents(buildButtons());
+    return container.addActionRowComponents(...buildButtons());
 }
 
 function buildPayload() {

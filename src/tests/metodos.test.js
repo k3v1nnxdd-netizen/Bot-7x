@@ -310,7 +310,9 @@ module.exports = async function run() {
     assert(Boolean(conBanner.files?.length) === t.BANNER.exists, 'y se puede pedir con GIF si alguna vez se quiere');
 
     // ── 6. Los tres tickets usan este bloque ─────────────────────────────────
-    for (const fichero of ['handlers/modals.js', 'handlers/headlessFlow.js', 'handlers/seguidoresFlow.js']) {
+    // La compra por comunidad y por gamepass vive en compraFlow.js (antes estaba
+    // en modals.js, que ya no crea tickets de compra).
+    for (const fichero of ['handlers/compraFlow.js', 'handlers/headlessFlow.js', 'handlers/seguidoresFlow.js']) {
         const src = fs.readFileSync(path.join(RAIZ, fichero), 'utf8');
         assert(src.includes('buildMetodosPayload'), `${fichero} manda el bloque nuevo de métodos de pago`);
         assert(!src.includes('buildMetodosEmbed'), `${fichero} ya no usa el panel viejo`);

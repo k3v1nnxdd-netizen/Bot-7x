@@ -9,61 +9,22 @@ const { isGone, safeDeferReply, safeEditReply, safeReply } = require('../utils/s
 const { isLocked, lock }                                   = require('../utils/spam');
 const tickets                                              = require('../utils/tickets');
 const { lookup, extractNumber, lookupByBudget, extractDecimal, MIN, MAX, MIN_PRICE } = require('../data/prices');
-const { getCoupon, isValid: isCouponValid, useCoupon } = require('../utils/coupons');
-const { refreshCouponEmbed } = require('./commands');
 const reviews                                               = require('../utils/reviews');
 const { finalizeReview }                                    = require('../utils/reviewFlow');
 const roblox                                               = require('../src/roblox/client');
 const { getJoinDate, getLastChecked, trackIfNew, updateLastChecked, daysSince } = require('../utils/groupTracker');
 const config                                               = require('../config');
 const gamepass                                             = require('../utils/gamepassPrecios');
-const { buildMetodosPayload }                               = require('../metodos');
 const { handleSeguidoresModal }                             = require('./seguidoresFlow');
 const { handleCheckGroupModal }                             = require('./checkGroupFlow');
 const { handleAlianzaModal }                                = require('./alianzaFlow');
+const { handleCompraModal, handleGpLinkModal }              = require('./compraFlow');
 const { handleHeadlessModal }                               = require('./headlessFlow');
-const { buildCommunitySummary }                             = require('../utils/communityStatus');
 const v2                                                    = require('../utils/panelV2');
 
 // ── Modal builders ────────────────────────────────────────────────────────────
 // These are exported so buttons.js can pass them to safeShowModal().
 // They never send messages — they only build the modal object.
-
-function buildComprarModal() {
-    const modal = new ModalBuilder().setCustomId('comprar_modal').setTitle('Compra de Robux');
-    modal.addComponents(
-        new ActionRowBuilder().addComponents(
-            new TextInputBuilder()
-                .setCustomId('usuario_roblox')
-                .setLabel('Usuario de Roblox')
-                .setStyle(TextInputStyle.Short)
-                .setRequired(true)
-        ),
-        new ActionRowBuilder().addComponents(
-            new TextInputBuilder()
-                .setCustomId('cantidad_robux')
-                .setLabel('Cantidad de Robux')
-                .setStyle(TextInputStyle.Short)
-                .setRequired(true)
-        ),
-        new ActionRowBuilder().addComponents(
-            new TextInputBuilder()
-                .setCustomId('es_miembro')
-                .setLabel('¿Perteneces a una comunidad de Robux? (Sí/No)')
-                .setStyle(TextInputStyle.Short)
-                .setRequired(true)
-        ),
-        new ActionRowBuilder().addComponents(
-            new TextInputBuilder()
-                .setCustomId('codigo_descuento')
-                .setLabel('Código de descuento (Solo si tienes uno)')
-                .setStyle(TextInputStyle.Short)
-                .setRequired(false)
-                .setPlaceholder('Ej: PROMO20')
-        )
-    );
-    return modal;
-}
 
 function buildCalcDineroModal() {
     const modal = new ModalBuilder().setCustomId('calc_dinero_modal').setTitle('¿Cuánto dinero tienes?');
@@ -143,17 +104,6 @@ function closeBtnRow() {
     );
 }
 
-function confirmBtnRow() {
-    return new ActionRowBuilder().addComponents(
-        new ButtonBuilder()
-            .setCustomId('confirmar_pago')
-            .setLabel('✅ PAGO REALIZADO (SOLO OWNER)')
-            .setStyle(ButtonStyle.Success)
-    );
-}
-
-// Counter resets on restart — Discord allows duplicate channel names
-let comprarN = 1;
 let soporteN = 1;
 let duelsN = 1;
 function pad(n) { return String(n).padStart(4, '0'); }
@@ -162,163 +112,6 @@ function ticketErrorMsg(err) {
     return err?.code === 'TICKET_EXISTS'
         ? '❌ Ya tienes un ticket abierto o se esta creando uno. Cierra el anterior antes de crear otro.'
         : `❌ Error al crear el ticket: ${err.message}`;
-}
-
-// ── Comprar modal handler ─────────────────────────────────────────────────────
-
-async function handleComprarModal(interaction) {
-    // Hard stop — modal submits arrive fresh, but guard anyway
-    if (interaction.replied || interaction.deferred) return;
-
-    // Defer immediately to claim the 3-second token before ticket creation
-    if (!await safeDeferReply(interaction, { ephemeral: true })) return;
-
-    const userId = interaction.user.id;
-
-    // Anti-concurrent-submit: block a second modal from the same user
-    if (isLocked(`modal:${userId}`)) {
-        return safeEditReply(interaction, { content: '⏳ Espera un momento antes de intentar de nuevo.' });
-    }
-    lock(`modal:${userId}`, config.TIMEOUTS.LOCK_MS);
-
-    try {
-        if (await tickets.hasActiveTicket(interaction.guild, userId)) {
-            return safeEditReply(interaction, { content: '❌ Ya tienes un ticket abierto. Cierra el anterior antes de crear otro.' });
-        }
-
-        const robloxUser  = interaction.fields.getTextInputValue('usuario_roblox').trim();
-        const cantidadRaw = interaction.fields.getTextInputValue('cantidad_robux');
-        const esMiembro   = interaction.fields.getTextInputValue('es_miembro').trim();
-        const codigoRaw   = interaction.fields.getTextInputValue('codigo_descuento').trim();
-
-        const amount = extractNumber(cantidadRaw);
-        if (!amount) {
-            return safeEditReply(interaction, { content: '❌ Escribe un número válido para la cantidad de Robux. (Ejemplo: 1500)' });
-        }
-
-        const priceData = lookup(amount);
-        if (!priceData) {
-            return safeEditReply(interaction, {
-                content: `❌ Monto no disponible. Elige una cantidad entre **${MIN.toLocaleString()}** y **${MAX.toLocaleString()}** robux.`,
-            });
-        }
-
-        const { amount: finalAmount, price: priceText, rounded } = priceData;
-
-        // ── Coupon logic ──────────────────────────────────────────────────────
-        const originalPriceNum = parseFloat(priceText.replace(/[$,]/g, ''));
-        let couponApplied  = false;
-        let couponInvalid  = false;
-        let couponObj      = null;
-        let finalPriceNum  = originalPriceNum;
-
-        if (codigoRaw) {
-            couponObj = getCoupon(codigoRaw);
-            if (isCouponValid(codigoRaw, finalAmount)) {
-                couponApplied = true;
-                finalPriceNum = Math.round(originalPriceNum * (1 - couponObj.discount / 100));
-            } else {
-                couponInvalid = true;
-            }
-        }
-
-        const channel = await tickets.createTicket(interaction.guild, userId, 'comprar', `comprar-${pad(comprarN++)}`);
-
-        // Decrement coupon uses after ticket is created successfully, then refresh the offer embed
-        if (couponApplied) {
-            useCoupon(codigoRaw);
-            refreshCouponEmbed(interaction.client, codigoRaw).catch(() => {});
-        }
-
-        // ── Mensaje 1: Información de la compra ───────────────────────────────
-        const savedNum = originalPriceNum - finalPriceNum;
-
-        // "Usuario de Roblox" mantiene su bloque de código porque es de ahí de
-        // donde utils/orderNotify.js lo lee para el registro de pedidos y el
-        // ranking. Lo que cambia es el icono: ya no es un emoji genérico, sino
-        // el avatar REAL de esa cuenta de Roblox, y va en la línea de autor —
-        // que es el único sitio donde Discord pinta una imagen pequeña junto a
-        // un texto.
-        let descLines =
-            `<:member:1501261625523699892> **Usuario de Roblox**\n\`\`\`${robloxUser}\`\`\`\n` +
-            `<a:robuxxx:1510070809366892604> **Robux a recibir**\n\`\`\`${finalAmount.toLocaleString()} Robux\`\`\`\n`;
-
-        if (couponApplied) {
-            descLines +=
-                `<:money:1544123920897019906> **Precio original**\n\`\`\`${priceText} MXN\`\`\`\n` +
-                `<:true:1501213776878501899> **Descuento aplicado — ${codigoRaw.toUpperCase()} (${couponObj.discount}%)**\n\`\`\`Ahorras $${savedNum} MXN\`\`\`\n` +
-                `<:money:1544123920897019906> **Precio final a pagar**\n\`\`\`$${finalPriceNum} MXN\`\`\`\n`;
-        } else if (couponInvalid) {
-            descLines +=
-                `<:alert:1501220021035204658> **Código usado: ${codigoRaw.toUpperCase()}**\n\`\`\`Inválido o sin usos disponibles\`\`\`\n` +
-                `<:money:1544123920897019906> **Precio a pagar**\n\`\`\`${priceText} MXN\`\`\`\n`;
-        } else {
-            descLines +=
-                `<:money:1544123920897019906> **Precio a pagar**\n\`\`\`${priceText} MXN\`\`\`\n`;
-        }
-
-        descLines += `<:truepurple:1501214679400190086> **¿Miembro de comunidad?**\n\`\`\`${esMiembro}\`\`\``;
-
-        if (rounded) descLines += `\n\n<:alert:1501220021035204658> Tu monto fue redondeado a **${finalAmount.toLocaleString()} robux**.`;
-
-
-        // El estado del comprador en cada comunidad. Va DESPUÉS de crear el
-        // canal, no antes: si Roblox tarda o falla, el ticket ya existe y el
-        // resumen sale sin esta parte en vez de dejar al cliente sin ticket.
-        const comunidades = await buildCommunitySummary(interaction.client, robloxUser);
-
-        // El resumen es una TARJETA (Container), no un embed, para que el botón
-        // de cerrar el ticket quede dentro del bloque en vez de colgando debajo.
-        //
-        // Un Container no tiene fields, así que la rejilla de comunidades pasa a
-        // ser una lista de líneas. Se lee mejor en móvil que tres columnas donde
-        // "7x (Antes Noctra Study)" no cabe sin partirse.
-        //
-        // Las etiquetas del texto NO cambian: utils/orderNotify.js y
-        // utils/reviewFlow.js las leen para el registro de pedidos y el ranking
-        // de compradores, y lo hacen con panelText, que entiende las dos formas.
-        await channel.send(
-            v2.tarjetaPayload({
-                color: 0x2B2D31,
-                mencion: `<@${userId}>`,
-                texto: `## Resumen de tu compra\n\n${descLines}${comunidades.texto}`,
-                pie: '7x Community • Proceso automático',
-                thumbnail: interaction.user.displayAvatarURL({ size: 256 }),
-                filas: [closeBtnRow()],
-            })
-        );
-
-        // ── Mensaje 2: Panel de métodos de pago (con dropdown) ────────────────
-        // El mismo bloque de métodos de pago que el panel del canal, sin el
-        // GIF: son 6,5 MiB que el cliente ya vio ahí y que aquí sólo añadirían
-        // segundos de espera a cada ticket.
-        await channel.send(buildMetodosPayload());
-
-        // ── Mensaje 3: Pago pendiente ─────────────────────────────────────────
-        // Los pasos y el botón del owner, en UN solo mensaje: antes el botón
-        // iba suelto debajo, fuera de cualquier marco.
-        await channel.send(v2.tarjetaPayload({
-            color: 0xFFA500,
-            texto: [
-                '## Pago Pendiente',
-                '',
-                'Selecciona tu método de pago en el menú de arriba.',
-                '',
-                'Realiza el pago por el monto exacto.',
-                '',
-                'Envía la **foto del comprobante** en este ticket.',
-                '',
-                'Escribe **PAGO EXITOSO** para que procesemos tu orden.',
-            ].join('\n'),
-            pie: '7x Community • Proceso automático',
-            filas: [confirmBtnRow()],
-        }));
-
-        await safeEditReply(interaction, { content: `✅ Ticket creado: ${channel}` });
-    } catch (err) {
-        console.error('[modal:comprar] Error:', err);
-        await safeEditReply(interaction, { content: ticketErrorMsg(err) });
-    }
 }
 
 // ── Soporte modal handler ─────────────────────────────────────────────────────
@@ -759,7 +552,11 @@ async function handleReviewModal(interaction) {
 // ── Router ────────────────────────────────────────────────────────────────────
 
 const HANDLERS = {
-    comprar_modal:    handleComprarModal,
+    // La compra (comunidad y gamepass) y el enlace del gamepass viven en
+    // handlers/compraFlow.js.
+    comprar_modal:         handleCompraModal,
+    gamepass_compra_modal: handleCompraModal,
+    gp_link_modal:         handleGpLinkModal,
     otra_cosa_modal:  handleOtraCosaModal,
     duels_modal:       handleDuelsModal,
     calc_dinero_modal: handleCalcDineroModal,
@@ -791,7 +588,7 @@ async function handleModal(interaction) {
 }
 
 module.exports = {
-    handleModal, buildComprarModal, buildOtraCosaModal, buildDuelsModal,
+    handleModal, buildOtraCosaModal, buildDuelsModal,
     buildCalcDineroModal, buildCalcRobuxModal, buildGpDineroModal, buildGpRobuxModal,
     buildVerifModal, buildReviewModal,
 };

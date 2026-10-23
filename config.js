@@ -82,6 +82,18 @@ module.exports = {
         CADA:        5,
         DESCUENTO:   15,
         RETROACTIVO: false,
+
+        // Las piezas de la barra de progreso: emojis de la APLICACIÓN, así que
+        // se ven para todo el mundo, con Nitro o sin él. Se dibujan y se suben
+        // con scripts/barraEmojis.js; si se rehacen, los ids nuevos van aquí.
+        BARRA: {
+            ini_on:  '1563337592907497573',
+            ini_off: '1563337594220060742',
+            med_on:  '1563337595046334644',
+            med_off: '1563337595864481862',
+            fin_on:  '1563337597030236221',
+            fin_off: '1563337598095855758',
+        },
     },
 
     // ── Reseñas ──────────────────────────────────────────────────────────────

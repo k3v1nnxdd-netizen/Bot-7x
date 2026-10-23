@@ -580,7 +580,7 @@ function bloqueFidelidad(userId, pedido) {
     const despues = e.progreso + 1;
 
     const lineas = [
-        '### 🟩 Tu fidelidad',
+        '### Tu fidelidad',
         `${fidelidad.barra(e.progreso)} **${e.progreso}/${F.CADA}** compras`,
     ];
 

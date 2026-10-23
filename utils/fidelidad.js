@@ -154,12 +154,21 @@ function aplicar(precio) {
     return Math.round(precio * (1 - F.DESCUENTO / 100));
 }
 
-// La barra de progreso: verde lo hecho, blanco lo que falta. Blanco y no negro:
-// en el tema oscuro de Discord un cuadrado negro casi no se ve, y la barra
-// parecería más corta de lo que es.
+// La barra de progreso, hecha de emojis de la aplicación: una pieza de inicio,
+// las del medio y una de fin, cada una llena (azul) o vacía. Puestas en fila
+// forman una sola barra con su línea blanca alrededor.
+//
+// Son de la aplicación y no del servidor para que se vean para todo el mundo:
+// un emoji del servidor, fuera de él o sin Nitro, sale como texto.
 function barra(hechas, total = F.CADA) {
     const h = Math.max(0, Math.min(total, Math.floor(hechas)));
-    return '🟩'.repeat(h) + '⬜'.repeat(total - h);
+    let out = '';
+    for (let i = 0; i < total; i++) {
+        const tipo = i === 0 ? 'ini' : i === total - 1 ? 'fin' : 'med';
+        const estado = i < h ? 'on' : 'off';
+        out += `<:barra7x_${tipo}_${estado}:${F.BARRA[`${tipo}_${estado}`]}>`;
+    }
+    return out;
 }
 
 // Los totales del servidor, de la misma fuente que el ranking.

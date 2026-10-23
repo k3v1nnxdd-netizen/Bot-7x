@@ -145,8 +145,19 @@ module.exports = async function run() {
     assert(F.RETROACTIVO === false, 'y por defecto NO es retroactivo');
 
     // ── 4. La barra y el precio ──────────────────────────────────────────────
-    assert(fidelidad.barra(3) === '🟩🟩🟩⬜⬜', 'la barra pinta en verde lo hecho');
-    assert(fidelidad.barra(0) === '⬜⬜⬜⬜⬜' && fidelidad.barra(9) === '🟩🟩🟩🟩🟩', 'y no se sale de sus 5 casillas');
+    // La barra son emojis de la aplicación: inicio, medio y fin, llenos o
+    // vacíos. Se comprueba la secuencia de piezas, no los ids.
+    const piezas = n => [...fidelidad.barra(n).matchAll(/<:barra7x_(\w+?)_(on|off):(\d+)>/g)].map(m => `${m[1]}_${m[2]}`);
+    assert(piezas(3).join(',') === 'ini_on,med_on,med_on,med_off,fin_off', 'la barra pinta lleno lo hecho y vacío lo que falta');
+    assert(piezas(0).join(',') === 'ini_off,med_off,med_off,med_off,fin_off', 'vacía: todo apagado');
+    assert(piezas(9).join(',') === 'ini_on,med_on,med_on,med_on,fin_on', 'y no se sale de sus 5 casillas');
+    assert(piezas(F.CADA).length === F.CADA, 'una pieza por compra del ciclo');
+    for (const [clave, id] of Object.entries(F.BARRA)) {
+        assert(/^\d{17,20}$/.test(id), `la pieza ${clave} tiene un id de emoji válido`);
+    }
+    assert(fidelidad.barra(2).includes(`:${F.BARRA.ini_on}>`) && fidelidad.barra(2).includes(`:${F.BARRA.fin_off}>`),
+        'cada pieza usa su id de config');
+    assert(!/🟩|⬜/.test(fidelidad.barra(3)), 'ya no usa los cuadrados de antes');
     assert(fidelidad.aplicar(133) === Math.round(133 * (1 - F.DESCUENTO / 100)), `el ${F.DESCUENTO}% se redondea al peso`);
     assert(fidelidad.aplicar(0) === null && fidelidad.aplicar(NaN) === null, 'y no inventa precio con basura');
 
@@ -160,7 +171,8 @@ module.exports = async function run() {
 
     const compras = cmd.buildComprasTexto('a');
     assert(compras.includes('**8**') && compras.includes('**2**'), '/compras dice las compras y los clientes del servidor');
-    assert(/Tú llevas \*\*7\*\*/.test(compras), 'y las tuyas');
+    assert(/Tú has comprado \*\*7,000 Robux\*\* en 7 compras/.test(compras), 'y las tuyas: Robux y compras');
+    assert(/Tú \(kəv\) has comprado/.test(cmd.buildComprasTexto('a', 'kəv')), 'con el nombre de quien pregunta');
     assert(/Todavía no has comprado/.test(cmd.buildComprasTexto('desconocido')), 'y si no has comprado, lo dice sin quedarse vacío');
 
     const robux = cmd.buildRobuxGastadosTexto('a');

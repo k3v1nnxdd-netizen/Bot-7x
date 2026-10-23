@@ -556,16 +556,28 @@ const FID_E = {
     point: '<:point:1501212595464700104>',
 };
 
-function buildComprasTexto(userId) {
+// El nombre de quien usó el comando, tal y como se ve en el servidor. Se
+// escapan los símbolos de markdown: un nombre con * o _ rompería el formato
+// del resto de la línea.
+function nombreDe(interaction) {
+    const user = interaction.user;
+    const nombre = interaction.member?.displayName ?? user.globalName ?? user.username;
+    return String(nombre ?? '').replace(/([\\*_`~|>])/g, '\\$1');
+}
+
+function buildComprasTexto(userId, nombre = null) {
     const t = fidelidad.totalesServidor();
-    const mias = fidelidad.estado(userId).comprasTotales;
+    const entrada = require('../utils/robuxLeaderboard').getEntry(userId);
+    const misRobux = Number(entrada?.totalRobux) || 0;
+    const misCompras = Number(entrada?.purchases) || 0;
+    const tu = nombre ? `Tú (${nombre})` : 'Tú';
 
     return [
         `## ${FID_E.shop} Compras en 7x`,
         `**${t.compras.toLocaleString('es-MX')}** compras completadas por **${t.clientes.toLocaleString('es-MX')}** cliente${t.clientes === 1 ? '' : 's'}.`,
         '',
-        mias > 0
-            ? `-# Tú llevas **${mias.toLocaleString('es-MX')}** compra${mias === 1 ? '' : 's'}.`
+        misCompras > 0
+            ? `-# ${tu} has comprado **${misRobux.toLocaleString('es-MX')} Robux** en ${misCompras} compra${misCompras === 1 ? '' : 's'}.`
             : '-# Todavía no has comprado. ¡La primera es la que cuenta!',
     ].join('\n');
 }
@@ -591,7 +603,7 @@ function buildMisComprasTexto(userId) {
     const e = fidelidad.estado(userId);
 
     const lineas = [
-        '## 🟩 Tu fidelidad en 7x',
+        '## Tu fidelidad en 7x',
         `${fidelidad.barra(e.progreso)} **${e.progreso}/${F.CADA}** compras`,
         `Te ${e.faltan === 1 ? 'falta' : 'faltan'} **${e.faltan}** compra${e.faltan === 1 ? '' : 's'} para un **${F.DESCUENTO}% de descuento**.`,
     ];
@@ -617,7 +629,7 @@ function buildMisComprasTexto(userId) {
 }
 
 async function handleCompras(interaction) {
-    await safeReply(interaction, v2.tarjetaPayload({ color: 0x2B2D31, texto: buildComprasTexto(interaction.user.id) }));
+    await safeReply(interaction, v2.tarjetaPayload({ color: 0x2B2D31, texto: buildComprasTexto(interaction.user.id, nombreDe(interaction)) }));
 }
 
 async function handleRobuxGastados(interaction) {

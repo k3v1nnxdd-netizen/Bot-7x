@@ -63,6 +63,34 @@ module.exports = {
         GAMEPASS:           '1561898653030027335',
     },
 
+    // ── Descuento por fidelidad ──────────────────────────────────────────────
+    // Cada CADA compras completadas se gana un descuento de DESCUENTO% para UNA
+    // compra, y el cliente elige en cuál usarlo: se le ofrece en la
+    // confirmación de cualquier compra mientras tenga uno guardado.
+    //
+    // "Completada" = el owner pulsó PAGO REALIZADO. Es lo mismo que cuenta el
+    // ranking de compradores, y de ahí sale el número: no hay un segundo
+    // contador que pueda descuadrarse.
+    //
+    // RETROACTIVO decide si cuentan las compras hechas ANTES de activar el
+    // programa. En false sólo cuentan las de después: el ranking guarda todo el
+    // historial, y contarlo entero daría a un cliente con 30 compras seis
+    // descuentos de golpe. Se eligió false porque es lo reversible: ponerlo en
+    // true más tarde le da a cada cliente lo que le corresponde por su
+    // historial, mientras que un descuento ya usado no se puede retirar.
+    FIDELIDAD: {
+        CADA:        5,
+        DESCUENTO:   15,
+        RETROACTIVO: false,
+    },
+
+    // ── Reseñas ──────────────────────────────────────────────────────────────
+    // Cuánto tiene el cliente para valorar su compra. Pasado el plazo la
+    // valoración se cierra y los botones dejan de funcionar.
+    RESENAS: {
+        PLAZO_HORAS: 12,
+    },
+
     // ── Venta por gamepass ───────────────────────────────────────────────────
     // La otra forma de entrega: el cliente crea un gamepass en su juego por el
     // valor que va a comprar y 7x se lo compra.

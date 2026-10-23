@@ -17,6 +17,7 @@ const groupActive = require('../utils/groupActive');
 const { ensureGroupStatusPanel } = require('../groupStatus');
 const { buildDetallePayload, COPY_ID } = require('../metodos');
 const cripto = require('../utils/cryptoPrecios');
+const fidelidad = require('../utils/fidelidad');
 const v2 = require('../utils/panelV2');
 
 async function handleOutfit(interaction) {
@@ -539,9 +540,101 @@ async function handleAvatar(interaction) {
     }
 }
 
+// ── /compras · /robuxgastados · /miscompras ───────────────────────────────────
+// Los tres leen del MISMO sitio que el ranking de compradores: el registro de
+// compras completadas, sin duplicados y reconstruido desde el canal de pedidos.
+// Así ninguno puede dar una cifra distinta de la que da el ranking.
+//
+// Los dos primeros son del servidor y se publican: son la mejor prueba social
+// que hay, números reales de compras hechas. Llevan además una línea con lo de
+// quien lo usa, porque es lo primero que alguien quiere comparar. El tercero es
+// sólo de quien lo usa, y va en privado.
+
+const FID_E = {
+    shop:  '<a:shop:1190502129748676650>',
+    robux: '<a:robuxxx:1510070809366892604>',
+    point: '<:point:1501212595464700104>',
+};
+
+function buildComprasTexto(userId) {
+    const t = fidelidad.totalesServidor();
+    const mias = fidelidad.estado(userId).comprasTotales;
+
+    return [
+        `## ${FID_E.shop} Compras en 7x`,
+        `**${t.compras.toLocaleString('es-MX')}** compras completadas por **${t.clientes.toLocaleString('es-MX')}** cliente${t.clientes === 1 ? '' : 's'}.`,
+        '',
+        mias > 0
+            ? `-# Tú llevas **${mias.toLocaleString('es-MX')}** compra${mias === 1 ? '' : 's'}.`
+            : '-# Todavía no has comprado. ¡La primera es la que cuenta!',
+    ].join('\n');
+}
+
+function buildRobuxGastadosTexto(userId) {
+    const t = fidelidad.totalesServidor();
+    const entrada = require('../utils/robuxLeaderboard').getEntry(userId);
+    const misRobux = Number(entrada?.totalRobux) || 0;
+    const misCompras = Number(entrada?.purchases) || 0;
+
+    return [
+        `## ${FID_E.robux} Robux comprados en 7x`,
+        `**${t.robux.toLocaleString('es-MX')} Robux** entregados a nuestros clientes.`,
+        '',
+        misRobux > 0
+            ? `-# Tú has comprado **${misRobux.toLocaleString('es-MX')} Robux** en ${misCompras} compra${misCompras === 1 ? '' : 's'}.`
+            : '-# Todavía no has comprado Robux con nosotros.',
+    ].join('\n');
+}
+
+function buildMisComprasTexto(userId) {
+    const F = fidelidad.F;
+    const e = fidelidad.estado(userId);
+
+    const lineas = [
+        '## 🟩 Tu fidelidad en 7x',
+        `${fidelidad.barra(e.progreso)} **${e.progreso}/${F.CADA}** compras`,
+        `Te ${e.faltan === 1 ? 'falta' : 'faltan'} **${e.faltan}** compra${e.faltan === 1 ? '' : 's'} para un **${F.DESCUENTO}% de descuento**.`,
+    ];
+
+    if (e.disponibles > 0) {
+        lineas.push(
+            '',
+            `🎁 Tienes **${e.disponibles}** descuento${e.disponibles === 1 ? '' : 's'} del **${F.DESCUENTO}%** guardado${e.disponibles === 1 ? '' : 's'}.`,
+            '-# Úsalo en la compra que tú elijas: te lo ofreceremos al confirmarla.',
+        );
+    }
+
+    lineas.push(
+        '',
+        '### Tus totales',
+        `${FID_E.point} Compras completadas: **${e.comprasTotales.toLocaleString('es-MX')}**`,
+        `${FID_E.point} Descuentos usados: **${e.usados}**`,
+        '',
+        `-# Cada ${F.CADA} compras ganas un ${F.DESCUENTO}% para una compra. Una compra cuenta cuando se confirma el pago.`,
+    );
+
+    return lineas.join('\n');
+}
+
+async function handleCompras(interaction) {
+    await safeReply(interaction, v2.tarjetaPayload({ color: 0x2B2D31, texto: buildComprasTexto(interaction.user.id) }));
+}
+
+async function handleRobuxGastados(interaction) {
+    await safeReply(interaction, v2.tarjetaPayload({ color: 0x2B2D31, texto: buildRobuxGastadosTexto(interaction.user.id) }));
+}
+
+async function handleMisCompras(interaction) {
+    await safeReply(interaction, {
+        ...v2.tarjetaPayload({ color: 0x2B2D31, texto: buildMisComprasTexto(interaction.user.id) }),
+        ephemeral: true,
+    });
+}
+
 module.exports = {
     handleOutfit, handlePagos, handlePagoVerified, handleOffer, handleClose,
     handleHeadless, handleGroupActive, handleTopCompradores, handleCrypto, handleAvatar,
+    handleCompras, handleRobuxGastados, handleMisCompras,
     refreshCouponEmbed,
-    __test: { buildCryptoTexto, buildCryptoRow, segundos, minutos, buildAvatarEmbed, buildAvatarPie },
+    __test: { buildCryptoTexto, buildCryptoRow, segundos, minutos, buildAvatarEmbed, buildAvatarPie, buildComprasTexto, buildRobuxGastadosTexto, buildMisComprasTexto },
 };

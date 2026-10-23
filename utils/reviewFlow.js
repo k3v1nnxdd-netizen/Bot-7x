@@ -11,30 +11,73 @@ const { panelText } = v2;
 const SHOP_EMOJI  = '<a:shop:1190502129748676650>';
 const STAR_EMOJI  = '<a:star:1514369366878064650>';
 const STATS_EMOJI = '<:stats:1190502686886481991>';
+const OK_EMOJI    = '<:true:1501213776878501899>';
 
-// Tarjeta y no embed: el botón de calificar queda DENTRO del bloque. Y por eso
-// el payload lleva SIEMPRE el contenedor entero, también al deshabilitarlo: en
-// un mensaje V2 un edit con sólo `components: [fila]` borraría el texto.
-function buildReviewPayload(buyerId, ticketChannelId, disabled = false) {
+const PLAZO_MS = config.RESENAS.PLAZO_HORAS * 3600_000;
+
+// ── La tarjeta de valoración ──────────────────────────────────────────────────
+//
+// Cinco botones, de una a cinco estrellas: se valora con UN clic. Antes era un
+// botón que abría un formulario donde había que escribir el número y un
+// comentario obligatorio, y cada paso de más es gente que no termina.
+//
+// Tres estados, y el texto y los botones cambian con cada uno:
+//
+//   'abierta'    — se puede valorar
+//   'calificada' — ya valoró: los botones se apagan y el elegido se resalta
+//   'cerrada'    — pasó el plazo sin valorar: los botones se apagan y lo dice
+//
+// La tarjeta va SIEMPRE entera, también al apagarla: en un mensaje V2 un edit
+// con sólo `components: [fila]` borraría el texto.
+
+function buildReviewPayload(buyerId, ticketChannelId, estado = 'abierta', score = null) {
+    // Compatibilidad con la firma vieja (disabled = true/false).
+    if (estado === true) estado = 'calificada';
+    if (estado === false) estado = 'abierta';
+
+    const horas = config.RESENAS.PLAZO_HORAS;
+    let texto;
+    if (estado === 'calificada') {
+        texto =
+            `${SHOP_EMOJI} Compra por <@${buyerId}>\n\n` +
+            `${OK_EMOJI} **¡Gracias por tu valoración!**` +
+            (score ? ` Calificaste la atención con **${score}/5**.` : '') +
+            '\n\nNos ayuda a mejorar y a que otros compren con confianza.';
+    } else if (estado === 'cerrada') {
+        texto =
+            `${SHOP_EMOJI} Compra por <@${buyerId}>\n\n` +
+            '⏱️ **El plazo para valorar esta compra terminó.**\n\n' +
+            `Las valoraciones se pueden dejar durante las ${horas} horas siguientes a la compra. ¡Gracias por comprar en 7x!`;
+    } else {
+        texto =
+            `${SHOP_EMOJI} Compra por <@${buyerId}>\n\n` +
+            'Gracias por tu compra. **¿Cómo fue la atención en tu ticket?**\n\n' +
+            `Pulsa las estrellas: 1 es la peor y 5 la mejor.\n-# Tienes ${horas} horas para valorar.`;
+    }
+
     return v2.tarjetaPayload({
         color: 0x2B2D31,
-        texto:
-            `${SHOP_EMOJI} Compra por <@${buyerId}>\n\n` +
-            'Gracias por tu compra. ¿Podrías evaluar la atención y el trato del staff hacia tu ticket?\n\n' +
-            '• Presiona el botón de abajo y escribe un número del **1 al 5** (5 = la mejor atención).',
+        texto,
         pie: '7x Community • Sistema de reseñas',
-        filas: [buildReviewRow(ticketChannelId, disabled)],
+        filas: [buildReviewRow(ticketChannelId, estado, score)],
     });
 }
 
-function buildReviewRow(ticketChannelId, disabled = false) {
+function buildReviewRow(ticketChannelId, estado = 'abierta', score = null) {
+    if (estado === true) estado = 'calificada';
+    if (estado === false) estado = 'abierta';
+    const apagada = estado !== 'abierta';
+
     return new ActionRowBuilder().addComponents(
-        new ButtonBuilder()
-            .setCustomId(`review_rate:${ticketChannelId}`)
-            .setLabel(disabled ? 'Ya calificado' : 'Calificar atención')
-            .setEmoji({ id: '1514369366878064650', name: 'star', animated: true })
-            .setStyle(ButtonStyle.Secondary)
-            .setDisabled(disabled)
+        ...[1, 2, 3, 4, 5].map(n =>
+            new ButtonBuilder()
+                .setCustomId(`review_star:${ticketChannelId}:${n}`)
+                .setLabel('⭐'.repeat(n))
+                // La que eligió queda en verde: al volver al mensaje se ve qué
+                // puso sin tener que leer el texto.
+                .setStyle(estado === 'calificada' && n === score ? ButtonStyle.Success : ButtonStyle.Secondary)
+                .setDisabled(apagada)
+        )
     );
 }
 
@@ -66,12 +109,25 @@ async function detectOrderLabel(channel, ticketType) {
     }
 }
 
-// score === null → still-pending placeholder ("Reseña: ???"), shown the
-// moment a purchase is confirmed. Edited in place once the buyer rates.
-function buildAnnounceEmbed(buyerId, score = null, avatarURL = null, orderLabel = null, comment = null) {
-    const value = score === null
-        ? '???'
-        : `${score >= 5 ? STAR_EMOJI.repeat(5) : STATS_EMOJI.repeat(score)} **(${score}/5)**`;
+// ── El anuncio en el canal de reseñas ─────────────────────────────────────────
+//
+// Se publica en cuanto se confirma el pago y se edita cuando se resuelve.
+//
+// Lo que dice mientras no hay valoración, y lo que dice si nunca la hay, es
+// SIEMPRE verdad. No se pone una valoración inventada a nombre del cliente
+// cuando no la dejó: quien lee este canal decide si comprar fiándose de que
+// cada reseña la escribió un cliente de verdad. Lo que sí se enseña, porque es
+// cierto, es que la compra se entregó — que es justo lo que alguien que duda
+// quiere saber.
+function buildAnnounceEmbed(buyerId, score = null, avatarURL = null, orderLabel = null, comment = null, cerrada = false) {
+    let value;
+    if (score !== null) {
+        value = `${score >= 5 ? STAR_EMOJI.repeat(5) : STATS_EMOJI.repeat(score)} **(${score}/5)**`;
+    } else if (cerrada) {
+        value = `${OK_EMOJI} Entrega verificada\n-# El cliente no dejó valoración`;
+    } else {
+        value = '⏳ Esperando la valoración del cliente';
+    }
 
     const embed = new EmbedBuilder()
         .setColor(0x2B2D31) // reviews channel is always gray, pending or rated
@@ -136,20 +192,20 @@ async function requestReview(client, channel, ticketChannelId, buyerId) {
     await sendPendingAnnouncement(client, ticketChannelId, buyerId, orderLabel);
 }
 
-// Called once a rating is submitted (from either the DM or the ticket
-// channel) — disables both prompt buttons and edits the pending
-// announcement in place to show the real score.
-async function finalizeReview(client, ticketChannelId, score, comment = null) {
-    const rec = reviews.getReview(ticketChannelId);
-    if (!rec) return;
+// Re-pinta los dos sitios donde se pidió la valoración (el ticket y el DM) con
+// el estado nuevo. Nunca lanza: el canal del ticket ya se habrá borrado casi
+// siempre, y que no se pueda editar no puede tirar lo demás.
+async function repintarPeticiones(client, rec, ticketChannelId, estado, score = null) {
+    const payload = buildReviewPayload(rec.buyerId, ticketChannelId, estado, score);
 
     if (rec.ticketMessageRef) {
         try {
             const ch  = await client.channels.fetch(rec.ticketMessageRef.channelId);
             const msg = await ch.messages.fetch(rec.ticketMessageRef.messageId);
-            await safeMessageEdit(msg, buildReviewPayload(rec.buyerId, ticketChannelId, true));
-        } catch (err) {
-            console.warn('[reviewFlow] Could not disable ticket review button:', err.message);
+            await safeMessageEdit(msg, payload);
+        } catch {
+            // El ticket se cierra solo a los 10 minutos del pago: lo normal es
+            // que ya no exista.
         }
     }
 
@@ -158,15 +214,14 @@ async function finalizeReview(client, ticketChannelId, score, comment = null) {
             const user = await client.users.fetch(rec.buyerId);
             const dm   = await user.createDM();
             const msg  = await dm.messages.fetch(rec.dmMessageRef.messageId);
-            await safeMessageEdit(msg, buildReviewPayload(rec.buyerId, ticketChannelId, true));
+            await safeMessageEdit(msg, payload);
         } catch (err) {
-            console.warn('[reviewFlow] Could not disable DM review button:', err.message);
+            console.warn('[reviewFlow] No se pudo actualizar la valoración del DM:', err.message);
         }
     }
+}
 
-    const user      = await client.users.fetch(rec.buyerId).catch(() => null);
-    const avatarURL = user?.displayAvatarURL({ size: 256 }) ?? null;
-    const embed = buildAnnounceEmbed(rec.buyerId, score, avatarURL, rec.orderLabel, comment);
+async function repintarAnuncio(client, rec, embed) {
     if (rec.announceMessageRef) {
         try {
             const ch  = await client.channels.fetch(rec.announceMessageRef.channelId);
@@ -179,7 +234,7 @@ async function finalizeReview(client, ticketChannelId, score, comment = null) {
     }
 
     // Fallback — no ref was ever stored (e.g. the pending send failed), so
-    // there's nothing to edit; post it now rather than losing the rating.
+    // there's nothing to edit; post it now rather than losing it.
     try {
         const announceCh = await client.channels.fetch(config.CHANNELS.REVIEWS);
         await announceCh.send({ embeds: [embed] });
@@ -188,4 +243,74 @@ async function finalizeReview(client, ticketChannelId, score, comment = null) {
     }
 }
 
-module.exports = { buildReviewPayload, buildReviewRow, requestReview, finalizeReview };
+// Called once a rating is submitted (from either the DM or the ticket
+// channel) — disables both prompts and edits the pending announcement in
+// place to show the real score.
+async function finalizeReview(client, ticketChannelId, score, comment = null) {
+    const rec = reviews.getReview(ticketChannelId);
+    if (!rec) return;
+
+    await repintarPeticiones(client, rec, ticketChannelId, 'calificada', score);
+
+    const user      = await client.users.fetch(rec.buyerId).catch(() => null);
+    const avatarURL = user?.displayAvatarURL({ size: 256 }) ?? null;
+    await repintarAnuncio(client, rec, buildAnnounceEmbed(rec.buyerId, score, avatarURL, rec.orderLabel, comment));
+}
+
+// ── El plazo ──────────────────────────────────────────────────────────────────
+//
+// Pasadas RESENAS.PLAZO_HORAS sin valorar, la valoración se cierra: los botones
+// se apagan diciendo que el plazo terminó, y el anuncio pasa a "Entrega
+// verificada". Lo que NO se hace es inventar la valoración.
+//
+// No va con un setTimeout de 12 horas: el bot se reinicia en cada despliegue y
+// un temporizador así no sobreviviría a ninguno. Se revisa al arrancar y cada
+// pocos minutos, a partir de la fecha guardada de cada petición, así que una
+// valoración vence a su hora aunque el bot haya reiniciado diez veces entre
+// medias.
+
+async function cerrarResena(client, ticketChannelId) {
+    // cerrarPorPlazo comprueba y escribe sin pausas: si en ese mismo instante
+    // llega la valoración, gana una de las dos y nunca quedan las dos.
+    if (!reviews.cerrarPorPlazo(ticketChannelId)) return false;
+
+    const rec = reviews.getReview(ticketChannelId);
+    await repintarPeticiones(client, rec, ticketChannelId, 'cerrada');
+
+    const user      = await client.users.fetch(rec.buyerId).catch(() => null);
+    const avatarURL = user?.displayAvatarURL({ size: 256 }) ?? null;
+    await repintarAnuncio(client, rec, buildAnnounceEmbed(rec.buyerId, null, avatarURL, rec.orderLabel, null, true));
+    return true;
+}
+
+async function cerrarVencidas(client, ahora = Date.now()) {
+    let cerradas = 0;
+    for (const id of reviews.vencidas(PLAZO_MS, ahora)) {
+        try {
+            if (await cerrarResena(client, id)) cerradas++;
+        } catch (err) {
+            console.warn(`[reviewFlow] No se pudo cerrar la valoración de ${id}:`, err.message);
+        }
+    }
+    if (cerradas) console.log(`[reviewFlow] ${cerradas} valoración(es) cerrada(s) por plazo.`);
+    return cerradas;
+}
+
+const REVISION_MS = 10 * 60_000;
+
+// Arranca la revisión periódica. Devuelve el intervalo para poder pararlo.
+function iniciarCaducidad(client) {
+    cerrarVencidas(client).catch(err => console.warn('[reviewFlow] Revisión de plazos falló:', err.message));
+    const t = setInterval(() => {
+        cerrarVencidas(client).catch(err => console.warn('[reviewFlow] Revisión de plazos falló:', err.message));
+    }, REVISION_MS);
+    // Que no mantenga vivo el proceso por sí solo (tests, cierre limpio).
+    t.unref?.();
+    return t;
+}
+
+module.exports = {
+    buildReviewPayload, buildReviewRow, requestReview, finalizeReview,
+    cerrarResena, cerrarVencidas, iniciarCaducidad, PLAZO_MS,
+    __test: { buildAnnounceEmbed },
+};

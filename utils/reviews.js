@@ -74,6 +74,9 @@ function submitRating(ticketChannelId, userId, score, comment, via) {
     if (!rec) return false;
     if (rec.buyerId !== userId) return false;
     if (rec.rating !== null) return false;
+    // Cerrada por plazo: ya no se puede valorar, aunque el botón siguiera ahí
+    // en un mensaje que no llegó a editarse.
+    if (rec.cerradoEn) return false;
 
     rec.rating   = score;
     rec.comment  = comment;
@@ -83,7 +86,37 @@ function submitRating(ticketChannelId, userId, score, comment, via) {
     return true;
 }
 
+// Si una valoración pendiente ya pasó su plazo. Las ya valoradas o ya
+// cerradas no "vencen": ya están resueltas.
+function estaVencida(rec, plazoMs, ahora = Date.now()) {
+    if (!rec || rec.rating !== null || rec.cerradoEn) return false;
+    const creada = Date.parse(rec.createdAt);
+    return Number.isFinite(creada) && ahora - creada >= plazoMs;
+}
+
+// Las pendientes que ya pasaron su plazo y siguen sin cerrar.
+function vencidas(plazoMs, ahora = Date.now()) {
+    return Object.entries(load())
+        .filter(([, rec]) => estaVencida(rec, plazoMs, ahora))
+        .map(([id]) => id);
+}
+
+// La cierra por plazo. Comprobar y escribir sin un await en medio, igual que
+// submitRating: así una valoración que llega en el mismo instante no puede
+// quedar a la vez valorada y cerrada. Devuelve false si ya estaba resuelta.
+function cerrarPorPlazo(ticketChannelId) {
+    const data = load();
+    const rec = data[ticketChannelId];
+    if (!rec || rec.rating !== null || rec.cerradoEn) return false;
+    rec.cerradoEn = new Date().toISOString();
+    save(data);
+    return true;
+}
+
 module.exports = {
+    estaVencida,
+    vencidas,
+    cerrarPorPlazo,
     getReview,
     createReviewRequest,
     setTicketMessageRef,

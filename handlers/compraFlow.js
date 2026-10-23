@@ -20,6 +20,7 @@ const { buildMetodosPayload } = require('../metodos');
 const gp = require('../utils/gamepassPrecios');
 const gpInfo = require('../utils/gamepassInfo');
 const pendientes = require('../utils/pedidosPendientes');
+const fidelidad = require('../utils/fidelidad');
 
 // ── Compra de Robux: comunidad y gamepass ─────────────────────────────────────
 //
@@ -201,6 +202,12 @@ async function handleCompraModal(interaction) {
 
         const cupon = tipo === 'comunidad' ? revisarCupon(campo(interaction, 'codigo_descuento'), precio) : null;
 
+        // El descuento de fidelidad se OFRECE aquí y el cliente decide si lo
+        // usa en esta compra o lo guarda. No se combina con un cupón: los dos
+        // juntos podrían dejar la venta por debajo de coste.
+        const fid = fidelidad.estado(userId);
+        const ofrecerFidelidad = fid.disponibles > 0 && !cupon?.valido;
+
         const pedido = {
             tipo,
             robloxUserId: String(usuario.id),
@@ -217,9 +224,9 @@ async function handleCompraModal(interaction) {
 
         await editarTarjeta(interaction, {
             color: ACCENT,
-            texto: buildTextoConfirmacion(pedido, cupon),
+            texto: buildTextoConfirmacion(pedido, cupon, fid),
             thumbnail: foto,
-            filas: [buildConfirmarRow(token)],
+            filas: [buildConfirmarRow(token, ofrecerFidelidad)],
         });
     } catch (err) {
         console.error('[compra] Error preparando la confirmación:', err);
@@ -277,7 +284,7 @@ function revisarCupon(codigo, precio) {
     };
 }
 
-function buildTextoConfirmacion(pedido, cupon) {
+function buildTextoConfirmacion(pedido, cupon, fid = null) {
     const perfil = `https://www.roblox.com/users/${pedido.robloxUserId}/profile`;
 
     const lineas = [
@@ -318,22 +325,71 @@ function buildTextoConfirmacion(pedido, cupon) {
         lineas.push(pedido.comunidadesTexto);
     }
 
+    if (fid) lineas.push('', ...lineasFidelidadConfirmacion(pedido, cupon, fid));
+
     lineas.push('', '-# ¿No es tu cuenta? Pulsa **Cancelar** y vuelve a escribir tu usuario.');
     return lineas.join('\n');
 }
 
-function buildConfirmarRow(token) {
+// Con un descuento de fidelidad guardado hay dos formas de continuar, y es el
+// cliente quien elige: usarlo en esta compra o guardarlo para otra.
+function buildConfirmarRow(token, conFidelidad = false) {
+    const cancelar = new ButtonBuilder()
+        .setCustomId(`compra_no:${token}`)
+        .setLabel('Cancelar')
+        .setStyle(ButtonStyle.Secondary);
+
+    if (!conFidelidad) {
+        return new ActionRowBuilder().addComponents(
+            new ButtonBuilder()
+                .setCustomId(`compra_ok:${token}`)
+                .setLabel('Continuar')
+                .setStyle(ButtonStyle.Success)
+                .setEmoji('✅'),
+            cancelar,
+        );
+    }
+
     return new ActionRowBuilder().addComponents(
         new ButtonBuilder()
-            .setCustomId(`compra_ok:${token}`)
-            .setLabel('Continuar')
+            .setCustomId(`compra_desc:${token}`)
+            .setLabel(`Usar mi ${fidelidad.F.DESCUENTO}% y continuar`)
             .setStyle(ButtonStyle.Success)
-            .setEmoji('✅'),
+            .setEmoji('🎁'),
         new ButtonBuilder()
-            .setCustomId(`compra_no:${token}`)
-            .setLabel('Cancelar')
-            .setStyle(ButtonStyle.Secondary),
+            .setCustomId(`compra_ok:${token}`)
+            .setLabel('Continuar sin descuento')
+            .setStyle(ButtonStyle.Primary),
+        cancelar,
     );
+}
+
+// El bloque de fidelidad de la confirmación: el progreso y, si tiene uno
+// guardado, la oferta de usarlo.
+function lineasFidelidadConfirmacion(pedido, cupon, fid) {
+    const F = fidelidad.F;
+    const lineas = [];
+
+    if (fid.disponibles > 0 && !cupon?.valido) {
+        const conDescuento = fidelidad.aplicar(pedido.precio);
+        lineas.push(
+            `### 🎁 Tienes un descuento de fidelidad`,
+            `Tienes **${fid.disponibles}** descuento${fid.disponibles === 1 ? '' : 's'} del **${F.DESCUENTO}%** guardado${fid.disponibles === 1 ? '' : 's'}. ¿Lo usas en esta compra?`,
+            `Con él pagarías **$${fmt(conDescuento)} MXN** en vez de $${fmt(pedido.precio)}.`,
+            '-# Si no lo usas ahora, se queda guardado para otra compra.',
+        );
+    } else if (fid.disponibles > 0 && cupon?.valido) {
+        lineas.push(`-# 🎁 Tu descuento de fidelidad no se combina con cupones: se queda guardado para otra compra.`);
+    } else {
+        const despues = fid.progreso + 1;
+        lineas.push(
+            `${fidelidad.barra(fid.progreso)} **${fid.progreso}/${F.CADA}** compras de fidelidad`,
+            despues >= F.CADA
+                ? `-# Al completar esta compra ganas un **${F.DESCUENTO}% de descuento** para la que tú elijas.`
+                : `-# Al completar esta compra llegarás a ${despues}/${F.CADA}.`,
+        );
+    }
+    return lineas;
 }
 
 // Edita la respuesta de la interacción con una tarjeta (botones DENTRO del
@@ -361,7 +417,8 @@ async function editarTarjeta(interaction, { color, texto, thumbnail = null, fila
 async function handleCompraButton(interaction) {
     const [accion, token] = interaction.customId.split(':');
     if (accion === 'compra_no') return onCancelar(interaction, token);
-    if (accion === 'compra_ok') return onContinuar(interaction, token);
+    if (accion === 'compra_ok') return onContinuar(interaction, token, false);
+    if (accion === 'compra_desc') return onContinuar(interaction, token, true);
 }
 
 async function onCancelar(interaction, token) {
@@ -373,7 +430,7 @@ async function onCancelar(interaction, token) {
     });
 }
 
-async function onContinuar(interaction, token) {
+async function onContinuar(interaction, token, conDescuento = false) {
     if (!await safeDeferUpdate(interaction)) return;
 
     const userId = interaction.user.id;
@@ -392,6 +449,19 @@ async function onContinuar(interaction, token) {
 
     const pedido = r.pedido;
 
+    // El descuento se vuelve a comprobar AL ABRIR: manda lo que hay ahora, no
+    // lo que se vio en la confirmación. Sólo se marca en el pedido; se gasta
+    // cuando el owner confirma el pago (ver onConfirmarPago), para que un
+    // ticket cerrado sin pagar no le cueste el descuento a nadie.
+    let avisoFidelidad = '';
+    if (conDescuento) {
+        if (fidelidad.tieneDescuento(userId)) {
+            pedido.descuentoFidelidad = true;
+        } else {
+            avisoFidelidad = '\n-# Tu descuento de fidelidad ya no estaba disponible: el ticket se abrió sin él.';
+        }
+    }
+
     await editarTarjeta(interaction, {
         color: ACCENT,
         texto: `${E.hecho} Abriendo tu ticket…`,
@@ -405,7 +475,7 @@ async function onContinuar(interaction, token) {
 
         const editado = await editarTarjeta(interaction, {
             color: ACCENT,
-            texto: `${E.si} **Ticket creado:** ${channel}\n-# Sigue los pasos que hay dentro.`,
+            texto: `${E.si} **Ticket creado:** ${channel}\n-# Sigue los pasos que hay dentro.${avisoFidelidad}`,
             thumbnail: pedido.foto,
         });
         // Si ni la tarjeta ni el embed pudieron editarse, que al menos sepa
@@ -470,7 +540,67 @@ function pedidoTopic(pedido) {
         robux: pedido.robux,
         robloxUserId: pedido.robloxUserId,
         robloxName: pedido.robloxName,
+        // Lo lee el botón de PAGO REALIZADO para gastar el descuento en ese
+        // momento, y no antes.
+        ...(pedido.descuentoFidelidad ? { descuentoFidelidad: true } : {}),
     };
+}
+
+// Las líneas de precio del resumen. Las etiquetas son las que lee
+// utils/orderNotify.js: "Precio final a pagar" cuando hay descuento y "Precio a
+// pagar" cuando no. Así el registro de pedidos y el ranking apuntan lo que de
+// verdad se paga, y no el precio de lista.
+function lineasPrecio(pedido, cupon) {
+    if (pedido.descuentoFidelidad) {
+        const final = fidelidad.aplicar(pedido.precio);
+        return `${E.money} **Precio original**\n\`\`\`$${fmt(pedido.precio)} MXN\`\`\`\n` +
+            `🎁 **Descuento de fidelidad (${fidelidad.F.DESCUENTO}%)**\n\`\`\`Ahorras $${fmt(pedido.precio - final)} MXN\`\`\`\n` +
+            `${E.money} **Precio final a pagar**\n\`\`\`$${fmt(final)} MXN\`\`\`\n`;
+    }
+
+    if (cupon?.valido) {
+        return `${E.money} **Precio original**\n\`\`\`$${fmt(pedido.precio)} MXN\`\`\`\n` +
+            `${E.si} **Descuento aplicado — ${cupon.codigo.toUpperCase()} (${cupon.descuento}%)**\n\`\`\`Ahorras $${fmt(pedido.precio - cupon.final)} MXN\`\`\`\n` +
+            `${E.money} **Precio final a pagar**\n\`\`\`$${fmt(cupon.final)} MXN\`\`\`\n`;
+    }
+
+    let out = '';
+    if (cupon && !cupon.valido) {
+        out += `${E.alert} **Código usado: ${cupon.codigo.toUpperCase()}**\n\`\`\`Inválido o sin usos disponibles\`\`\`\n`;
+    }
+    return out + `${E.money} **Precio a pagar**\n\`\`\`$${fmt(pedido.precio)} MXN\`\`\`\n`;
+}
+
+// La barra verde de fidelidad en el ticket: cuántas lleva y qué pasa cuando se
+// complete ESTA. Cuenta al confirmarse el pago, no al abrir el ticket, y por
+// eso el texto habla de "al completar".
+function bloqueFidelidad(userId, pedido) {
+    const F = fidelidad.F;
+    const e = fidelidad.estado(userId);
+    const despues = e.progreso + 1;
+
+    const lineas = [
+        '### 🟩 Tu fidelidad',
+        `${fidelidad.barra(e.progreso)} **${e.progreso}/${F.CADA}** compras`,
+    ];
+
+    if (pedido.descuentoFidelidad) {
+        lineas.push(`🎁 Estás usando tu **${F.DESCUENTO}% de descuento** en esta compra.`);
+    }
+
+    lineas.push(despues >= F.CADA
+        ? `Al completar esta compra ganas un **${F.DESCUENTO}% de descuento** para la compra que tú elijas.`
+        : `Al completar esta compra llegarás a **${despues}/${F.CADA}**. Te ${F.CADA - despues === 1 ? 'falta' : 'faltan'} **${F.CADA - despues}** para un **${F.DESCUENTO}% de descuento**.`);
+
+    // El que está usando ahora todavía cuenta como disponible —se gasta al
+    // confirmarse el pago—, así que se descuenta aquí para no prometer uno
+    // de más.
+    const guardados = e.disponibles - (pedido.descuentoFidelidad ? 1 : 0);
+    if (guardados > 0) {
+        lineas.push(`-# Tienes ${guardados} descuento${guardados === 1 ? '' : 's'} más guardado${guardados === 1 ? '' : 's'} para otra compra.`);
+    }
+
+    return lineas.join('\n');
 }
 
 async function crearTicketComunidad(interaction, pedido) {
@@ -478,7 +608,8 @@ async function crearTicketComunidad(interaction, pedido) {
 
     // El cupón se vuelve a mirar AHORA: entre la confirmación y este clic
     // alguien más pudo gastar el último uso.
-    const cupon = revisarCupon(pedido.cuponCodigo, { datos: pedido });
+    // Con el descuento de fidelidad no se aplica cupón: no se combinan.
+    const cupon = pedido.descuentoFidelidad ? null : revisarCupon(pedido.cuponCodigo, { datos: pedido });
 
     const channel = await tickets.createTicket(
         interaction.guild, userId, 'comprar',
@@ -494,19 +625,8 @@ async function crearTicketComunidad(interaction, pedido) {
 
     let desc =
         `${E.member} **Usuario de Roblox**\n\`\`\`${pedido.robloxName}\`\`\`\n` +
-        `${E.robux} **Robux a recibir**\n\`\`\`${fmt(pedido.robux)} Robux\`\`\`\n`;
-
-    if (cupon?.valido) {
-        desc +=
-            `${E.money} **Precio original**\n\`\`\`$${fmt(pedido.precio)} MXN\`\`\`\n` +
-            `${E.si} **Descuento aplicado — ${cupon.codigo.toUpperCase()} (${cupon.descuento}%)**\n\`\`\`Ahorras $${fmt(pedido.precio - cupon.final)} MXN\`\`\`\n` +
-            `${E.money} **Precio final a pagar**\n\`\`\`$${fmt(cupon.final)} MXN\`\`\`\n`;
-    } else {
-        if (cupon && !cupon.valido) {
-            desc += `${E.alert} **Código usado: ${cupon.codigo.toUpperCase()}**\n\`\`\`Inválido o sin usos disponibles\`\`\`\n`;
-        }
-        desc += `${E.money} **Precio a pagar**\n\`\`\`$${fmt(pedido.precio)} MXN\`\`\`\n`;
-    }
+        `${E.robux} **Robux a recibir**\n\`\`\`${fmt(pedido.robux)} Robux\`\`\`\n` +
+        lineasPrecio(pedido, cupon);
 
     if (pedido.redondeado) {
         desc += `\n${E.alert} Tu monto fue redondeado a **${fmt(pedido.robux)} Robux**.`;
@@ -515,7 +635,7 @@ async function crearTicketComunidad(interaction, pedido) {
     await channel.send(v2.tarjetaPayload({
         color: ACCENT,
         mencion: `<@${userId}>`,
-        texto: `## Resumen de tu compra\n-# Entrega por **comunidad**\n\n${desc}${pedido.comunidadesTexto}`,
+        texto: `## Resumen de tu compra\n-# Entrega por **comunidad**\n\n${desc}${pedido.comunidadesTexto}\n${bloqueFidelidad(userId, pedido)}`,
         pie: '7x Community • Proceso automático',
         thumbnail: pedido.foto,
         filas: [closeBtnRow()],
@@ -545,13 +665,13 @@ async function crearTicketGamepass(interaction, pedido) {
         `${E.member} **Usuario de Roblox**\n\`\`\`${pedido.robloxName}\`\`\`\n` +
         `${E.roblox} **Valor del gamepass**\n\`\`\`${fmt(pedido.robux)} Robux\`\`\`\n` +
         `${E.robux} **Robux a recibir**\n\`\`\`${fmt(pedido.recibe)} Robux\`\`\`\n` +
-        `${E.money} **Precio a pagar**\n\`\`\`$${fmt(pedido.precio)} MXN\`\`\`\n` +
+        lineasPrecio(pedido, null) +
         `-# Roblox se queda el ${Math.round(gp.G.TASA_ROBLOX * 100)}% de la venta del gamepass y no lo cubrimos.`;
 
     await channel.send(v2.tarjetaPayload({
         color: ACCENT,
         mencion: `<@${userId}>`,
-        texto: `## Resumen de tu compra\n-# Entrega por **gamepass**\n\n${desc}`,
+        texto: `## Resumen de tu compra\n-# Entrega por **gamepass**\n\n${desc}\n${bloqueFidelidad(userId, pedido)}`,
         pie: '7x Community • Proceso automático',
         thumbnail: pedido.foto,
         filas: [closeBtnRow()],
@@ -695,5 +815,6 @@ module.exports = {
     __test: {
         tipoDeModal, calcularPrecio, revisarCupon, buildTextoConfirmacion, buildConfirmarRow,
         buildGamepassPaso, buildTextoRevision, pedidoTopic, editarTarjeta, E,
+        lineasPrecio, bloqueFidelidad, lineasFidelidadConfirmacion,
     },
 };

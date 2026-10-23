@@ -50,7 +50,9 @@ if (RUN_BOT) {
     const { handleButton, clearTimers } = require('./handlers/buttons');
     const { handleModal }     = require('./handlers/modals');
     const { handleAcc, handleAccDispo, handleAccDispoAutocomplete } = require('./handlers/accounts');
-    const { handleOutfit, handlePagos, handlePagoVerified, handleOffer, handleClose, handleHeadless, handleGroupActive, handleTopCompradores, handleCrypto, handleAvatar } = require('./handlers/commands');
+    const { handleOutfit, handlePagos, handlePagoVerified, handleOffer, handleClose, handleHeadless, handleGroupActive, handleTopCompradores, handleCrypto, handleAvatar, handleCompras, handleRobuxGastados, handleMisCompras } = require('./handlers/commands');
+    const fidelidad           = require('./utils/fidelidad');
+    const { iniciarCaducidad } = require('./utils/reviewFlow');
     const cryptoPrecios       = require('./utils/cryptoPrecios');
     const {
         handleAddGroup, handleRegenerateToken, handleDeleteGroup, handleCheckGroup, handleGroups,
@@ -162,6 +164,19 @@ if (RUN_BOT) {
                 description: 'Muestra el ranking de los mayores compradores de Robux',
             },
 
+            // Los tres leen del mismo registro que el ranking de compradores.
+            {
+                name: 'compras',
+                description: 'Muestra las compras totales hechas en 7x',
+            },
+            {
+                name: 'robuxgastados',
+                description: 'Muestra los Robux que se han comprado en 7x',
+            },
+            {
+                name: 'miscompras',
+                description: 'Tus compras y cuántas te faltan para tu próximo descuento',
+            },
             {
                 name: 'avatar',
                 description: 'Muestra el avatar de un usuario de Roblox con sus seguidores, amigos y seguidos',
@@ -413,6 +428,19 @@ if (RUN_BOT) {
             console.error('[bot] backfillFromOrderLog failed:', err)
         );
 
+        // El descuento por fidelidad cuenta las compras DESDE que se activa, y
+        // al activarse apunta cuántas llevaba cada cliente. Tiene que ir
+        // DESPUÉS de reconstruir el ranking: una base tomada sobre un ranking a
+        // medio rehacer valdría 0 para muchos y les regalaría su historial.
+        // Sólo actúa la primera vez; en los demás arranques no hace nada.
+        try { fidelidad.inicializar(); }
+        catch (err) { console.error('[bot] fidelidad.inicializar failed:', err); }
+
+        // Las valoraciones que pasan su plazo se cierran solas. Se revisa al
+        // arrancar y cada pocos minutos, a partir de la fecha guardada: un
+        // temporizador de 12 horas no sobreviviría a los reinicios.
+        iniciarCaducidad(client);
+
         await updateLeaderboardMessage(client).catch(err =>
             console.error('[bot] updateLeaderboardMessage failed:', err)
         );
@@ -437,6 +465,9 @@ if (RUN_BOT) {
             else if (interaction.isChatInputCommand() && interaction.commandName === 'topcompradores') await handleTopCompradores(interaction);
             else if (interaction.isChatInputCommand() && interaction.commandName === 'crypto')       await handleCrypto(interaction);
             else if (interaction.isChatInputCommand() && interaction.commandName === 'avatar')       await handleAvatar(interaction);
+            else if (interaction.isChatInputCommand() && interaction.commandName === 'compras')      await handleCompras(interaction);
+            else if (interaction.isChatInputCommand() && interaction.commandName === 'robuxgastados') await handleRobuxGastados(interaction);
+            else if (interaction.isChatInputCommand() && interaction.commandName === 'miscompras')   await handleMisCompras(interaction);
             else if (interaction.isChatInputCommand() && interaction.commandName === 'headless')      await handleHeadless(interaction);
             else if (interaction.isChatInputCommand() && interaction.commandName === 'groupactive')   await handleGroupActive(interaction);
             else if (interaction.isChatInputCommand() && interaction.commandName === 'addgroup')      await handleAddGroup(interaction);

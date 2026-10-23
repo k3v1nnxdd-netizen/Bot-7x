@@ -823,6 +823,75 @@ por nuestra cuenta seria tirar un mensaje del canal sin que nadie lo haya
 pedido, y su boton ya responde que la venta esta cerrada. Si no lo quieres a la
 vista, esconde el canal.
 
+## Fidelidad, estadisticas y reseñas
+
+### /compras · /robuxgastados · /miscompras
+
+| Comando | Que enseña | Visible |
+|---|---|---|
+| `/compras` | Compras completadas en el servidor y por cuantos clientes, mas las tuyas | Publico |
+| `/robuxgastados` | Robux entregados en el servidor, mas los tuyos | Publico |
+| `/miscompras` | Tu barra de fidelidad, cuantas te faltan y tus descuentos guardados | Solo tu |
+
+Los tres leen del **mismo registro que el ranking de compradores**
+(`robuxLeaderboard.json`): compras completadas, sin duplicados y reconstruidas
+desde el canal de pedidos. Ninguno puede dar una cifra distinta del ranking.
+
+### Descuento por fidelidad (`utils/fidelidad.js`)
+
+Cada `FIDELIDAD.CADA` compras (5) se gana un **`FIDELIDAD.DESCUENTO`% (15%) para
+una compra**, y el cliente **elige en cual**: en la confirmacion de cualquier
+compra con un descuento guardado salen tres botones — *Usar mi 15% y
+continuar*, *Continuar sin descuento* y *Cancelar*. Vale en comunidad y en
+gamepass.
+
+- **Una compra cuenta al confirmarse el pago** (PAGO REALIZADO), lo mismo que
+  cuenta el ranking. La compra en la que se usa el descuento tambien cuenta para
+  el siguiente.
+- **El descuento se gasta al confirmarse el pago, no al abrir el ticket.** El
+  ticket solo lo lleva marcado en su topic; si se cierra sin pagar, el cliente
+  lo conserva.
+- **No se combina con cupones.** Con un cupon valido no se ofrece, y se le dice
+  que se queda guardado.
+- Se vuelve a comprobar al pulsar *Usar*: si entre medias ya no lo tiene, el
+  ticket se abre sin el y se avisa.
+- Los descuentos **usados** van en `fidelidad.json`, no en el ranking: el
+  ranking se borra y se rehace en cada arranque, y con el se perderian — cada
+  despliegue devolveria los usados.
+
+**Solo cuentan las compras de despues de activarlo** (`FIDELIDAD.RETROACTIVO:
+false`). El ranking guarda todo el historial, y contarlo entero daria a un
+cliente con 30 compras seis descuentos de golpe. Al arrancar por primera vez el
+bot apunta cuantas llevaba cada cliente (la base) y cuenta desde ahi — y lo hace
+**despues** de reconstruir el ranking, porque una base tomada sobre un ranking a
+medias valdria 0 y regalaria el historial. Se eligio asi porque es lo
+reversible: ponerlo en `true` mas tarde le da a cada cliente lo suyo, mientras
+que un descuento ya usado no se puede retirar.
+
+El ticket de compra lleva la **barra verde** (🟩🟩🟩⬜⬜ 3/5) con lo que pasara al
+completar esa compra.
+
+### Reseñas con estrellas (`utils/reviewFlow.js`)
+
+La valoracion son **cinco botones**, de ⭐ a ⭐⭐⭐⭐⭐: un clic y valorado. Antes era
+un boton que abria un formulario con numero y comentario obligatorio. El boton
+viejo de los DMs ya enviados ahora enseña las estrellas.
+
+Hay **`RESENAS.PLAZO_HORAS` (12) horas** para valorar. Pasado el plazo:
+
+- las estrellas se apagan y dicen que el plazo termino, tambien si alguien pulsa
+  una antes de que pase la revision;
+- el anuncio del canal de reseñas pasa de *Esperando la valoracion* (ya no hay
+  "???") a **Entrega verificada · el cliente no dejo valoracion**.
+
+**No se inventa una reseña a nombre del cliente.** Quien lee el canal de reseñas
+decide si comprar fiandose de que cada una la escribio un cliente real. Lo que
+si se enseña, porque es cierto, es que la compra se entrego.
+
+El plazo no va con un `setTimeout` de 12 horas — no sobreviviria a los
+reinicios. Se revisa al arrancar y cada 10 minutos a partir de la fecha
+guardada de cada peticion.
+
 ## Compra de Robux: comunidad y gamepass
 
 El panel de tickets tiene dos botones de compra: **robux-comunidad** (el de

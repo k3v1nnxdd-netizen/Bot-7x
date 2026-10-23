@@ -164,25 +164,32 @@ module.exports = async function run() {
     }
 
     // ── 3. La tarjeta de reseña, entera también al deshabilitarla ────────────
-    const activa = reviewFlow.buildReviewPayload('555', 'canal-1', false);
-    const usada  = reviewFlow.buildReviewPayload('555', 'canal-1', true);
+    // Son cinco botones de estrellas. Al valorar o al vencer el plazo, el edit
+    // tiene que llevar la tarjeta ENTERA: en un mensaje V2, editar sólo la fila
+    // borraría el texto.
+    const activa  = reviewFlow.buildReviewPayload('555', 'canal-1', 'abierta');
+    const usada   = reviewFlow.buildReviewPayload('555', 'canal-1', 'calificada', 4);
+    const cerrada = reviewFlow.buildReviewPayload('555', 'canal-1', 'cerrada');
 
-    for (const [etiqueta, p] of [['activa', activa], ['ya calificada', usada]]) {
+    for (const [etiqueta, p] of [['activa', activa], ['ya calificada', usada], ['cerrada por plazo', cerrada]]) {
         assert(p.flags === MessageFlags.IsComponentsV2, `la tarjeta de reseña ${etiqueta} es un Container`);
         const piezasReseña = nodos(p.components.map(c => c.toJSON()));
         assert(
-            piezasReseña.some(n => n.type === 10 && n.content.includes('evaluar la atención')),
+            piezasReseña.some(n => n.type === 10 && n.content.includes('<@555>')),
             `la ${etiqueta} conserva su texto — editar sólo la fila lo habría borrado`
         );
-        assert(
-            piezasReseña.some(n => n.type === 2 && n.custom_id === 'review_rate:canal-1'),
-            `y su botón dentro del bloque (${etiqueta})`
-        );
+        const estrellas = piezasReseña.filter(n => n.type === 2 && n.custom_id?.startsWith('review_star:canal-1:'));
+        assert(estrellas.length === 5, `y sus cinco estrellas dentro del bloque (${etiqueta})`);
     }
 
-    const botonUsado = nodos(usada.components.map(c => c.toJSON())).find(n => n.type === 2);
-    assert(botonUsado.disabled === true, 'al calificar, el botón queda deshabilitado');
-    assert(botonUsado.label === 'Ya calificado', 'y lo dice');
+    const botonesUsada = nodos(usada.components.map(c => c.toJSON())).filter(n => n.type === 2);
+    assert(botonesUsada.every(b => b.disabled === true), 'al calificar, las estrellas quedan deshabilitadas');
+    assert(botonesUsada.find(b => b.custom_id.endsWith(':4'))?.style === ButtonStyle.Success,
+        'y la elegida se queda resaltada');
+
+    // Compatibilidad: la firma de antes (true/false) sigue funcionando.
+    const viejaFirma = nodos(reviewFlow.buildReviewPayload('555', 'canal-1', true).components.map(c => c.toJSON())).filter(n => n.type === 2);
+    assert(viejaFirma.every(b => b.disabled === true), 'la firma vieja (true) sigue apagando los botones');
 
     return finish();
 };

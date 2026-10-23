@@ -372,8 +372,15 @@ module.exports = async function run() {
     const MODALES = fs.readFileSync(path.join(RAIZ, 'handlers', 'modals.js'), 'utf8');
     assert(/comprar_gamepass:\s*onComprarGamepass/.test(BOTONES), 'el botón de gamepass está enrutado');
     assert(/PANEL_BUTTONS\s*=\s*new Set\(\[[^\]]*'comprar_gamepass'/.test(BOTONES), 'y sólo funciona desde el panel oficial');
-    assert(/compra_ok:/.test(BOTONES) && /compra_no:/.test(BOTONES) && /isCompra \? handleCompraButton/.test(BOTONES),
-        'Continuar y Cancelar están enrutados');
+    // Los tres botones de la confirmación: continuar, continuar con el
+    // descuento de fidelidad y cancelar.
+    const reCompra = BOTONES.match(/const isCompra = (\/.+\/)\.test/)?.[1] ?? '';
+    const enrutaCompra = id => { try { return new RegExp(reCompra.slice(1, -1)).test(id); } catch { return false; } };
+    for (const id of ['compra_ok:abc', 'compra_no:abc', 'compra_desc:abc']) {
+        assert(enrutaCompra(id), `${id.split(':')[0]} está enrutado`);
+    }
+    assert(!enrutaCompra('compra_otro:abc'), 'y nada más se cuela por ese camino');
+    assert(/isCompra \? handleCompraButton/.test(BOTONES), 'hacia el handler de la compra');
     assert(/gp_link:\s*onGpLink/.test(BOTONES), 'el botón del link del gamepass está enrutado');
     assert(/TICKET_BUTTONS\s*=\s*new Set\(\[[^\]]*'gp_link'/.test(BOTONES), 'y sólo funciona dentro de un ticket');
     for (const id of ['comprar_modal', 'gamepass_compra_modal']) {

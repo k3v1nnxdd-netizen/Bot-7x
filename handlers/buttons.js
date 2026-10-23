@@ -10,10 +10,11 @@ const { isGone, safeReply, safeEditReply, safeDeferReply, safeShowModal } = requ
 const { isLocked, lock } = require('../utils/spam');
 const { esAdminDeInteraccion, puedeGestionarTicket } = require('../utils/permisos');
 const tickets            = require('../utils/tickets');
-const { buildOtraCosaModal, buildDuelsModal, buildCalcDineroModal, buildCalcRobuxModal, buildGpDineroModal, buildGpRobuxModal, buildVerifModal, buildReviewModal } = require('./modals');
+const { buildOtraCosaModal, buildDuelsModal, buildCalcDineroModal, buildCalcRobuxModal, buildGpDineroModal, buildGpRobuxModal, buildVerifModal } = require('./modals');
 const { buildRefRow, sendPurchaseDM } = require('../utils/purchaseDm');
 const reviews            = require('../utils/reviews');
-const { requestReview }  = require('../utils/reviewFlow');
+const { requestReview, finalizeReview, cerrarResena, buildReviewPayload, PLAZO_MS: PLAZO_RESENA_MS } = require('../utils/reviewFlow');
+const fidelidad          = require('../utils/fidelidad');
 const { sendOrderCompletionSummary } = require('../utils/orderNotify');
 const { startSeguidoresTicket, handleSeguidoresButton } = require('./seguidoresFlow');
 const { handleCheckGroupButton } = require('./checkGroupFlow');
@@ -280,6 +281,14 @@ async function onConfirmarPago(interaction) {
     await safeReply(interaction, replyPayload);
 
     if (ownerId) {
+        // El descuento de fidelidad se gasta AQUÍ, al confirmarse el pago, y no
+        // al abrir el ticket: si el ticket se cierra sin pagar, el cliente
+        // conserva su descuento para otra compra. isConfirmed() de arriba
+        // impide que un segundo clic lo gaste dos veces.
+        if (tickets.getTicketData(interaction.channel)?.pedido?.descuentoFidelidad) {
+            fidelidad.usar(ownerId);
+        }
+
         await sendPurchaseDM(interaction.client, ownerId);
         await requestReview(interaction.client, interaction.channel, channelId, ownerId);
         await sendOrderCompletionSummary(interaction.client, interaction.channel, ownerId);
@@ -411,8 +420,51 @@ async function onReviewRate(interaction) {
         return safeReply(interaction, { content: '❌ Solo el comprador puede calificar esta compra.', ephemeral: true });
     }
 
-    const ok = await safeShowModal(interaction, buildReviewModal(ticketChannelId));
-    if (!ok) await safeReply(interaction, { content: '❌ No se pudo abrir el formulario. Intenta de nuevo.', ephemeral: true });
+    // Los DMs enviados antes de las estrellas tienen este botón. En vez del
+    // formulario de antes, se le enseñan las estrellas: un solo camino.
+    if (review.cerradoEn || reviews.estaVencida(review, PLAZO_RESENA_MS)) {
+        await cerrarResena(interaction.client, ticketChannelId).catch(() => {});
+        return safeReply(interaction, { content: '⏱️ El plazo para valorar esta compra terminó.', ephemeral: true });
+    }
+    return safeReply(interaction, { ...buildReviewPayload(review.buyerId, ticketChannelId, 'abierta'), ephemeral: true });
+}
+
+// ── Las estrellas ─────────────────────────────────────────────────────────────
+// Un clic y valorado: review_star:<canal del ticket>:<1-5>.
+
+async function onReviewStar(interaction) {
+    if (interaction.replied || interaction.deferred) return;
+
+    const [, ticketChannelId, n] = interaction.customId.split(':');
+    const score = Number(n);
+    if (!Number.isInteger(score) || score < 1 || score > 5) return;
+
+    const review = reviews.getReview(ticketChannelId);
+    if (!review) {
+        return safeReply(interaction, { content: '❌ Esta solicitud de reseña ya no es válida.', ephemeral: true });
+    }
+    if (interaction.user.id !== review.buyerId) {
+        return safeReply(interaction, { content: '❌ Solo el comprador puede calificar esta compra.', ephemeral: true });
+    }
+    if (review.rating !== null) {
+        return safeReply(interaction, { content: '❌ Esta compra ya fue calificada.', ephemeral: true });
+    }
+
+    // El plazo se mira aquí también, y no sólo en la revisión periódica: entre
+    // dos revisiones pasan minutos, y en ese hueco un botón vencido no puede
+    // seguir valiendo.
+    if (review.cerradoEn || reviews.estaVencida(review, PLAZO_RESENA_MS)) {
+        await cerrarResena(interaction.client, ticketChannelId).catch(() => {});
+        return safeReply(interaction, { content: '⏱️ El plazo para valorar esta compra terminó.', ephemeral: true });
+    }
+
+    const via = interaction.channel?.isDMBased?.() ? 'dm' : 'ticket';
+    if (!reviews.submitRating(ticketChannelId, interaction.user.id, score, null, via)) {
+        return safeReply(interaction, { content: '❌ Esta compra ya fue calificada.', ephemeral: true });
+    }
+
+    await safeReply(interaction, { content: `✅ ¡Gracias! Calificaste la atención con **${score}/5**.`, ephemeral: true });
+    await finalizeReview(interaction.client, ticketChannelId, score, null);
 }
 
 // ── Auto-close countdown (shared with /close command) ─────────────────────────
@@ -477,9 +529,10 @@ async function handleButton(interaction) {
 
     const isSeg    = interaction.customId.startsWith('seg_');
     const isAli    = interaction.customId.startsWith('ali_');
-    const isCompra = interaction.customId.startsWith('compra_ok:') || interaction.customId.startsWith('compra_no:');
+    const isCompra = /^compra_(ok|no|desc):/.test(interaction.customId);
     const isCg     = interaction.customId.startsWith('cg_');
     const isReview = interaction.customId.startsWith('review_rate:');
+    const isStar   = interaction.customId.startsWith('review_star:');
     // Paging of the /groups license listing. Its message is ephemeral and
     // owner-only, and the handler re-checks the owner itself — the customId
     // carries the page number and nothing else, so a forged one can only ask
@@ -490,6 +543,7 @@ async function handleButton(interaction) {
         : isCompra ? handleCompraButton
         : isCg ? handleCheckGroupButton
         : isReview ? onReviewRate
+        : isStar ? onReviewStar
         : isGroupList ? handleGroupsPageButton
         : HANDLERS[interaction.customId];
     if (!fn) return;

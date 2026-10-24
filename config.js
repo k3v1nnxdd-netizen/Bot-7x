@@ -62,6 +62,7 @@ module.exports = {
         ALIANZA:            '1553269110551482408',
         GAMEPASS:           '1561898653030027335',
         INVITACIONES:       '1180665539580936213',
+        GAMEPASS_JUEGOS:    '1562045353669427260',
     },
 
     // ── Sistema de invitaciones (utils/invitaciones.js) ──────────────────────

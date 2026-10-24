@@ -50,7 +50,8 @@ if (RUN_BOT) {
     const { handleButton, clearTimers } = require('./handlers/buttons');
     const { handleModal }     = require('./handlers/modals');
     const { handleAcc, handleAccDispo, handleAccDispoAutocomplete } = require('./handlers/accounts');
-    const { handleOutfit, handlePagos, handlePagoVerified, handleOffer, handleClose, handleHeadless, handleGroupActive, handleTopCompradores, handleCrypto, handleAvatar, handleCompras, handleRobuxGastados, handleMisCompras } = require('./handlers/commands');
+    const { handleOutfit, handlePagos, handlePagoVerified, handleOffer, handleClose, handleHeadless, handleGroupActive, handleTopCompradores, handleCrypto, handleAvatar, handleCompras, handleRobuxGastados, handleMisCompras, handleInvitaciones } = require('./handlers/commands');
+    const invitesTracker      = require('./utils/invitesTracker');
     const { iniciarCaducidad } = require('./utils/reviewFlow');
     const cryptoPrecios       = require('./utils/cryptoPrecios');
     const {
@@ -75,6 +76,9 @@ if (RUN_BOT) {
             GatewayIntentBits.GuildMembers,
             GatewayIntentBits.GuildMessageReactions,
             GatewayIntentBits.GuildVoiceStates,
+            // Para enterarse de las invitaciones que se crean y se borran
+            // (sistema de invitaciones, utils/invitesTracker.js).
+            GatewayIntentBits.GuildInvites,
         ],
         partials: [Partials.Message, Partials.Channel, Partials.Reaction],
     });
@@ -175,6 +179,16 @@ if (RUN_BOT) {
             {
                 name: 'miscompras',
                 description: 'Tus compras y cuántas te faltan para tu próximo descuento',
+            },
+            {
+                name: 'invitaciones',
+                description: 'Las invitaciones de alguien: de la semana, de siempre y las que no cuentan',
+                options: [{
+                    name: 'usuario',
+                    type: 6,
+                    description: 'De quién (si no pones a nadie, las tuyas)',
+                    required: false,
+                }],
             },
             {
                 name: 'avatar',
@@ -432,6 +446,12 @@ if (RUN_BOT) {
         // temporizador de 12 horas no sobreviviría a los reinicios.
         iniciarCaducidad(client);
 
+        // Sistema de invitaciones: caché de invitaciones, salidas de mientras
+        // estuvo apagado, cierre de semana si tocaba y el leaderboard al final.
+        await invitesTracker.iniciar(client).catch(err =>
+            console.error('[bot] invitesTracker.iniciar failed:', err)
+        );
+
         await updateLeaderboardMessage(client).catch(err =>
             console.error('[bot] updateLeaderboardMessage failed:', err)
         );
@@ -459,6 +479,7 @@ if (RUN_BOT) {
             else if (interaction.isChatInputCommand() && interaction.commandName === 'compras')      await handleCompras(interaction);
             else if (interaction.isChatInputCommand() && interaction.commandName === 'robuxgastados') await handleRobuxGastados(interaction);
             else if (interaction.isChatInputCommand() && interaction.commandName === 'miscompras')   await handleMisCompras(interaction);
+            else if (interaction.isChatInputCommand() && interaction.commandName === 'invitaciones') await handleInvitaciones(interaction);
             else if (interaction.isChatInputCommand() && interaction.commandName === 'headless')      await handleHeadless(interaction);
             else if (interaction.isChatInputCommand() && interaction.commandName === 'groupactive')   await handleGroupActive(interaction);
             else if (interaction.isChatInputCommand() && interaction.commandName === 'addgroup')      await handleAddGroup(interaction);
@@ -487,6 +508,10 @@ if (RUN_BOT) {
             // reglas de abajo. Es el segundo detector de boosts, el que
             // funciona aunque el miembro no esté en caché (ver handlers/boost.js).
             await handleBoostMessage(message);
+
+            // Si alguien más escribe en el canal de invitaciones, el
+            // leaderboard baja al final.
+            invitesTracker.alMensaje(message);
 
             if (config.FEATURES.ANTI_SCAM && await handleAntiScam(message)) return;
             await handleMessage(message);
@@ -563,7 +588,17 @@ if (RUN_BOT) {
         } catch (err) {
             console.error('[member] role add failed:', err.message);
         }
+
+        invitesTracker.alEntrar(member).catch(err => console.error('[invitaciones] alEntrar:', err));
     });
+
+    // ── Sistema de invitaciones ───────────────────────────────────────────────
+
+    client.on(Events.GuildMemberRemove, member => {
+        invitesTracker.alSalir(member).catch(err => console.error('[invitaciones] alSalir:', err));
+    });
+    client.on(Events.InviteCreate, invite => invitesTracker.alCrearInvitacion(invite));
+    client.on(Events.InviteDelete, invite => invitesTracker.alBorrarInvitacion(invite));
 
     // ── Channel delete → cleanup ──────────────────────────────────────────────
 

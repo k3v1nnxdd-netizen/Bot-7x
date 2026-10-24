@@ -19,6 +19,7 @@ const { buildDetallePayload, COPY_ID } = require('../metodos');
 const cripto = require('../utils/cryptoPrecios');
 const fidelidad = require('../utils/fidelidad');
 const v2 = require('../utils/panelV2');
+const invitaciones = require('../utils/invitaciones');
 
 async function handleOutfit(interaction) {
     if (interaction.channelId !== config.CHANNELS.OUTFIT) {
@@ -646,10 +647,55 @@ async function handleMisCompras(interaction) {
     }));
 }
 
+// ── /invitaciones ─────────────────────────────────────────────────────────────
+// Las invitaciones de alguien (o las tuyas). Público, como /miscompras: ver el
+// progreso de otros anima a invitar.
+
+function buildInvitacionesTexto(userId, nombre) {
+    const r = invitaciones.resumenDe(userId);
+    const I = invitaciones.I;
+    const n = (x, s, p) => `**${x}** ${x === 1 ? s : p}`;
+    const puesto = x => (x ? `**#${x}**` : 'sin puesto');
+
+    let entrada;
+    if (r.invitadoPor) entrada = `Entró invitado por <@${r.invitadoPor}>`;
+    else if (r.entroPor === 'vanity') entrada = 'Entró con la URL personalizada del servidor';
+    else entrada = 'No hay registro de con qué invitación entró';
+
+    return [
+        `## Invitaciones de ${nombre}`,
+        `<a:star:1514369366878064650> Esta semana: ${n(r.semana, 'invitación', 'invitaciones')} · puesto ${puesto(r.puestoSemana)}`,
+        `<:point:1501212595464700104> De todos los tiempos: ${n(r.validas, 'invitación válida', 'invitaciones válidas')} · puesto ${puesto(r.puestoTotal)}`,
+        '',
+        '### Detalle',
+        `<:true:1501213776878501899> Válidas: **${r.validas}**`,
+        `🚪 Salieron del servidor: **${r.salieron}**`,
+        `<:alert:1501220021035204658> Falsas o sospechosas: **${r.falsas}**`,
+        `↩️ Repetidas (ya habían entrado): **${r.repetidas}**`,
+        '',
+        `-# ${entrada}.`,
+        `-# El Top 1 de cada semana gana ${I.PREMIO_ROBUX} Robux. Solo cuentan cuentas con más de ${I.MIN_DIAS_CUENTA} días que entran por primera vez y siguen en el servidor.`,
+    ].join('\n');
+}
+
+async function handleInvitaciones(interaction) {
+    const user = interaction.options?.getUser?.('usuario') ?? interaction.user;
+    const miembro = user.id === interaction.user.id ? interaction.member : interaction.options?.getMember?.('usuario');
+    const nombre = String(miembro?.displayName ?? user.globalName ?? user.username ?? '').replace(/([\*_`~|>])/g, '\$1');
+    await safeReply(interaction, {
+        ...v2.tarjetaPayload({
+            color: 0x2B2D31,
+            texto: buildInvitacionesTexto(user.id, nombre),
+            thumbnail: user.displayAvatarURL?.({ size: 256 }) ?? null,
+        }),
+        allowedMentions: { parse: [] },
+    });
+}
+
 module.exports = {
     handleOutfit, handlePagos, handlePagoVerified, handleOffer, handleClose,
     handleHeadless, handleGroupActive, handleTopCompradores, handleCrypto, handleAvatar,
-    handleCompras, handleRobuxGastados, handleMisCompras,
+    handleCompras, handleRobuxGastados, handleMisCompras, handleInvitaciones,
     refreshCouponEmbed,
-    __test: { buildCryptoTexto, buildCryptoRow, segundos, minutos, buildAvatarEmbed, buildAvatarPie, buildComprasTexto, buildRobuxGastadosTexto, buildMisComprasTexto },
+    __test: { buildCryptoTexto, buildCryptoRow, segundos, minutos, buildAvatarEmbed, buildAvatarPie, buildComprasTexto, buildRobuxGastadosTexto, buildMisComprasTexto, buildInvitacionesTexto },
 };

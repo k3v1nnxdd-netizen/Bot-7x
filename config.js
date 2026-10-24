@@ -61,6 +61,27 @@ module.exports = {
         ANUNCIO:            '1553268998765023293',
         ALIANZA:            '1553269110551482408',
         GAMEPASS:           '1561898653030027335',
+        INVITACIONES:       '1180665539580936213',
+    },
+
+    // ── Sistema de invitaciones (utils/invitaciones.js) ──────────────────────
+    // Cada entrada se anuncia en CHANNELS.INVITACIONES y, siempre al final de
+    // ese canal, el leaderboard: el top de la semana, el ganador de la semana
+    // pasada y el top de siempre. El Top 1 de cada semana gana PREMIO_ROBUX;
+    // la semana se reinicia los lunes a las 00:00 (hora del centro de México).
+    INVITACIONES: {
+        PREMIO_ROBUX:     250,
+        TOP:              10,
+        UTC_OFFSET_HORAS: -6,     // centro de México, sin horario de verano
+
+        // Lo que hace que una invitación NO cuente (ver clasificar()).
+        MIN_DIAS_CUENTA:  7,      // cuenta de Discord más nueva que esto: falsa
+        DIAS_SIN_AVATAR:  30,     // más nueva que esto Y sin foto: falsa
+        RAFAGA: {
+            CUENTAS:     3,       // tantas cuentas jóvenes...
+            VENTANA_MIN: 10,      // ...en tantos minutos por la misma persona
+            DIAS_CUENTA: 30,      // "joven" = menos de estos días
+        },
     },
 
     // ── Descuento por fidelidad ──────────────────────────────────────────────

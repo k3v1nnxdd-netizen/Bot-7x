@@ -893,6 +893,35 @@ El plazo no va con un `setTimeout` de 12 horas — no sobreviviria a los
 reinicios. Se revisa al arrancar y cada 10 minutos a partir de la fecha
 guardada de cada peticion.
 
+## Sistema de invitaciones
+
+Cuenta a quien invita cada miembro, para premiar a quien trae clientes nuevos.
+Datos y reglas en `utils/invitaciones.js`; la parte de Discord en
+`utils/invitesTracker.js`. Ajustes en `config.INVITACIONES`.
+
+- **Quien invito:** se guardan los usos de cada invitacion y, al entrar
+  alguien, se mira cual subio. Tambien detecta la URL personalizada (vanity) y
+  las invitaciones que se borran al gastar su ultimo uso. Si no se puede saber
+  (dos entradas a la vez), **no se adivina**: queda como desconocida. Necesita
+  el permiso *Gestionar servidor* y el intent `GuildInvites`.
+- **Que no cuenta:** cuentas de menos de 7 dias, cuentas de menos de 30 dias
+  sin foto, rafagas (3 cuentas jovenes en 10 min por la misma persona), la
+  propia invitacion, y quien ya habia entrado antes. Si un invitado se va,
+  deja de sumar (tambien si se fue con el bot apagado: se revisa al arrancar).
+- **Canal** `CHANNELS.INVITACIONES`: cada entrada se anuncia (sin pings) y el
+  **leaderboard queda siempre al final**: si llega otro mensaje, se publica de
+  nuevo abajo y se borra el viejo. Muestra el top 10 de la semana, el ganador
+  de la semana pasada y el top 10 de siempre.
+- **Premio semanal:** el Top 1 gana `PREMIO_ROBUX` (250). La semana se cierra
+  el lunes a las 00:00 (hora del centro de Mexico): se anuncia al ganador (con
+  mencion) y el top semanal vuelve a cero. Se revisa al arrancar y cada 5 min.
+  El premio lo entrega el staff.
+- **`/invitaciones [usuario]`** (publico): las de la semana, las de siempre, el
+  puesto, el detalle de las que no cuentan y quien lo invito.
+- **Persistencia:** todo en `DATA_DIR/invitaciones.json` (el volumen). Cada
+  cifra se calcula a partir de los registros de entrada, no hay contadores
+  sueltos que puedan descuadrarse.
+
 ## Compra de Robux: comunidad y gamepass
 
 El panel de tickets tiene dos botones de compra: **robux-comunidad** (el de

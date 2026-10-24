@@ -21,9 +21,10 @@ const E = {
     member: '<:member:1501261625523699892>',
     point:  '<:point:1501212595464700104>',
     alert:  '<:alert:1501220021035204658>',
-    star:   '<a:star:1514369366878064650>',
-    robux:  '<a:robuxxx:1510070809366892604>',
 };
+
+// Los iconos blancos propios (scripts/invIconos.js).
+const ic = k => `<:inv_${k}:${config.INVITACIONES.ICONOS[k]}>`;
 
 const SIN_MENCIONES = { parse: [] };
 const REVISION_MS = 5 * 60_000;
@@ -111,7 +112,7 @@ function textoEntrada(nombre, reg, resumen) {
     const quien = reg.inviterId ? `<@${reg.inviterId}>` : null;
     switch (reg.estado) {
         case 'valida':
-            return `${E.member} **${nombre}** se unió invitado por ${quien} · ahora tiene **${plural(resumen.validas, 'invitación', 'invitaciones')}** (${resumen.semana} esta semana)`;
+            return `${ic('entra')} **${nombre}** se unió invitado por ${quien} · ahora tiene **${plural(resumen.validas, 'invitación', 'invitaciones')}** (${resumen.semana} esta semana)`;
         case 'repetida':
             return `↩️ **${nombre}** volvió a entrar (invitación de ${quien}) · **no cuenta**: ${reg.motivo}`;
         case 'propia':
@@ -125,7 +126,7 @@ function textoEntrada(nombre, reg, resumen) {
     }
 }
 
-const MEDALLAS = ['🥇', '🥈', '🥉'];
+const MEDALLAS = [ic(1), ic(2), ic(3)];
 function lineasTop(lista, vacio) {
     if (!lista.length) return [vacio];
     return lista.map((u, i) =>
@@ -139,22 +140,22 @@ function textoLeaderboard(ahora = Date.now()) {
     const ganador = inv.ultimoGanador();
 
     return [
-        `## ${E.star} Top invitaciones de la semana`,
-        `${E.robux} El **Top 1** de cada semana gana **${I.PREMIO_ROBUX} Robux**.`,
-        `-# Se reinicia el lunes a las 00:00 · <t:${fin}:R>`,
+        `## ${ic('corona')} Top invitaciones de la semana`,
+        `${ic('regalo')} El **Top 1** de cada semana gana **${I.PREMIO_ROBUX} Robux**.`,
+        `-# ${ic('reloj')} Se reinicia el lunes a las 00:00 · <t:${fin}:R>`,
         '',
         ...lineasTop(inv.top('semana', ahora), '-# Nadie ha invitado todavía esta semana. ¡El primero en invitar se pone en cabeza!'),
         '',
-        '### 🏆 Ganador de la semana pasada',
+        `### ${ic('trofeo')} Ganador de la semana pasada`,
         ganador
             ? `<@${ganador.ganadorId}> con **${plural(ganador.invitaciones, 'invitación', 'invitaciones')}** · ganó **${ganador.premio ?? I.PREMIO_ROBUX} Robux**`
             : 'Todavía no hay ganador: esta es la primera semana.',
-        '-# ⏳ Esperando al ganador de esta semana…',
+        `-# ${ic('arena')} Esperando al ganador de esta semana…`,
         '',
-        '### 📊 Top de todos los tiempos',
+        `### ${ic('grafica')} Top de todos los tiempos`,
         ...lineasTop(inv.top('total', ahora), '-# Todavía no hay invitaciones válidas.'),
         '',
-        `-# Solo cuentan invitaciones válidas: cuentas con más de ${I.MIN_DIAS_CUENTA} días, que entran por primera vez y siguen en el servidor. Mira las tuyas con /invitaciones.`,
+        `-# ${ic('escudo')} Solo cuentan invitaciones válidas: cuentas con más de ${I.MIN_DIAS_CUENTA} días, que entran por primera vez y siguen en el servidor. Mira las tuyas con /invitaciones.`,
     ].join('\n');
 }
 
@@ -273,14 +274,14 @@ async function revisarSemana(client, ahora = Date.now()) {
     if (ch) {
         const texto = cerrada.ganadorId
             ? [
-                `## ${E.star} ¡Ganador de la semana!`,
+                `## ${ic('trofeo')} ¡Ganador de la semana!`,
                 `<@${cerrada.ganadorId}> fue el **Top 1** con **${plural(cerrada.invitaciones, 'invitación', 'invitaciones')}** y gana **${cerrada.premio} Robux**.`,
                 '',
                 `${E.point} El staff te contactará para entregarte tu premio.`,
                 '-# El top de la semana vuelve a empezar desde cero. ¡A invitar!',
             ].join('\n')
             : [
-                `## ${E.star} Semana cerrada`,
+                `## ${ic('reloj')} Semana cerrada`,
                 'Esta semana no hubo invitaciones válidas, así que no hay ganador.',
                 '-# El top vuelve a empezar desde cero. ¡A invitar!',
             ].join('\n');

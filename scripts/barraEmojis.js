@@ -211,7 +211,7 @@ async function subir(pngs) {
     return ids;
 }
 
-module.exports = { generar, muestra, PIEZAS };
+module.exports = { generar, muestra, PIEZAS, png, subir };
 
 if (require.main === module) {
     (async () => {

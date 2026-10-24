@@ -215,7 +215,14 @@ module.exports = async function run() {
     assert(/<t:\d+:R>/.test(texto) && /lunes/.test(texto), 'y cuándo se reinicia');
     assert(/Ganador de la semana pasada/.test(texto) && /Esperando al ganador de esta semana/.test(texto), 'el ganador anterior, esperando al nuevo');
     assert(/Top de todos los tiempos/.test(texto), 'y el top de siempre');
-    assert(texto.indexOf('🥇 <@kev>') > 0, 'con medallas para los primeros');
+    const IC = I.ICONOS;
+    assert(texto.indexOf('<:inv_1:' + IC[1] + '> <@kev>') > 0, 'con su icono de puesto para los primeros');
+    for (const k of ['corona', 'regalo', 'reloj', 'trofeo', 'arena', 'grafica', 'escudo']) {
+        assert(texto.includes('<:inv_' + k + ':' + IC[k] + '>'), 'el leaderboard usa el icono blanco ' + k);
+    }
+    assert(!/[🏆📊⏳🥇🥈🥉]/u.test(texto), 'y ya no usa los emojis de colores de antes');
+    assert(Object.values(IC).every(id => /^\d{17,20}$/.test(id)), 'todos los iconos tienen un id de emoji válido');
+    assert(fs.existsSync(path.join(RAIZ, 'assets', 'invitaciones', 'inv_corona.png')), 'y sus PNG están en assets/invitaciones');
 
     // ── 7. El comando ────────────────────────────────────────────────────────
     const t = cmd.buildInvitacionesTexto('kev', 'kəv');

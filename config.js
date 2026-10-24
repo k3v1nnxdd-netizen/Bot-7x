@@ -74,6 +74,23 @@ module.exports = {
         TOP:              10,
         UTC_OFFSET_HORAS: -6,     // centro de México, sin horario de verano
 
+        // Iconos blancos del leaderboard: emojis de la APLICACIÓN (se ven para
+        // todos). Se dibujan y se suben con scripts/invIconos.js; si se
+        // rehacen, los ids nuevos van aquí.
+        ICONOS: {
+            corona:  '1563356293803016302',
+            regalo:  '1563356294830891059',
+            reloj:   '1563356296328126465',
+            trofeo:  '1563356297263448204',
+            arena:   '1563356298177675315',
+            grafica: '1563356299058479184',
+            escudo:  '1563356300052660304',
+            entra:   '1563356300920754317',
+            1:       '1563356301764067438',
+            2:       '1563356304158761092',
+            3:       '1563356306008711188',
+        },
+
         // Lo que hace que una invitación NO cuente (ver clasificar()).
         MIN_DIAS_CUENTA:  7,      // cuenta de Discord más nueva que esto: falsa
         DIAS_SIN_AVATAR:  30,     // más nueva que esto Y sin foto: falsa

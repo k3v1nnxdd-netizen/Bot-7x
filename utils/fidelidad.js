@@ -130,6 +130,13 @@ function usar(userId) {
     return true;
 }
 
+// Si el descuento vale para una compra de `robux` Robux: sólo en las de hasta
+// FIDELIDAD.MAX_ROBUX. En una más grande no se ofrece y se queda guardado.
+function valeParaRobux(robux) {
+    const n = Number(robux);
+    return Number.isFinite(n) && n > 0 && n <= F.MAX_ROBUX;
+}
+
 // El precio con el descuento, al peso, como el resto de precios del bot.
 function aplicar(precio) {
     if (!Number.isFinite(precio) || precio <= 0) return null;
@@ -163,4 +170,4 @@ function totalesServidor() {
     };
 }
 
-module.exports = { estado, tieneDescuento, usar, aplicar, barra, totalesServidor, fechaPedido, F };
+module.exports = { estado, tieneDescuento, valeParaRobux, usar, aplicar, barra, totalesServidor, fechaPedido, F };

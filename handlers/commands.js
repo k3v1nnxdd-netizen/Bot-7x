@@ -612,7 +612,7 @@ function buildMisComprasTexto(userId, nombre = null) {
         lineas.push(
             '',
             `🎁 Tienes **${e.disponibles}** descuento${e.disponibles === 1 ? '' : 's'} del **${F.DESCUENTO}%** guardado${e.disponibles === 1 ? '' : 's'}.`,
-            '-# Úsalo en la compra que tú elijas: te lo ofreceremos al confirmarla.',
+            `-# Úsalo en la compra que tú elijas de hasta ${F.MAX_ROBUX.toLocaleString('es-MX')} Robux: te lo ofreceremos al confirmarla.`,
         );
     }
 
@@ -622,7 +622,7 @@ function buildMisComprasTexto(userId, nombre = null) {
         `${FID_E.point} Compras completadas: **${e.comprasTotales.toLocaleString('es-MX')}**`,
         `${FID_E.point} Descuentos usados: **${e.usados}**`,
         '',
-        `-# Cada ${F.CADA} compras ganas un ${F.DESCUENTO}% para una compra. Una compra cuenta cuando se confirma el pago.`,
+        `-# Cada ${F.CADA} compras ganas un ${F.DESCUENTO}% para una compra de hasta ${F.MAX_ROBUX.toLocaleString('es-MX')} Robux. Una compra cuenta cuando se confirma el pago.`,
     );
 
     return lineas.join('\n');

@@ -344,6 +344,23 @@ async function simularCompra() {
         out.push({ ok: ch.pedido.descuentoFidelidad === true, msg: 'el ticket lo lleva marcado en su topic' });
         // Abrir el ticket NO lo gasta: se gasta al confirmar el pago.
         out.push({ ok: fidelidad.estado(USER).disponibles === 1, msg: 'abrir el ticket NO lo gasta: si no paga, lo conserva' });
+
+        // Sólo en compras de hasta FIDELIDAD.MAX_ROBUX.
+        const MAXR = fidelidad.F.MAX_ROBUX;
+        out.push({ ok: MAXR === 5000, msg: 'el descuento vale hasta 5,000 Robux' });
+        out.push({ ok: fidelidad.valeParaRobux(MAXR) && !fidelidad.valeParaRobux(MAXR + 1) && !fidelidad.valeParaRobux(0),
+            msg: 'justo 5,000 sí; 5,001 ya no' });
+        conf = await enviar({ usuario_roblox: 'c', cantidad_robux: String(MAXR), codigo_descuento: '' });
+        out.push({ ok: botonesDe(conf).some(b => b.custom_id.startsWith('compra_desc:')), msg: 'en una compra de 5,000 se ofrece' });
+        conf = await enviar({ usuario_roblox: 'c', cantidad_robux: '10000', codigo_descuento: '' });
+        out.push({ ok: !botonesDe(conf).some(b => b.custom_id.startsWith('compra_desc:')), msg: 'en una de 10,000 no se ofrece' });
+        out.push({ ok: /válido en compras de hasta \*\*5,000 Robux\*\*/.test(textoDe(conf)), msg: 'y se le dice por qué, y que sigue guardado' });
+        // Aunque alguien pulse un botón de descuento en una compra grande, no se aplica.
+        const tGrande = botonesDe(conf).find(b => b.custom_id.startsWith('compra_ok:'))?.custom_id?.split(':')[1] ?? 'sin-token';
+        await pulsar(`compra_desc:${tGrande}`);
+        out.push({ ok: !creados.at(-1).pedido?.descuentoFidelidad, msg: 'un botón de descuento forzado en una compra grande no lo aplica' });
+        out.push({ ok: fidelidad.estado(USER).disponibles === 1, msg: 'y el descuento sigue guardado' });
+        out.push({ ok: /hasta 5,000 Robux/.test(cmd.buildMisComprasTexto(USER)), msg: '/miscompras avisa del límite' });
         out.push({ ok: /Estás usando tu/.test(conDesc), msg: 'y la barra del ticket dice que lo está usando' });
 
         // Gamepass también.

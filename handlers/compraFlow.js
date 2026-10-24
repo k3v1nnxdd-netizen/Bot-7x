@@ -206,7 +206,8 @@ async function handleCompraModal(interaction) {
         // usa en esta compra o lo guarda. No se combina con un cupón: los dos
         // juntos podrían dejar la venta por debajo de coste.
         const fid = fidelidad.estado(userId);
-        const ofrecerFidelidad = fid.disponibles > 0 && !cupon?.valido;
+        // Y sólo en compras de hasta FIDELIDAD.MAX_ROBUX.
+        const ofrecerFidelidad = fid.disponibles > 0 && !cupon?.valido && fidelidad.valeParaRobux(precio.datos.robux);
 
         const pedido = {
             tipo,
@@ -370,7 +371,9 @@ function lineasFidelidadConfirmacion(pedido, cupon, fid) {
     const F = fidelidad.F;
     const lineas = [];
 
-    if (fid.disponibles > 0 && !cupon?.valido) {
+    if (fid.disponibles > 0 && !cupon?.valido && !fidelidad.valeParaRobux(pedido.robux)) {
+        lineas.push(`-# 🎁 Tu ${F.DESCUENTO}% de fidelidad es válido en compras de hasta **${fmt(F.MAX_ROBUX)} Robux**: se queda guardado para otra compra.`);
+    } else if (fid.disponibles > 0 && !cupon?.valido) {
         const conDescuento = fidelidad.aplicar(pedido.precio);
         lineas.push(
             `### 🎁 Tienes un descuento de fidelidad`,
@@ -455,7 +458,9 @@ async function onContinuar(interaction, token, conDescuento = false) {
     // ticket cerrado sin pagar no le cueste el descuento a nadie.
     let avisoFidelidad = '';
     if (conDescuento) {
-        if (fidelidad.tieneDescuento(userId)) {
+        if (!fidelidad.valeParaRobux(pedido.robux)) {
+            avisoFidelidad = `\n-# Tu descuento de fidelidad sólo vale en compras de hasta ${fmt(fidelidad.F.MAX_ROBUX)} Robux: el ticket se abrió sin él y sigue guardado.`;
+        } else if (fidelidad.tieneDescuento(userId)) {
             pedido.descuentoFidelidad = true;
         } else {
             avisoFidelidad = '\n-# Tu descuento de fidelidad ya no estaba disponible: el ticket se abrió sin él.';

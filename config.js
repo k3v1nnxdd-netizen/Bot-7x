@@ -81,6 +81,8 @@ module.exports = {
     FIDELIDAD: {
         CADA:        5,
         DESCUENTO:   15,
+        // El descuento sólo vale en compras de hasta esta cantidad de Robux.
+        MAX_ROBUX:   5000,
         RETROACTIVO: false,
 
         // Desde cuándo cuentan las compras: la fecha en que se activó el

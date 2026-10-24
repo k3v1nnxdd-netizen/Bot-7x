@@ -843,7 +843,8 @@ Cada `FIDELIDAD.CADA` compras (5) se gana un **`FIDELIDAD.DESCUENTO`% (15%) para
 una compra**, y el cliente **elige en cual**: en la confirmacion de cualquier
 compra con un descuento guardado salen tres botones — *Usar mi 15% y
 continuar*, *Continuar sin descuento* y *Cancelar*. Vale en comunidad y en
-gamepass.
+gamepass, **solo en compras de hasta `FIDELIDAD.MAX_ROBUX` (5,000) Robux**: en
+una mas grande no se ofrece, se avisa y el descuento se queda guardado.
 
 - **Una compra cuenta al confirmarse el pago** (PAGO REALIZADO), lo mismo que
   cuenta el ranking. La compra en la que se usa el descuento tambien cuenta para

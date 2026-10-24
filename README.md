@@ -922,6 +922,26 @@ Datos y reglas en `utils/invitaciones.js`; la parte de Discord en
   cifra se calcula a partir de los registros de entrada, no hay contadores
   sueltos que puedan descuadrarse.
 
+## Tickets de compra inactivos
+
+`utils/ticketInactivo.js`, ajustes en `config.TICKET_INACTIVO`.
+
+- La **primera hora** despues de abrir un ticket de compra no pasa nada.
+- Pasada esa hora, si el cliente **no ha escrito ningun mensaje** y **no hay un
+  pago pendiente o confirmado**, se le avisa (con mencion) con una barra que se
+  vacia en **12 horas**. Se edita cada hora.
+- Si escribe lo que sea o su pago pasa a revision, el contador **se detiene
+  para siempre** y el aviso lo dice.
+- Si se acaba el plazo, se avisa en el canal, se le manda un DM y el canal se
+  borra.
+- Las 12 horas cuentan desde el aviso: si el bot estuvo apagado, el cliente
+  sigue teniendo su plazo completo. Si no se pueden leer los mensajes del
+  ticket, no se cierra nada.
+- Se revisa al arrancar y cada 5 minutos; el estado vive en
+  `DATA_DIR/ticketsInactivos.json`. El pago en marcha tambien se reconoce por el
+  nombre del canal (`pago-revision`, `pago-<usuario>`), que sobrevive a los
+  reinicios.
+
 ## Compra de Robux: comunidad y gamepass
 
 El panel de tickets tiene dos botones de compra: **robux-comunidad** (el de

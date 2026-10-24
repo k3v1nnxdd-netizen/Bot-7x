@@ -314,6 +314,16 @@ module.exports = {
     // Ticket channel topic prefix — used for persistence across restarts
     TOPIC_PREFIX: 'ticket:',
 
+    // ── Tickets de compra inactivos (utils/ticketInactivo.js) ────────────────
+    // ESPERA_HORAS después de abrirse, si el cliente no ha escrito nada ni hay
+    // un pago pendiente, se avisa con una barra de PLAZO_HORAS; si se acaba
+    // sin actividad, el ticket se cierra. Escribir o pagar lo detiene.
+    TICKET_INACTIVO: {
+        ESPERA_HORAS:  1,
+        PLAZO_HORAS:   12,
+        REVISION_MIN:  5,
+    },
+
     TIMEOUTS: {
         PAYMENT_CLOSE_MS: 10 * 60 * 1000,   // 10 min after owner confirms
         COUNTDOWN_TICK_MS: 60 * 1000,        // edit message every 1 min

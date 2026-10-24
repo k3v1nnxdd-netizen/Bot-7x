@@ -52,6 +52,7 @@ if (RUN_BOT) {
     const { handleAcc, handleAccDispo, handleAccDispoAutocomplete } = require('./handlers/accounts');
     const { handleOutfit, handlePagos, handlePagoVerified, handleOffer, handleClose, handleHeadless, handleGroupActive, handleTopCompradores, handleCrypto, handleAvatar, handleCompras, handleRobuxGastados, handleMisCompras, handleInvitaciones } = require('./handlers/commands');
     const invitesTracker      = require('./utils/invitesTracker');
+    const ticketInactivo      = require('./utils/ticketInactivo');
     const { iniciarCaducidad } = require('./utils/reviewFlow');
     const cryptoPrecios       = require('./utils/cryptoPrecios');
     const {
@@ -452,6 +453,9 @@ if (RUN_BOT) {
             console.error('[bot] invitesTracker.iniciar failed:', err)
         );
 
+        // Tickets de compra sin pago ni mensajes: aviso con barra y cierre.
+        ticketInactivo.iniciar(client);
+
         await updateLeaderboardMessage(client).catch(err =>
             console.error('[bot] updateLeaderboardMessage failed:', err)
         );
@@ -512,6 +516,11 @@ if (RUN_BOT) {
             // Si alguien más escribe en el canal de invitaciones, el
             // leaderboard baja al final.
             invitesTracker.alMensaje(message);
+
+            // Si el cliente escribe en su ticket, su contador de inactividad
+            // se detiene.
+            await ticketInactivo.alMensaje(message).catch(err =>
+                console.warn('[ticketInactivo] alMensaje:', err.message));
 
             if (config.FEATURES.ANTI_SCAM && await handleAntiScam(message)) return;
             await handleMessage(message);

@@ -175,14 +175,28 @@ async function canal(client) {
 // edita; si no, se manda uno nuevo y DESPUÉS se borra el viejo — en ese orden,
 // para que nunca haya un momento sin leaderboard. La referencia se guarda en
 // el volumen: tras un reinicio se sigue editando el mismo mensaje.
-async function moverLeaderboardAlFinal(client) {
+//
+// Si es el último se pregunta a Discord, no a `channel.lastMessageId`: ese dato
+// se actualiza con el evento del gateway, que puede llegar DESPUÉS de que
+// termine el send de un anuncio. Fiarse de él hacía que, justo tras anunciar
+// una entrada, el leaderboard se editara arriba en vez de bajar. Por lo mismo,
+// tras un anuncio propio se reenvía siempre (`forzar`).
+//
+// Nada se pierde al reenviar: el contenido sale entero de los datos guardados.
+async function esElUltimo(ch, messageId) {
+    const ultimos = await ch.messages.fetch({ limit: 1, cache: false }).catch(() => null);
+    const ultimo = ultimos?.first?.();
+    return ultimo ? ultimo.id === messageId : false;
+}
+
+async function moverLeaderboardAlFinal(client, { forzar = false } = {}) {
     const ch = await canal(client);
     if (!ch) { console.warn('[invitaciones] Canal de invitaciones no encontrado.'); return; }
 
     const payload = leaderboardPayload();
     const ref = inv.getMensajeRef();
 
-    if (ref?.messageId && ch.lastMessageId === ref.messageId) {
+    if (ref?.messageId && !forzar && await esElUltimo(ch, ref.messageId)) {
         try {
             const msg = await ch.messages.fetch(ref.messageId);
             await msg.edit(payload);
@@ -226,12 +240,15 @@ async function alEntrar(member) {
         });
 
         const ch = await canal(member.client);
+        let anunciado = false;
         if (ch) {
             const resumen = reg.inviterId ? inv.resumenDe(reg.inviterId) : null;
-            await ch.send({ content: textoEntrada(nombreDe(member.user), reg, resumen), allowedMentions: SIN_MENCIONES })
-                .catch(err => console.warn('[invitaciones] No se pudo anunciar la entrada:', err.message));
+            anunciado = await ch.send({ content: textoEntrada(nombreDe(member.user), reg, resumen), allowedMentions: SIN_MENCIONES })
+                .then(() => true)
+                .catch(err => { console.warn('[invitaciones] No se pudo anunciar la entrada:', err.message); return false; });
         }
-        await moverLeaderboardAlFinal(member.client);
+        // Tras un anuncio, el leaderboard ya NO es el último: se reenvía sí o sí.
+        await moverLeaderboardAlFinal(member.client, { forzar: anunciado });
     });
 }
 
@@ -291,7 +308,7 @@ async function revisarSemana(client, ahora = Date.now()) {
             allowedMentions: { users: cerrada.ganadorId ? [cerrada.ganadorId] : [] },
         }).catch(err => console.warn('[invitaciones] No se pudo anunciar al ganador:', err.message));
     }
-    await moverLeaderboardAlFinal(client);
+    await moverLeaderboardAlFinal(client, { forzar: !!ch });
     return cerrada;
 }
 

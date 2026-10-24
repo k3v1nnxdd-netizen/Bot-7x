@@ -46,15 +46,25 @@ function entra(inviterId, ahora = Date.now(), extra = {}) {
 function canalFalso() {
     const ch = {
         id: config.CHANNELS.INVITACIONES, mensajes: new Map(), lastMessageId: null, n: 0, borrados: [], editados: [],
+        // Como en Discord: `lastMessageId` llega con el evento del gateway, que
+        // puede ir por detrás del send. Con `retraso`, el send no lo toca.
+        retraso: false,
         async send(p) {
             const id = String(1_000_000 + ++ch.n);
             const msg = { id, p, edit: async q => { msg.p = q; ch.editados.push(id); return msg; } };
             ch.mensajes.set(id, msg);
-            ch.lastMessageId = id;
+            if (!ch.retraso) ch.lastMessageId = id;
             return msg;
         },
         messages: {
-            fetch: async id => { const m = ch.mensajes.get(id); if (!m) throw new Error('Unknown Message'); return m; },
+            fetch: async arg => {
+                if (arg && typeof arg === 'object') {
+                    // { limit: 1 }: el último mensaje REAL del canal.
+                    const ult = [...ch.mensajes.values()].at(-1);
+                    return { first: () => ult };
+                }
+                const m = ch.mensajes.get(arg); if (!m) throw new Error('Unknown Message'); return m;
+            },
             delete: async id => { ch.mensajes.delete(id); ch.borrados.push(id); },
         },
     };
@@ -201,6 +211,34 @@ module.exports = async function run() {
     assert(anuncio?.allowedMentions?.parse?.length === 0, 'sin hacer ping a nadie');
     assert(msgs.at(-1).id === inv.getMensajeRef().messageId, 'y el leaderboard queda por debajo, al final');
     assert(inv.load().registros.at(-1).inviterId === 'kev', 'la entrada queda registrada a nombre de quien invitó');
+
+    // El bug: el evento del gateway llega tarde y `lastMessageId` sigue
+    // apuntando al leaderboard justo después de anunciar una entrada.
+    ch.retraso = true;
+    ch.lastMessageId = inv.getMensajeRef().messageId;
+    tracker.__test.setCache(m({ code1: { uses: 1, inviterId: 'kev' } }), 5);
+    const guildVanity = { ...guild, vanityURLCode: 'x', fetchVanityData: async () => ({ uses: 6 }),
+        invites: { fetch: async () => new Map([['code1', { code: 'code1', uses: 1, inviter: { id: 'kev' }, maxUses: 0 }]]) } };
+    await tracker.alEntrar({
+        id: 'nuevo2', guild: guildVanity, client: cli,
+        user: { bot: false, username: 'j', globalName: 'j', avatar: 'x', createdTimestamp: ahora - 400 * DIA },
+    });
+    await tracker.__test.esperar();
+    const trasVanity = ultimos(ch);
+    assert(/URL personalizada/.test(trasVanity.at(-2)?.p?.content ?? ''), 'la entrada por vanity se anuncia');
+    assert(trasVanity.at(-1).id === inv.getMensajeRef().messageId,
+        'y el leaderboard queda DEBAJO aunque el canal en caché aún no se haya enterado del anuncio');
+    assert(trasVanity.filter(x => x.p.flags).length === 1, 'sin duplicarse');
+    assert(/Top de todos los tiempos/.test(JSON.stringify(trasVanity.at(-1).p.components.map(c => c.toJSON()))) &&
+        JSON.stringify(trasVanity.at(-1).p.components.map(c => c.toJSON())).includes('<@kev>'),
+        'y reenviado con toda su información');
+
+    // Si de verdad es el último, se edita (lo pregunta a Discord, no a la caché).
+    const editadosAntes = ch.editados.length;
+    await tracker.moverLeaderboardAlFinal(cli);
+    assert(ch.editados.length === editadosAntes + 1 && ultimos(ch).at(-1).id === inv.getMensajeRef().messageId,
+        'si ya es el último de verdad, se edita sin reenviar');
+    ch.retraso = false;
 
     // Que escriba otro (p. ej. el bot de invitaciones de antes) también lo baja.
     await ch.send({ content: 'otro bot' });

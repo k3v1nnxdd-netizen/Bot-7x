@@ -209,6 +209,10 @@ module.exports = {
     getOwner,
     getChannel,
     getType,
+    // El topic entero, con el pedido. Lo leen PAGO REALIZADO (para gastar el
+    // descuento de fidelidad) y el enlace del gamepass (para saber contra qué
+    // comprobarlo). Sin exportarlo, los dos revientan en producción.
+    getTicketData,
     isConfirmed,
     markConfirmed,
     isPaymentReview,

@@ -164,6 +164,33 @@ const LEE = {
 module.exports = async function run() {
     const { assert, finish } = createSuite('compra');
 
+    // ── 0. Lo que se usa de tickets existe de verdad ─────────────────────────
+    // Más abajo getTicketData se sustituye, y eso escondió que no estaba
+    // exportado: en producción PAGO REALIZADO reventaba tras el primer mensaje
+    // y no salían ni la reseña ni el cierre automático. Esto va ANTES de
+    // sustituir nada, contra el módulo real.
+    {
+        const usadas = new Set();
+        for (const f of ['handlers/buttons.js', 'handlers/compraFlow.js', 'handlers/modals.js', 'handlers/commands.js', 'main.js']) {
+            const p = path.join(__dirname, '..', '..', f);
+            if (!fs.existsSync(p)) continue;
+            for (const m of fs.readFileSync(p, 'utf8').matchAll(/\btickets\.(\w+)\s*\(/g)) usadas.add(`${f}:${m[1]}`);
+        }
+        for (const u of usadas) {
+            const fn = u.split(':')[1];
+            assert(typeof tickets[fn] === 'function', `tickets.${fn} está exportado (lo usa ${u.split(':')[0]})`);
+        }
+
+        const canal = {
+            id: '900000000000000001',
+            parentId: config.CATEGORIES.TICKETS,
+            topic: tickets.__test.buildTopic(USER, 'comprar', { modo: 'comunidad', robux: 1000, descuentoFidelidad: true }),
+        };
+        const datos = tickets.getTicketData(canal);
+        assert(datos?.pedido?.descuentoFidelidad === true && datos.type === 'comprar',
+            'getTicketData real lee el pedido del topic');
+    }
+
     sustituir();
     pendientes._reset();
     try {

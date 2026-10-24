@@ -285,8 +285,15 @@ async function onConfirmarPago(interaction) {
         // al abrir el ticket: si el ticket se cierra sin pagar, el cliente
         // conserva su descuento para otra compra. isConfirmed() de arriba
         // impide que un segundo clic lo gaste dos veces.
-        if (tickets.getTicketData(interaction.channel)?.pedido?.descuentoFidelidad) {
-            fidelidad.usar(ownerId);
+        //
+        // Va en su propio try: si esto falla, la reseña, el DM, el registro
+        // del pedido y el cierre automático tienen que salir igual.
+        try {
+            if (tickets.getTicketData(interaction.channel)?.pedido?.descuentoFidelidad) {
+                fidelidad.usar(ownerId);
+            }
+        } catch (err) {
+            console.error('[buttons] fidelidad.usar failed:', err.message);
         }
 
         await sendPurchaseDM(interaction.client, ownerId);

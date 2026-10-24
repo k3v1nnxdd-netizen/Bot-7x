@@ -1,6 +1,9 @@
 'use strict';
 
-const { EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
+const {
+    EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle,
+    MessageFlags, SectionBuilder, TextDisplayBuilder,
+} = require('discord.js');
 const config = require('../config');
 const reviews = require('./reviews');
 const tickets = require('./tickets');
@@ -53,37 +56,42 @@ function buildReviewPayload(buyerId, ticketChannelId, estado = 'abierta', score 
         texto =
             `${SHOP_EMOJI} Compra por <@${buyerId}>\n\n` +
             'Gracias por tu compra. **¿Cómo fue la atención en tu ticket?**\n\n' +
-            `Pulsa las estrellas: 1 es la peor y 5 la mejor.\n-# Tienes ${horas} horas para valorar.`;
+            `Elige tu valoración: **1/5** es la peor y **5/5** la mejor.\n-# Tienes ${horas} horas para valorar.`;
     }
 
-    return v2.tarjetaPayload({
-        color: 0x2B2D31,
-        texto,
-        pie: '7x Community • Sistema de reseñas',
-        filas: [buildReviewRow(ticketChannelId, estado, score), buildCommentRow(ticketChannelId, estado, comentado)],
-    });
+    // Las valoraciones van DEBAJO del pie, cada una en su fila, y el botón de
+    // comentario al final.
+    const container = v2.tarjeta({ color: 0x2B2D31, texto, pie: '7x Community • Sistema de reseñas' });
+    container.addSectionComponents(...buildEstrellas(ticketChannelId, estado, score));
+    container.addActionRowComponents(buildCommentRow(ticketChannelId, estado, comentado));
+    return { flags: MessageFlags.IsComponentsV2, components: [container] };
 }
 
-// La estrella del servidor, la misma del anuncio de reseñas. Un botón sólo
-// admite UN emoji, así que cada uno lleva la estrella y su número.
-const STAR_BOTON = { id: '1514369366878064650', name: 'star', animated: true };
+// Una fila por valoración: los emojis a la izquierda, como TEXTO, y su botón a
+// la derecha. Va así porque un botón de Discord sólo admite UN emoji: en el
+// texto sí caben los que hagan falta — de 1 a 4 el de estadísticas, tantos
+// como la puntuación, y en el 5 las cinco estrellas animadas.
+function emojisDe(n) {
+    return n >= 5 ? STAR_EMOJI.repeat(5) : STATS_EMOJI.repeat(n);
+}
 
-function buildReviewRow(ticketChannelId, estado = 'abierta', score = null) {
+function buildEstrellas(ticketChannelId, estado = 'abierta', score = null) {
     if (estado === true) estado = 'calificada';
     if (estado === false) estado = 'abierta';
     const apagada = estado !== 'abierta';
 
-    return new ActionRowBuilder().addComponents(
-        ...[1, 2, 3, 4, 5].map(n =>
-            new ButtonBuilder()
-                .setCustomId(`review_star:${ticketChannelId}:${n}`)
-                .setEmoji(STAR_BOTON)
-                .setLabel(String(n))
-                // La que eligió queda en verde: al volver al mensaje se ve qué
-                // puso sin tener que leer el texto.
-                .setStyle(estado === 'calificada' && n === score ? ButtonStyle.Success : ButtonStyle.Secondary)
-                .setDisabled(apagada)
-        )
+    return [1, 2, 3, 4, 5].map(n =>
+        new SectionBuilder()
+            .addTextDisplayComponents(new TextDisplayBuilder().setContent(emojisDe(n)))
+            .setButtonAccessory(
+                new ButtonBuilder()
+                    .setCustomId(`review_star:${ticketChannelId}:${n}`)
+                    .setLabel(`${n}/5`)
+                    // La que eligió queda en verde: al volver al mensaje se ve
+                    // qué puso sin tener que leer el texto.
+                    .setStyle(estado === 'calificada' && n === score ? ButtonStyle.Success : ButtonStyle.Secondary)
+                    .setDisabled(apagada)
+            )
     );
 }
 
@@ -93,9 +101,9 @@ function buildCommentRow(ticketChannelId, estado = 'abierta', comentado = false)
     return new ActionRowBuilder().addComponents(
         new ButtonBuilder()
             .setCustomId(`review_comment:${ticketChannelId}`)
-            .setEmoji('💬')
+            .setEmoji({ id: '1501217620437897227' })
             .setLabel(comentado ? 'Comentario enviado' : 'Agregar comentario')
-            .setStyle(ButtonStyle.Primary)
+            .setStyle(ButtonStyle.Secondary)
             .setDisabled(comentado || estado === 'cerrada')
     );
 }
@@ -344,7 +352,7 @@ function iniciarCaducidad(client) {
 }
 
 module.exports = {
-    buildReviewPayload, buildReviewRow, requestReview, finalizeReview, actualizarComentario,
+    buildReviewPayload, buildEstrellas, requestReview, finalizeReview, actualizarComentario,
     cerrarResena, cerrarVencidas, iniciarCaducidad, PLAZO_MS,
     __test: { buildAnnounceEmbed },
 };

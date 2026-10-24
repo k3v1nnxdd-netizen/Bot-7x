@@ -408,12 +408,22 @@ async function simularResenas() {
     const { buildAnnounceEmbed } = reviewFlow.__test;
 
     // Los cinco botones
-    const fila = reviewFlow.buildReviewRow('t', 'abierta').toJSON().components;
-    out.push({ ok: fila.length === 5, msg: 'la valoración son cinco botones' });
-    out.push({ ok: fila.map(b => b.label).join('|') === '1|2|3|4|5', msg: 'de una a cinco estrellas' });
-    out.push({ ok: fila.every(b => b.emoji?.id === '1514369366878064650' && b.emoji?.animated === true),
-        msg: 'con la estrella del servidor, no la ⭐ de Unicode' });
-    out.push({ ok: !fila.some(b => (b.label ?? '').includes('⭐')), msg: 'y ninguna ⭐ de Unicode en las etiquetas' });
+    // Cinco filas: los emojis como texto y su botón al lado (un botón sólo
+    // admite un emoji; en el texto caben los que hagan falta).
+    const secciones = reviewFlow.buildEstrellas('t', 'abierta').map(s => s.toJSON());
+    const fila = secciones.map(s => s.accessory);
+    const emojisFila = secciones.map(s => s.components[0].content);
+    const STATS = '<:stats:1190502686886481991>', ESTRELLA = '<a:star:1514369366878064650>';
+    out.push({ ok: fila.length === 5 && fila.every(b => b?.type === 2), msg: 'la valoración son cinco botones' });
+    out.push({ ok: fila.map(b => b.label).join('|') === '1/5|2/5|3/5|4/5|5/5', msg: 'de 1/5 a 5/5' });
+    out.push({ ok: [1, 2, 3, 4].every(n => emojisFila[n - 1] === STATS.repeat(n)),
+        msg: 'del 1 al 4, tantos emojis de estadísticas como la puntuación' });
+    out.push({ ok: emojisFila[4] === ESTRELLA.repeat(5), msg: 'y en el 5, cinco estrellas animadas' });
+    out.push({ ok: !emojisFila.join('').includes('⭐'), msg: 'ninguna ⭐ de Unicode' });
+
+    const comentar = botonesDe(reviewFlow.buildReviewPayload('u', 't', 'abierta')).find(b => b.custom_id === 'review_comment:t');
+    out.push({ ok: comentar?.style === 2 && comentar?.emoji?.id === '1501217620437897227',
+        msg: 'el botón de comentario es gris y con su emoji' });
 
     // El botón de comentario
     const conCom = p => botonesDe(p).find(b => b.custom_id?.startsWith('review_comment:'));

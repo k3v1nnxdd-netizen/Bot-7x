@@ -10,26 +10,25 @@ const leaderboard = require('./robuxLeaderboard');
 // Cada FIDELIDAD.CADA compras se gana un descuento para UNA compra, y el
 // cliente decide en cuál usarlo.
 //
-// Hay dos números y salen de sitios distintos, a propósito:
+// Todo sale del ranking de compradores (robuxLeaderboard.json), que se BORRA y
+// se rehace desde el canal de pedidos en cada arranque. Eso es lo que hace que
+// el progreso no se pierda nunca: no hay un contador propio que un reinicio o
+// un despliegue pueda dejar a cero — se vuelve a contar desde los pedidos.
 //
-//   - LAS COMPRAS salen del ranking de compradores (robuxLeaderboard.json). Es
-//     el registro que ya cuenta cada compra completada, sin duplicados, y que
-//     se reconstruye desde el canal de pedidos en cada arranque. Un segundo
-//     contador sólo para esto acabaría descuadrado con el ranking tarde o
-//     temprano, y el cliente vería dos cifras distintas para lo mismo.
+//   - LAS COMPRAS: los pedidos de cada cliente con fecha desde FIDELIDAD.INICIO.
+//     La fecha de un pedido es la de su mensaje en el canal de pedidos (va
+//     dentro del id del mensaje), así que se sabe aunque el bot reinicie.
 //
-//   - LOS DESCUENTOS USADOS van en su propio fichero. No pueden ir en el
-//     ranking: ese se BORRA y se rehace desde el canal de pedidos en cada
-//     arranque, y con él se perdería qué descuentos se gastaron — cada
-//     despliegue devolvería los usados.
+//   - LOS DESCUENTOS USADOS: los pedidos de ese canal marcados con el descuento
+//     de fidelidad. Además se apuntan en fidelidad.json en el momento de
+//     gastarse (el pedido se registra unos segundos después); de los dos se
+//     toma el mayor, así que perder el fichero no devuelve ningún descuento.
 //
 // Los disponibles no se guardan: se calculan. Ganados = compras / CADA,
 // disponibles = ganados − usados. Así no hay estado que pueda contradecirse.
 //
-// Y "compras" son las de DESPUÉS de activar el programa, salvo que
-// FIDELIDAD.RETROACTIVO esté en true. Al activarse se apunta cuántas llevaba
-// cada cliente (la base) y se cuentan las que hace a partir de ahí. Ver
-// inicializar().
+// Las compras de antes de INICIO no cuentan, salvo que FIDELIDAD.RETROACTIVO
+// esté en true: contar todo el historial regalaría varios descuentos de golpe.
 
 const FILE = dataPath('fidelidad.json');
 const TMP  = FILE + '.tmp';
@@ -40,13 +39,9 @@ function load() {
     const objeto = v => (v && typeof v === 'object' && !Array.isArray(v) ? v : {});
     try {
         const data = JSON.parse(fs.readFileSync(FILE, 'utf8'));
-        return {
-            usados: objeto(data?.usados),
-            base: objeto(data?.base),
-            inicio: typeof data?.inicio === 'string' ? data.inicio : null,
-        };
+        return { ...data, usados: objeto(data?.usados) };
     } catch {
-        return { usados: {}, base: {}, inicio: null };
+        return { usados: {} };
     }
 }
 
@@ -56,53 +51,41 @@ function save(data) {
     fs.renameSync(TMP, FILE);
 }
 
+// La fecha de un pedido, sacada del id de su mensaje (un snowflake de Discord
+// lleva dentro el momento en que se creó). null si no es un id de Discord.
+const EPOCH_DISCORD = 1420070400000n;
+function fechaPedido(orderId) {
+    if (!/^\d{15,20}$/.test(String(orderId))) return null;
+    return Number((BigInt(orderId) >> 22n) + EPOCH_DISCORD);
+}
+
+// Si un pedido cuenta para la fidelidad. Uno sin fecha legible NO cuenta: es
+// el lado seguro — no regala nada.
+function cuenta(orderId) {
+    if (F.RETROACTIVO) return true;
+    const fecha = fechaPedido(orderId);
+    const inicio = Date.parse(F.INICIO);
+    return fecha !== null && Number.isFinite(inicio) && fecha >= inicio;
+}
+
 // Todas las compras completadas de alguien, desde siempre.
 function comprasDe(userId) {
     const n = Number(leaderboard.getEntry(userId)?.purchases);
     return Number.isFinite(n) && n > 0 ? Math.floor(n) : 0;
 }
 
-// Las que cuentan para la fidelidad: las de después de activar el programa.
-//
-// Sin inicializar no cuenta NINGUNA. Es el lado seguro: si por lo que sea no se
-// tomó la base, lo peor que pasa es que nadie gana descuentos todavía — no que
-// se regalen por todo el historial.
+// Las que cuentan para la fidelidad: las de desde INICIO.
 function comprasFidelidad(userId) {
-    const total = comprasDe(userId);
-    if (F.RETROACTIVO) return total;
-
-    const data = load();
-    if (!data.inicio) return 0;
-
-    const base = Number(data.base[String(userId)]);
-    return Math.max(0, total - (Number.isFinite(base) ? base : 0));
-}
-
-// Activa el programa: apunta cuántas compras lleva cada cliente en ese momento,
-// y desde ahí se empieza a contar. Sólo la primera vez — después no hace nada,
-// así que llamarlo en cada arranque es seguro.
-//
-// Tiene que llamarse DESPUÉS de reconstruir el ranking desde el canal de
-// pedidos (ver main.js): una base tomada sobre un ranking a medio reconstruir
-// valdría 0 para muchos clientes, y les regalaría su historial entero.
-function inicializar() {
-    const data = load();
-    if (data.inicio) return false;
-
-    data.inicio = new Date().toISOString();
-    data.base = {};
-    for (const u of leaderboard.getRanked()) {
-        const n = Number(u.purchases);
-        if (Number.isFinite(n) && n > 0) data.base[String(u.userId)] = Math.floor(n);
-    }
-    save(data);
-    console.log(`[fidelidad] Programa activado: base de ${Object.keys(data.base).length} cliente(s).`);
-    return true;
+    const entry = leaderboard.getEntry(userId);
+    if (F.RETROACTIVO) return comprasDe(userId);
+    return (entry?.ordenes ?? []).filter(cuenta).length;
 }
 
 function usadosDe(userId) {
+    const enPedidos = (leaderboard.getEntry(userId)?.descuentos ?? []).filter(cuenta).length;
     const n = Number(load().usados[String(userId)]);
-    return Number.isFinite(n) && n > 0 ? Math.floor(n) : 0;
+    const enFichero = Number.isFinite(n) && n > 0 ? Math.floor(n) : 0;
+    return Math.max(enPedidos, enFichero);
 }
 
 // Todo lo que hace falta para pintar el progreso de alguien.
@@ -141,7 +124,6 @@ function usar(userId) {
     if (!tieneDescuento(userId)) return false;
 
     const data = load();
-    // Se escribe sobre lo leído aquí, que conserva la base y el inicio.
     const key = String(userId);
     data.usados[key] = usadosDe(userId) + 1;
     save(data);
@@ -181,4 +163,4 @@ function totalesServidor() {
     };
 }
 
-module.exports = { estado, tieneDescuento, usar, aplicar, barra, totalesServidor, inicializar, F };
+module.exports = { estado, tieneDescuento, usar, aplicar, barra, totalesServidor, fechaPedido, F };

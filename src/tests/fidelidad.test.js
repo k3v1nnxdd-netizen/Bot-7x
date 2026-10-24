@@ -64,8 +64,19 @@ function limpiar() {
     }
 }
 
+// Los pedidos llevan ids de mensaje de Discord de verdad (snowflakes): su fecha
+// va dentro, y la fidelidad cuenta los de desde FIDELIDAD.INICIO.
 let orden = 0;
-const comprar = (userId, n = 1) => { for (let i = 0; i < n; i++) lb.recordPurchase(userId, 1000, 133, `orden-${++orden}`); };
+const historial = [];
+const snowflake = (ms, seq) => String(((BigInt(ms) - 1420070400000n) << 22n) + BigInt(seq % 4096));
+const comprarEn = (ms, userId, n = 1, opciones = {}) => {
+    for (let i = 0; i < n; i++) {
+        const id = snowflake(ms, ++orden);
+        historial.push({ userId, id, opciones });
+        lb.recordPurchase(userId, 1000, 133, id, opciones);
+    }
+};
+const comprar = (userId, n = 1, opciones = {}) => comprarEn(Date.now(), userId, n, opciones);
 
 module.exports = async function run() {
     const { assert, finish } = createSuite('fidelidad');
@@ -77,7 +88,6 @@ module.exports = async function run() {
 
     // ── 1. La aritmética ─────────────────────────────────────────────────────
     limpiar();
-    fidelidad.inicializar();
     const U = 'cliente-1';
 
     let e = fidelidad.estado(U);
@@ -114,21 +124,18 @@ module.exports = async function run() {
     // pero si los usados vivieran ahí se perderían.
     const usadosAntes = fidelidad.estado(U).usados;
     const comprasAntes = fidelidad.estado(U).compras;
-    const ordenesU = orden;
     lb.resetUsers();
-    for (let i = 1; i <= ordenesU; i++) lb.recordPurchase(U, 1000, 133, `orden-${i}`);  // como el backfill
+    for (const h of historial) lb.recordPurchase(h.userId, 1000, 133, h.id, h.opciones);  // como el backfill
     e = fidelidad.estado(U);
     assert(e.usados === usadosAntes, `tras reconstruir el ranking, los usados siguen siendo ${usadosAntes}`);
     assert(e.compras === comprasAntes, 'y las compras vuelven a ser las mismas');
 
     // ── 3. Cuentan las de después de activarlo ───────────────────────────────
     limpiar();
-    comprar('veterano', 12);
-    assert(fidelidad.estado('veterano').disponibles === 0, 'antes de activar el programa no cuenta nada');
-    fidelidad.inicializar();
+    const INICIO = Date.parse(F.INICIO);
+    comprarEn(INICIO - 86400_000, 'veterano', 12);
     e = fidelidad.estado('veterano');
-    assert(e.compras === 0 && e.comprasTotales === 12, 'al activarlo, sus 12 compras viejas no regalan descuentos');
-    assert(fidelidad.inicializar() === false, 'activarlo otra vez no rehace la base');
+    assert(e.compras === 0 && e.comprasTotales === 12, 'sus 12 compras de antes de INICIO no regalan descuentos');
     comprar('veterano', F.CADA);
     assert(fidelidad.estado('veterano').disponibles === 1, `y gana su descuento con ${F.CADA} compras nuevas`);
     comprar('nuevo', 1);
@@ -143,6 +150,38 @@ module.exports = async function run() {
         F.RETROACTIVO = antes;
     }
     assert(F.RETROACTIVO === false, 'y por defecto NO es retroactivo');
+
+    // ── 3b. Un reinicio o un despliegue no reinicia el progreso ──────────────
+    // Lo que pasa en cada arranque: el ranking se borra y se rehace desde el
+    // canal de pedidos. Aunque además se perdiera fidelidad.json, el progreso
+    // y los descuentos usados tienen que quedar exactamente igual.
+    limpiar();
+    historial.length = 0;
+    comprar('kev', 3);
+    assert(fidelidad.estado('kev').progreso === 3, 'tres compras: 3/5');
+    comprar('kev', 2);
+    fidelidad.usar('kev');
+    comprar('kev', 1, { descuentoFidelidad: true });   // la compra en que lo gastó
+    const antesReinicio = fidelidad.estado('kev');
+    lb.resetUsers();
+    fs.unlinkSync(dataPath('fidelidad.json'));
+    for (const h of historial) lb.recordPurchase(h.userId, 1000, 133, h.id, h.opciones);
+    const trasReinicio = fidelidad.estado('kev');
+    assert(trasReinicio.compras === 6 && trasReinicio.progreso === 1,
+        `tras reiniciar sigue en ${antesReinicio.progreso}/5 con ${antesReinicio.compras} compras (${trasReinicio.progreso}/5, ${trasReinicio.compras})`);
+    assert(trasReinicio.usados === 1 && trasReinicio.disponibles === 0,
+        'y el descuento gastado sigue gastado aunque se perdiera el fichero');
+
+    // El backfill lee la marca de descuento del canal de pedidos.
+    const BACKFILL = fs.readFileSync(path.join(RAIZ, 'utils', 'robuxLeaderboardBackfill.js'), 'utf8');
+    const reMarca = BACKFILL.match(/const descuentoFidelidad = (\/.*\/)\.test\(desc\)/)?.[1];
+    const marca = reMarca ? eval(reMarca) : null;
+    const NOTIFY = fs.readFileSync(path.join(RAIZ, 'utils', 'orderNotify.js'), 'utf8');
+    assert(/name: 'Descuento', value: `Fidelidad/.test(NOTIFY), 'el pedido apunta "Descuento: Fidelidad"');
+    assert(marca && marca.test("**Precio**\n`$113 MXN`\n\n**Descuento**\n`Fidelidad 15%`"), 'y el backfill la reconoce');
+    assert(marca && !marca.test("**Precio**\n`$133 MXN`"), 'un pedido sin descuento no cuenta como usado');
+    assert(fidelidad.fechaPedido(snowflake(Date.parse(F.INICIO), 1)) === Date.parse(F.INICIO), 'la fecha sale del id del mensaje');
+    assert(fidelidad.fechaPedido('orden-1') === null, 'un id que no es de Discord no tiene fecha (y no cuenta)');
 
     // ── 4. La barra y el precio ──────────────────────────────────────────────
     // La barra son emojis de la aplicación: inicio, medio y fin, llenos o
@@ -163,7 +202,6 @@ module.exports = async function run() {
 
     // ── 5. Los comandos ──────────────────────────────────────────────────────
     limpiar();
-    fidelidad.inicializar();
     comprar('a', 7);
     comprar('b', 1);
     const t = fidelidad.totalesServidor();
@@ -200,10 +238,10 @@ module.exports = async function run() {
         assert(new RegExp(`commandName === '${nombre}'`).test(MAIN), `y enrutado`);
     }
 
-    // El programa se activa DESPUÉS de reconstruir el ranking.
-    const iBackfill = MAIN.indexOf('await backfillFromOrderLog(client)');
-    const iInicio = MAIN.indexOf('fidelidad.inicializar()');
-    assert(iInicio > iBackfill && iBackfill > 0, 'la fidelidad se activa después de reconstruir el ranking, no antes');
+    // Ya no hay una "base" que se tome al arrancar: el progreso se recalcula
+    // desde el canal de pedidos y una fecha fija.
+    assert(!/fidelidad.inicializar/.test(MAIN), 'el arranque no toma ninguna base que pueda reiniciar el progreso');
+    assert(!Number.isNaN(Date.parse(F.INICIO)), 'FIDELIDAD.INICIO es una fecha válida');
     assert(/iniciarCaducidad\(client\)/.test(MAIN), 'y la revisión de plazos de las reseñas arranca con el bot');
 
     // ── 6. El descuento dentro de la compra ──────────────────────────────────
@@ -269,7 +307,6 @@ async function simularCompra() {
     try {
         limpiar();
         pendientes._reset();
-        fidelidad.inicializar();
 
         // Sin descuento guardado: dos botones, y la barra de progreso.
         comprar(USER, 3);
@@ -356,7 +393,49 @@ async function simularResenas() {
     // Los cinco botones
     const fila = reviewFlow.buildReviewRow('t', 'abierta').toJSON().components;
     out.push({ ok: fila.length === 5, msg: 'la valoración son cinco botones' });
-    out.push({ ok: fila.map(b => b.label).join('|') === '⭐|⭐⭐|⭐⭐⭐|⭐⭐⭐⭐|⭐⭐⭐⭐⭐', msg: 'de una a cinco estrellas' });
+    out.push({ ok: fila.map(b => b.label).join('|') === '1|2|3|4|5', msg: 'de una a cinco estrellas' });
+    out.push({ ok: fila.every(b => b.emoji?.id === '1514369366878064650' && b.emoji?.animated === true),
+        msg: 'con la estrella del servidor, no la ⭐ de Unicode' });
+    out.push({ ok: !fila.some(b => (b.label ?? '').includes('⭐')), msg: 'y ninguna ⭐ de Unicode en las etiquetas' });
+
+    // El botón de comentario
+    const conCom = p => botonesDe(p).find(b => b.custom_id?.startsWith('review_comment:'));
+    const abierta = reviewFlow.buildReviewPayload('u', 't', 'abierta');
+    out.push({ ok: conCom(abierta)?.custom_id === 'review_comment:t' && !conCom(abierta).disabled && /Agregar comentario/.test(conCom(abierta).label),
+        msg: 'la tarjeta trae "Agregar comentario"' });
+    out.push({ ok: !conCom(reviewFlow.buildReviewPayload('u', 't', 'calificada', 5)).disabled, msg: 'que sigue activo después de las estrellas' });
+    const yaCom = conCom(reviewFlow.buildReviewPayload('u', 't', 'calificada', 5, true));
+    out.push({ ok: yaCom.disabled && /enviado/.test(yaCom.label), msg: 'y se apaga cuando ya comentó' });
+    out.push({ ok: conCom(reviewFlow.buildReviewPayload('u', 't', 'cerrada')).disabled, msg: 'y también si el plazo terminó' });
+
+    limpiar();
+    reviews.createReviewRequest('tc', 'comprador', '1,000 Robux');
+    reviews.setDmMessageRef('tc', 'dm', 'msg-dm');
+    reviews.setAnnounceMessageRef('tc', 'resenas', 'msg-anuncio');
+    const PLAZO = config.RESENAS.PLAZO_HORAS * 3600_000;
+    out.push({ ok: reviews.addComment('tc', 'otro', 'hola', PLAZO) === 'ajeno', msg: 'otra persona no puede comentar' });
+    out.push({ ok: reviews.addComment('tc', 'comprador', 'Muy rápido', PLAZO, Date.now() + PLAZO + 1) === 'plazo', msg: 'ni se comenta pasado el plazo' });
+    out.push({ ok: reviews.addComment('tc', 'comprador', 'Muy rápido', PLAZO) === 'ok', msg: 'el comprador comenta antes de valorar' });
+    out.push({ ok: reviews.addComment('tc', 'comprador', 'otra vez', PLAZO) === 'ya-comentado', msg: 'una sola vez' });
+    let cli = clienteFalso();
+    await reviewFlow.actualizarComentario(cli, 'tc');
+    const anuncioCom = cli.ediciones.find(x => x.id === 'msg-anuncio')?.p?.embeds?.[0]?.toJSON?.()?.description ?? '';
+    out.push({ ok: /Comentario:\*\* Muy rápido/.test(anuncioCom) && /Esperando la valoración/.test(anuncioCom),
+        msg: 'el anuncio enseña el comentario mientras espera las estrellas' });
+    const dmCom = cli.ediciones.find(x => x.id === 'msg-dm')?.p;
+    out.push({ ok: conCom(dmCom)?.disabled && botonesDe(dmCom).filter(b => b.custom_id.startsWith('review_star:')).every(b => !b.disabled),
+        msg: 'en el DM se apaga el comentario y las estrellas siguen activas' });
+    reviews.submitRating('tc', 'comprador', 4, null, 'dm');
+    out.push({ ok: reviews.getReview('tc').comment === 'Muy rápido', msg: 'valorar después no borra el comentario' });
+    cli = clienteFalso();
+    await reviewFlow.finalizeReview(cli, 'tc', 4, null);
+    const anuncioFinal = cli.ediciones.find(x => x.id === 'msg-anuncio')?.p?.embeds?.[0]?.toJSON?.()?.description ?? '';
+    out.push({ ok: /\(4\/5\)/.test(anuncioFinal) && /Muy rápido/.test(anuncioFinal), msg: 'y el anuncio final lleva las estrellas y el comentario' });
+
+    const BOT = fs.readFileSync(path.join(RAIZ, 'handlers', 'buttons.js'), 'utf8');
+    const MOD = fs.readFileSync(path.join(RAIZ, 'handlers', 'modals.js'), 'utf8');
+    out.push({ ok: /isComment \? onReviewComment/.test(BOT) && /isComentario \? handleComentarioModal/.test(MOD),
+        msg: 'el botón y el formulario del comentario están enrutados' });
     out.push({ ok: fila.every((b, i) => b.custom_id === `review_star:t:${i + 1}`), msg: 'cada uno con su puntuación en el customId' });
 
     // El anuncio pendiente ya no es "???"
@@ -382,7 +461,8 @@ async function simularResenas() {
     const anuncio = cliente.ediciones.find(x => x.id === 'msg-anuncio')?.p?.embeds?.[0]?.toJSON?.()?.description ?? '';
     out.push({ ok: /\(5\/5\)/.test(anuncio), msg: 'al valorar, el anuncio enseña la puntuación real' });
     const dm = cliente.ediciones.find(x => x.id === 'msg-dm')?.p;
-    out.push({ ok: botonesDe(dm).every(b => b.disabled) && botonesDe(dm).length === 5, msg: 'y las estrellas del DM se apagan' });
+    const estrellasDm = botonesDe(dm).filter(b => b.custom_id?.startsWith('review_star:'));
+    out.push({ ok: estrellasDm.every(b => b.disabled) && estrellasDm.length === 5, msg: 'y las estrellas del DM se apagan' });
 
     // El plazo: vencida, se cierra sola
     limpiar();

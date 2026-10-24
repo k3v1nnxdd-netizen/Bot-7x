@@ -83,6 +83,13 @@ module.exports = {
         DESCUENTO:   15,
         RETROACTIVO: false,
 
+        // Desde cuándo cuentan las compras: la fecha en que se activó el
+        // programa. Es una fecha fija y no algo guardado en un fichero a
+        // propósito: el progreso se recalcula en cada arranque desde el canal
+        // de pedidos (la fecha de cada pedido es la de su mensaje), así que
+        // ningún reinicio ni despliegue puede devolverlo a cero.
+        INICIO: '2026-10-23T23:26:15Z',
+
         // Las piezas de la barra de progreso: emojis de la APLICACIÓN, así que
         // se ven para todo el mundo, con Nitro o sin él. Se dibujan y se suben
         // con scripts/barraEmojis.js; si se rehacen, los ids nuevos van aquí.

@@ -3,14 +3,14 @@
 const fs = require('fs');
 const {
     ModalBuilder, TextInputBuilder, TextInputStyle,
-    ActionRowBuilder, EmbedBuilder, ButtonBuilder, ButtonStyle,
+    ActionRowBuilder, EmbedBuilder, ButtonBuilder, ButtonStyle, escapeMarkdown,
 } = require('discord.js');
 const { isGone, safeDeferReply, safeEditReply, safeReply } = require('../utils/safe');
 const { isLocked, lock }                                   = require('../utils/spam');
 const tickets                                              = require('../utils/tickets');
 const { lookup, extractNumber, lookupByBudget, extractDecimal, MIN, MAX, MIN_PRICE } = require('../data/prices');
 const reviews                                               = require('../utils/reviews');
-const { finalizeReview }                                    = require('../utils/reviewFlow');
+const { finalizeReview, actualizarComentario, PLAZO_MS: PLAZO_RESENA_MS } = require('../utils/reviewFlow');
 const roblox                                               = require('../src/roblox/client');
 const { getJoinDate, getLastChecked, trackIfNew, updateLastChecked, daysSince } = require('../utils/groupTracker');
 const config                                               = require('../config');
@@ -549,6 +549,53 @@ async function handleReviewModal(interaction) {
     await finalizeReview(interaction.client, ticketChannelId, score, comment);
 }
 
+// ── El comentario de la reseña ────────────────────────────────────────────────
+// Va aparte de las estrellas (review_comment: en buttons.js abre esto).
+
+function buildComentarioModal(ticketChannelId) {
+    return new ModalBuilder()
+        .setCustomId(`review_cmodal:${ticketChannelId}`)
+        .setTitle('Comentario sobre tu compra')
+        .addComponents(
+            new ActionRowBuilder().addComponents(
+                new TextInputBuilder()
+                    .setCustomId('review_comment_text')
+                    .setLabel('¿Qué te pareció la atención?')
+                    .setStyle(TextInputStyle.Paragraph)
+                    .setMinLength(3)
+                    .setMaxLength(200)
+                    .setPlaceholder('Ej: Rápido y confiable, me llegaron al momento.')
+                    .setRequired(true)
+            )
+        );
+}
+
+const MOTIVOS_COMENTARIO = {
+    'no-existe':    '❌ Esta solicitud de reseña ya no es válida.',
+    ajeno:          '❌ Solo el comprador puede comentar esta compra.',
+    'ya-comentado': '❌ Ya dejaste un comentario en esta compra.',
+    plazo:          '⏱️ El plazo para comentar esta compra terminó.',
+};
+
+async function handleComentarioModal(interaction) {
+    if (interaction.replied || interaction.deferred) return;
+
+    const ticketChannelId = interaction.customId.slice('review_cmodal:'.length);
+    // Una línea, sin markdown: se publica en el canal de reseñas tal cual.
+    const comment = escapeMarkdown(interaction.fields.getTextInputValue('review_comment_text').replace(/\s+/g, ' ').trim());
+    if (comment.length < 3) {
+        return safeReply(interaction, { content: '❌ Escribe un comentario un poco más largo.', ephemeral: true });
+    }
+
+    const r = reviews.addComment(ticketChannelId, interaction.user.id, comment, PLAZO_RESENA_MS);
+    if (r !== 'ok') {
+        return safeReply(interaction, { content: MOTIVOS_COMENTARIO[r] ?? '❌ No se pudo guardar el comentario.', ephemeral: true });
+    }
+
+    await safeReply(interaction, { content: '✅ ¡Gracias! Tu comentario se publicó con tu reseña.', ephemeral: true });
+    await actualizarComentario(interaction.client, ticketChannelId);
+}
+
 // ── Router ────────────────────────────────────────────────────────────────────
 
 const HANDLERS = {
@@ -574,8 +621,9 @@ async function handleModal(interaction) {
     const isSeg    = interaction.customId.startsWith('seg_');
     const isCg     = interaction.customId.startsWith('cg_modal_');
     const isReview = interaction.customId.startsWith('review_modal:');
+    const isComentario = interaction.customId.startsWith('review_cmodal:');
     const isAli    = interaction.customId.startsWith('ali_modal_');
-    const fn = isSeg ? handleSeguidoresModal : isAli ? handleAlianzaModal : isCg ? handleCheckGroupModal : isReview ? handleReviewModal : HANDLERS[interaction.customId];
+    const fn = isSeg ? handleSeguidoresModal : isAli ? handleAlianzaModal : isCg ? handleCheckGroupModal : isReview ? handleReviewModal : isComentario ? handleComentarioModal : HANDLERS[interaction.customId];
     if (!fn) return;
 
     try {
@@ -590,5 +638,5 @@ async function handleModal(interaction) {
 module.exports = {
     handleModal, buildOtraCosaModal, buildDuelsModal,
     buildCalcDineroModal, buildCalcRobuxModal, buildGpDineroModal, buildGpRobuxModal,
-    buildVerifModal, buildReviewModal,
+    buildVerifModal, buildReviewModal, buildComentarioModal,
 };

@@ -182,13 +182,13 @@ module.exports = async function run() {
         assert(estrellas.length === 5, `y sus cinco estrellas dentro del bloque (${etiqueta})`);
     }
 
-    const botonesUsada = nodos(usada.components.map(c => c.toJSON())).filter(n => n.type === 2);
+    const botonesUsada = nodos(usada.components.map(c => c.toJSON())).filter(n => n.type === 2 && n.custom_id.startsWith('review_star:'));
     assert(botonesUsada.every(b => b.disabled === true), 'al calificar, las estrellas quedan deshabilitadas');
     assert(botonesUsada.find(b => b.custom_id.endsWith(':4'))?.style === ButtonStyle.Success,
         'y la elegida se queda resaltada');
 
     // Compatibilidad: la firma de antes (true/false) sigue funcionando.
-    const viejaFirma = nodos(reviewFlow.buildReviewPayload('555', 'canal-1', true).components.map(c => c.toJSON())).filter(n => n.type === 2);
+    const viejaFirma = nodos(reviewFlow.buildReviewPayload('555', 'canal-1', true).components.map(c => c.toJSON())).filter(n => n.type === 2 && n.custom_id.startsWith('review_star:'));
     assert(viejaFirma.every(b => b.disabled === true), 'la firma vieja (true) sigue apagando los botones');
 
     return finish();

@@ -48,7 +48,9 @@ async function backfillFromOrderLog(client) {
             const priceMxn    = price ? parseFloat(price.replace(/[^\d.]/g, '')) : null;
             if (!robuxAmount || robuxAmount <= 0) continue;
 
-            orders.push({ orderId: msg.id, buyerId, robuxAmount, priceMxn });
+            const descuentoFidelidad = /\*\*Descuento\*\*\n`Fidelidad/.test(desc);
+
+            orders.push({ orderId: msg.id, buyerId, robuxAmount, priceMxn, descuentoFidelidad });
         }
 
         if (batch.size < 100) break;
@@ -58,8 +60,8 @@ async function backfillFromOrderLog(client) {
     robuxLeaderboard.resetUsers();
 
     const buyerIds = new Set();
-    for (const { orderId, buyerId, robuxAmount, priceMxn } of orders) {
-        robuxLeaderboard.recordPurchase(buyerId, robuxAmount, priceMxn, orderId);
+    for (const { orderId, buyerId, robuxAmount, priceMxn, descuentoFidelidad } of orders) {
+        robuxLeaderboard.recordPurchase(buyerId, robuxAmount, priceMxn, orderId, { descuentoFidelidad });
         buyerIds.add(buyerId);
     }
 

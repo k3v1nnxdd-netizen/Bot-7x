@@ -123,6 +123,14 @@ async function sendOrderCompletionSummary(client, channel, buyerId) {
         findComprobante(channel, buyerId),
     ]);
 
+    // Si se pagó con el descuento de fidelidad, el pedido lo dice. No es sólo
+    // informativo: robuxLeaderboardBackfill.js lo lee al rehacer el ranking en
+    // cada arranque, y de ahí salen los descuentos usados de cada cliente.
+    let descuentoFidelidad = false;
+    try { descuentoFidelidad = ticketType === 'comprar' && !!tickets.getTicketData(channel)?.pedido?.descuentoFidelidad; }
+    catch { /* sin topic legible: el pedido se registra igual, sin la marca */ }
+    if (descuentoFidelidad) fields.push({ name: 'Descuento', value: `Fidelidad ${config.FIDELIDAD.DESCUENTO}%` });
+
     const embed = new EmbedBuilder()
         .setColor(0x2B2D31)
         .setTitle('Pedido completado')
@@ -146,7 +154,7 @@ async function sendOrderCompletionSummary(client, channel, buyerId) {
     // same channel, so an order is never double-counted whether it's
     // recorded here in real time or reconciled later from history.
     if (ticketType === 'comprar' && robuxAmount && logMsg) {
-        const isNew = robuxLeaderboard.recordPurchase(buyerId, robuxAmount, priceMxn, logMsg.id);
+        const isNew = robuxLeaderboard.recordPurchase(buyerId, robuxAmount, priceMxn, logMsg.id, { descuentoFidelidad });
         if (isNew) {
             await robuxLeaderboardPanel.updateLeaderboardMessage(client);
             await robuxLeaderboardPanel.syncRobuxRoles(client, buyerId);

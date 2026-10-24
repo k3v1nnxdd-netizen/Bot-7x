@@ -79,7 +79,8 @@ function submitRating(ticketChannelId, userId, score, comment, via) {
     if (rec.cerradoEn) return false;
 
     rec.rating   = score;
-    rec.comment  = comment;
+    // Las estrellas llegan sin comentario: no borrar el que ya hubiera dejado.
+    if (comment != null) rec.comment = comment;
     rec.ratedVia = via;
     rec.ratedAt  = new Date().toISOString();
     save(data);
@@ -113,7 +114,26 @@ function cerrarPorPlazo(ticketChannelId) {
     return true;
 }
 
+// El comentario, aparte de las estrellas: se puede dejar antes o después de
+// valorar, una sola vez, y sólo dentro del plazo. Devuelve 'ok' o el motivo
+// por el que no se guardó. Comprobar y escribir sin awaits, como submitRating.
+function addComment(ticketChannelId, userId, comment, plazoMs, ahora = Date.now()) {
+    const data = load();
+    const rec  = data[ticketChannelId];
+    if (!rec) return 'no-existe';
+    if (rec.buyerId !== userId) return 'ajeno';
+    if (rec.comment) return 'ya-comentado';
+    const creada = Date.parse(rec.createdAt);
+    if (rec.cerradoEn || (Number.isFinite(creada) && ahora - creada >= plazoMs)) return 'plazo';
+
+    rec.comment = comment;
+    rec.commentedAt = new Date(ahora).toISOString();
+    save(data);
+    return 'ok';
+}
+
 module.exports = {
+    addComment,
     estaVencida,
     vencidas,
     cerrarPorPlazo,

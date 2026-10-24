@@ -10,7 +10,7 @@ const { isGone, safeReply, safeEditReply, safeDeferReply, safeShowModal } = requ
 const { isLocked, lock } = require('../utils/spam');
 const { esAdminDeInteraccion, puedeGestionarTicket } = require('../utils/permisos');
 const tickets            = require('../utils/tickets');
-const { buildOtraCosaModal, buildDuelsModal, buildCalcDineroModal, buildCalcRobuxModal, buildGpDineroModal, buildGpRobuxModal, buildVerifModal } = require('./modals');
+const { buildOtraCosaModal, buildDuelsModal, buildCalcDineroModal, buildCalcRobuxModal, buildGpDineroModal, buildGpRobuxModal, buildVerifModal, buildComentarioModal } = require('./modals');
 const { buildRefRow, sendPurchaseDM } = require('../utils/purchaseDm');
 const reviews            = require('../utils/reviews');
 const { requestReview, finalizeReview, cerrarResena, buildReviewPayload, PLAZO_MS: PLAZO_RESENA_MS } = require('../utils/reviewFlow');
@@ -474,6 +474,33 @@ async function onReviewStar(interaction) {
     await finalizeReview(interaction.client, ticketChannelId, score, null);
 }
 
+// ── El comentario ─────────────────────────────────────────────────────────────
+// review_comment:<canal del ticket> abre el formulario. Lo de dentro del
+// plazo y "una sola vez" se vuelve a comprobar al enviarlo (reviews.addComment):
+// aquí sólo se evita abrir un formulario que no se va a poder enviar.
+
+async function onReviewComment(interaction) {
+    if (interaction.replied || interaction.deferred) return;
+
+    const ticketChannelId = interaction.customId.slice('review_comment:'.length);
+    const review = reviews.getReview(ticketChannelId);
+    if (!review) {
+        return safeReply(interaction, { content: '❌ Esta solicitud de reseña ya no es válida.', ephemeral: true });
+    }
+    if (interaction.user.id !== review.buyerId) {
+        return safeReply(interaction, { content: '❌ Solo el comprador puede comentar esta compra.', ephemeral: true });
+    }
+    if (review.comment) {
+        return safeReply(interaction, { content: '❌ Ya dejaste un comentario en esta compra.', ephemeral: true });
+    }
+    const creada = Date.parse(review.createdAt);
+    if (review.cerradoEn || (Number.isFinite(creada) && Date.now() - creada >= PLAZO_RESENA_MS)) {
+        return safeReply(interaction, { content: '⏱️ El plazo para comentar esta compra terminó.', ephemeral: true });
+    }
+
+    await interaction.showModal(buildComentarioModal(ticketChannelId));
+}
+
 // ── Auto-close countdown (shared with /close command) ─────────────────────────
 
 async function startAutoClose(channel) {
@@ -540,6 +567,7 @@ async function handleButton(interaction) {
     const isCg     = interaction.customId.startsWith('cg_');
     const isReview = interaction.customId.startsWith('review_rate:');
     const isStar   = interaction.customId.startsWith('review_star:');
+    const isComment = interaction.customId.startsWith('review_comment:');
     // Paging of the /groups license listing. Its message is ephemeral and
     // owner-only, and the handler re-checks the owner itself — the customId
     // carries the page number and nothing else, so a forged one can only ask
@@ -551,6 +579,7 @@ async function handleButton(interaction) {
         : isCg ? handleCheckGroupButton
         : isReview ? onReviewRate
         : isStar ? onReviewStar
+        : isComment ? onReviewComment
         : isGroupList ? handleGroupsPageButton
         : HANDLERS[interaction.customId];
     if (!fn) return;

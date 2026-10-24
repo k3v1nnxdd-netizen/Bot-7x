@@ -34,7 +34,13 @@ function save(data) {
 // true if this order was newly recorded, false if it was already counted
 // (or the amount was invalid) — callers use this to know whether to react
 // (refresh the panel, sync roles) or skip.
-function recordPurchase(userId, robuxAmount, priceMxn, orderId = null) {
+//
+// Each entry also keeps the ids of its orders (`ordenes`) and of the ones paid
+// with a loyalty discount (`descuentos`). Order ids are message snowflakes, so
+// they carry the order's date — utils/fidelidad.js derives the loyalty
+// progress from them, and since all of this is rebuilt from the order log on
+// every boot, that progress survives restarts and redeploys.
+function recordPurchase(userId, robuxAmount, priceMxn, orderId = null, opciones = {}) {
     if (!Number.isFinite(robuxAmount) || robuxAmount <= 0) return false;
 
     const data = load();
@@ -50,6 +56,10 @@ function recordPurchase(userId, robuxAmount, priceMxn, orderId = null) {
     entry.totalRobux += robuxAmount;
     if (Number.isFinite(priceMxn)) entry.totalSpent += priceMxn;
     entry.purchases += 1;
+    if (orderId) {
+        entry.ordenes = [...(entry.ordenes ?? []), String(orderId)];
+        if (opciones.descuentoFidelidad) entry.descuentos = [...(entry.descuentos ?? []), String(orderId)];
+    }
 
     data.users[key] = entry;
     save(data);

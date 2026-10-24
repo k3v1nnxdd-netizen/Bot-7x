@@ -30,7 +30,7 @@ const PLAZO_MS = config.RESENAS.PLAZO_HORAS * 3600_000;
 // La tarjeta va SIEMPRE entera, también al apagarla: en un mensaje V2 un edit
 // con sólo `components: [fila]` borraría el texto.
 
-function buildReviewPayload(buyerId, ticketChannelId, estado = 'abierta', score = null) {
+function buildReviewPayload(buyerId, ticketChannelId, estado = 'abierta', score = null, comentado = false) {
     // Compatibilidad con la firma vieja (disabled = true/false).
     if (estado === true) estado = 'calificada';
     if (estado === false) estado = 'abierta';
@@ -42,7 +42,8 @@ function buildReviewPayload(buyerId, ticketChannelId, estado = 'abierta', score 
             `${SHOP_EMOJI} Compra por <@${buyerId}>\n\n` +
             `${OK_EMOJI} **¡Gracias por tu valoración!**` +
             (score ? ` Calificaste la atención con **${score}/5**.` : '') +
-            '\n\nNos ayuda a mejorar y a que otros compren con confianza.';
+            '\n\nNos ayuda a mejorar y a que otros compren con confianza.' +
+            (comentado ? '' : '\n-# Si quieres, cuéntanos más con **Agregar comentario**.');
     } else if (estado === 'cerrada') {
         texto =
             `${SHOP_EMOJI} Compra por <@${buyerId}>\n\n` +
@@ -59,9 +60,13 @@ function buildReviewPayload(buyerId, ticketChannelId, estado = 'abierta', score 
         color: 0x2B2D31,
         texto,
         pie: '7x Community • Sistema de reseñas',
-        filas: [buildReviewRow(ticketChannelId, estado, score)],
+        filas: [buildReviewRow(ticketChannelId, estado, score), buildCommentRow(ticketChannelId, estado, comentado)],
     });
 }
+
+// La estrella del servidor, la misma del anuncio de reseñas. Un botón sólo
+// admite UN emoji, así que cada uno lleva la estrella y su número.
+const STAR_BOTON = { id: '1514369366878064650', name: 'star', animated: true };
 
 function buildReviewRow(ticketChannelId, estado = 'abierta', score = null) {
     if (estado === true) estado = 'calificada';
@@ -72,12 +77,26 @@ function buildReviewRow(ticketChannelId, estado = 'abierta', score = null) {
         ...[1, 2, 3, 4, 5].map(n =>
             new ButtonBuilder()
                 .setCustomId(`review_star:${ticketChannelId}:${n}`)
-                .setLabel('⭐'.repeat(n))
+                .setEmoji(STAR_BOTON)
+                .setLabel(String(n))
                 // La que eligió queda en verde: al volver al mensaje se ve qué
                 // puso sin tener que leer el texto.
                 .setStyle(estado === 'calificada' && n === score ? ButtonStyle.Success : ButtonStyle.Secondary)
                 .setDisabled(apagada)
         )
+    );
+}
+
+// El comentario va aparte de las estrellas: valorar sigue siendo un clic, y
+// quien quiera contar más lo hace antes o después. Una vez, dentro del plazo.
+function buildCommentRow(ticketChannelId, estado = 'abierta', comentado = false) {
+    return new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+            .setCustomId(`review_comment:${ticketChannelId}`)
+            .setEmoji('💬')
+            .setLabel(comentado ? 'Comentario enviado' : 'Agregar comentario')
+            .setStyle(ButtonStyle.Primary)
+            .setDisabled(comentado || estado === 'cerrada')
     );
 }
 
@@ -196,7 +215,7 @@ async function requestReview(client, channel, ticketChannelId, buyerId) {
 // el estado nuevo. Nunca lanza: el canal del ticket ya se habrá borrado casi
 // siempre, y que no se pueda editar no puede tirar lo demás.
 async function repintarPeticiones(client, rec, ticketChannelId, estado, score = null) {
-    const payload = buildReviewPayload(rec.buyerId, ticketChannelId, estado, score);
+    const payload = buildReviewPayload(rec.buyerId, ticketChannelId, estado, score, !!rec.comment);
 
     if (rec.ticketMessageRef) {
         try {
@@ -254,7 +273,22 @@ async function finalizeReview(client, ticketChannelId, score, comment = null) {
 
     const user      = await client.users.fetch(rec.buyerId).catch(() => null);
     const avatarURL = user?.displayAvatarURL({ size: 256 }) ?? null;
-    await repintarAnuncio(client, rec, buildAnnounceEmbed(rec.buyerId, score, avatarURL, rec.orderLabel, comment));
+    await repintarAnuncio(client, rec, buildAnnounceEmbed(rec.buyerId, score, avatarURL, rec.orderLabel, comment ?? rec.comment));
+}
+
+// Tras guardar un comentario: los dos avisos apagan su botón y el anuncio lo
+// enseña, con las estrellas si ya las puso o "esperando" si aún no.
+async function actualizarComentario(client, ticketChannelId) {
+    const rec = reviews.getReview(ticketChannelId);
+    if (!rec) return;
+
+    const estado = rec.rating !== null ? 'calificada' : rec.cerradoEn ? 'cerrada' : 'abierta';
+    await repintarPeticiones(client, rec, ticketChannelId, estado, rec.rating);
+
+    const user      = await client.users.fetch(rec.buyerId).catch(() => null);
+    const avatarURL = user?.displayAvatarURL({ size: 256 }) ?? null;
+    await repintarAnuncio(client, rec,
+        buildAnnounceEmbed(rec.buyerId, rec.rating, avatarURL, rec.orderLabel, rec.comment, !!rec.cerradoEn));
 }
 
 // ── El plazo ──────────────────────────────────────────────────────────────────
@@ -279,7 +313,7 @@ async function cerrarResena(client, ticketChannelId) {
 
     const user      = await client.users.fetch(rec.buyerId).catch(() => null);
     const avatarURL = user?.displayAvatarURL({ size: 256 }) ?? null;
-    await repintarAnuncio(client, rec, buildAnnounceEmbed(rec.buyerId, null, avatarURL, rec.orderLabel, null, true));
+    await repintarAnuncio(client, rec, buildAnnounceEmbed(rec.buyerId, null, avatarURL, rec.orderLabel, rec.comment, true));
     return true;
 }
 
@@ -310,7 +344,7 @@ function iniciarCaducidad(client) {
 }
 
 module.exports = {
-    buildReviewPayload, buildReviewRow, requestReview, finalizeReview,
+    buildReviewPayload, buildReviewRow, requestReview, finalizeReview, actualizarComentario,
     cerrarResena, cerrarVencidas, iniciarCaducidad, PLAZO_MS,
     __test: { buildAnnounceEmbed },
 };

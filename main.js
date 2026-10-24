@@ -51,7 +51,6 @@ if (RUN_BOT) {
     const { handleModal }     = require('./handlers/modals');
     const { handleAcc, handleAccDispo, handleAccDispoAutocomplete } = require('./handlers/accounts');
     const { handleOutfit, handlePagos, handlePagoVerified, handleOffer, handleClose, handleHeadless, handleGroupActive, handleTopCompradores, handleCrypto, handleAvatar, handleCompras, handleRobuxGastados, handleMisCompras } = require('./handlers/commands');
-    const fidelidad           = require('./utils/fidelidad');
     const { iniciarCaducidad } = require('./utils/reviewFlow');
     const cryptoPrecios       = require('./utils/cryptoPrecios');
     const {
@@ -427,14 +426,6 @@ if (RUN_BOT) {
         await backfillFromOrderLog(client).catch(err =>
             console.error('[bot] backfillFromOrderLog failed:', err)
         );
-
-        // El descuento por fidelidad cuenta las compras DESDE que se activa, y
-        // al activarse apunta cuántas llevaba cada cliente. Tiene que ir
-        // DESPUÉS de reconstruir el ranking: una base tomada sobre un ranking a
-        // medio rehacer valdría 0 para muchos y les regalaría su historial.
-        // Sólo actúa la primera vez; en los demás arranques no hace nada.
-        try { fidelidad.inicializar(); }
-        catch (err) { console.error('[bot] fidelidad.inicializar failed:', err); }
 
         // Las valoraciones que pasan su plazo se cierran solas. Se revisa al
         // arrancar y cada pocos minutos, a partir de la fecha guardada: un

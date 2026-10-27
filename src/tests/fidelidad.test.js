@@ -22,6 +22,7 @@
 const fs = require('fs');
 const path = require('path');
 
+const { ButtonStyle } = require('discord.js');
 const { createSuite } = require('./testHarness');
 const config = require('../../config');
 const { dataPath } = require('../../utils/dataDir');
@@ -407,19 +408,57 @@ async function simularResenas() {
     const out = [];
     const { buildAnnounceEmbed } = reviewFlow.__test;
 
-    // Los cinco botones
-    // Cinco filas: los emojis como texto y su botón al lado (un botón sólo
-    // admite un emoji; en el texto caben los que hagan falta).
-    const secciones = reviewFlow.buildEstrellas('t', 'abierta').map(s => s.toJSON());
-    const fila = secciones.map(s => s.accessory);
-    const emojisFila = secciones.map(s => s.components[0].content);
-    const STATS = '<:stats:1190502686886481991>', ESTRELLA = '<a:star:1514369366878064650>';
-    out.push({ ok: fila.length === 5 && fila.every(b => b?.type === 2), msg: 'la valoración son cinco botones' });
+    // Los cinco botones, en UNA fila y con el emoji dentro de cada botón.
+    const filaEstrellas = reviewFlow.buildEstrellas('t', 'abierta').toJSON();
+    const fila = filaEstrellas.components;
+    out.push({ ok: filaEstrellas.type === 1 && fila.length === 5 && fila.every(b => b?.type === 2),
+        msg: 'la valoración son cinco botones en una sola fila' });
     out.push({ ok: fila.map(b => b.label).join('|') === '1/5|2/5|3/5|4/5|5/5', msg: 'de 1/5 a 5/5' });
-    out.push({ ok: [1, 2, 3, 4].every(n => emojisFila[n - 1] === STATS.repeat(n)),
-        msg: 'del 1 al 4, tantos emojis de estadísticas como la puntuación' });
-    out.push({ ok: emojisFila[4] === ESTRELLA.repeat(5), msg: 'y en el 5, cinco estrellas animadas' });
-    out.push({ ok: !emojisFila.join('').includes('⭐'), msg: 'ninguna ⭐ de Unicode' });
+    out.push({ ok: fila.slice(0, 4).every(b => b.emoji?.id === '1190502686886481991'),
+        msg: 'del 1 al 4, el emoji de estadísticas dentro del botón' });
+    out.push({ ok: fila[4].emoji?.id === '1514369366878064650' && fila[4].emoji?.animated === true,
+        msg: 'y en el 5, la estrella animada' });
+    out.push({ ok: !JSON.stringify(fila).includes('⭐'), msg: 'ninguna ⭐ de Unicode' });
+
+    // Las frases de un clic
+    const FRASES = config.RESENAS.FRASES;
+    const frasesDe = p => botonesDe(p).filter(b => b.custom_id?.startsWith('review_frase:'));
+    const frasesAbierta = frasesDe(reviewFlow.buildReviewPayload('u', 't', 'abierta'));
+    out.push({ ok: FRASES.length === 5 && frasesAbierta.map(b => b.label).join('|') === FRASES.join('|'),
+        msg: 'la tarjeta trae las cinco frases recomendadas' });
+    out.push({ ok: frasesAbierta.every((b, i) => b.custom_id === `review_frase:t:${i}` && !b.disabled && b.label.length <= 80),
+        msg: 'cada una con su índice y activa' });
+    out.push({ ok: aJson(reviewFlow.buildReviewPayload('u', 't', 'abierta'))[0].components.filter(c => c.type === 1).every(f => f.components.length <= 5),
+        msg: 'ninguna fila pasa de 5 botones' });
+    const conFrase = frasesDe(reviewFlow.buildReviewPayload('u', 't', 'calificada', 5, FRASES[2]));
+    out.push({ ok: conFrase.every(b => b.disabled) && conFrase.filter(b => b.style === ButtonStyle.Success).map(b => b.label).join() === FRASES[2],
+        msg: 'al elegir una, se apagan y la elegida queda en verde' });
+    out.push({ ok: frasesDe(reviewFlow.buildReviewPayload('u', 't', 'cerrada')).every(b => b.disabled), msg: 'cerrada por plazo, apagadas' });
+
+    limpiar();
+    reviews.createReviewRequest('tf', 'comprador', '1,000 Robux');
+    reviews.setDmMessageRef('tf', 'dm', 'msg-dm');
+    reviews.setAnnounceMessageRef('tf', 'resenas', 'msg-anuncio');
+    const respuestas = [];
+    const clic = (userId, i) => ({
+        customId: `review_frase:tf:${i}`, user: { id: userId }, replied: false, deferred: false,
+        client: clienteFalso(), channel: { isDMBased: () => true },
+        reply: async o => { respuestas.push(o.content); },
+        isRepliable: () => true,
+    });
+    const btn = require('../../handlers/buttons');
+    await btn.handleButton(clic('otro', 0));
+    out.push({ ok: !reviews.getReview('tf').comment, msg: 'otra persona no puede usar las frases' });
+    const bueno = clic('comprador', 1);
+    await btn.handleButton(bueno);
+    out.push({ ok: reviews.getReview('tf').comment === FRASES[1], msg: 'el comprador toca una frase y queda como su comentario' });
+    const anuncioFrase = bueno.client.ediciones.find(x => x.id === 'msg-anuncio')?.p?.embeds?.[0]?.toJSON?.()?.description ?? '';
+    out.push({ ok: anuncioFrase.includes(`**Comentario:** ${FRASES[1]}`), msg: 'y se publica en el anuncio' });
+    const dmFrase = bueno.client.ediciones.find(x => x.id === 'msg-dm')?.p;
+    out.push({ ok: frasesDe(dmFrase).find(b => b.label === FRASES[1])?.style === ButtonStyle.Success,
+        msg: 'y en el DM queda resaltada' });
+    await btn.handleButton(clic('comprador', 0));
+    out.push({ ok: reviews.getReview('tf').comment === FRASES[1], msg: 'no se cambia por otra: una sola vez' });
 
     const comentar = botonesDe(reviewFlow.buildReviewPayload('u', 't', 'abierta')).find(b => b.custom_id === 'review_comment:t');
     out.push({ ok: comentar?.style === 2 && comentar?.emoji?.id === '1501217620437897227',

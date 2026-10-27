@@ -2,7 +2,7 @@
 
 const {
     EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle,
-    MessageFlags, SectionBuilder, TextDisplayBuilder,
+    MessageFlags, TextDisplayBuilder,
 } = require('discord.js');
 const config = require('../config');
 const reviews = require('./reviews');
@@ -20,7 +20,7 @@ const PLAZO_MS = config.RESENAS.PLAZO_HORAS * 3600_000;
 
 // ── La tarjeta de valoración ──────────────────────────────────────────────────
 //
-// Cinco botones, de una a cinco estrellas: se valora con UN clic. Antes era un
+// Cinco botones en una fila, de 1/5 a 5/5: se valora con UN clic. Antes era un
 // botón que abría un formulario donde había que escribir el número y un
 // comentario obligatorio, y cada paso de más es gente que no termina.
 //
@@ -46,7 +46,7 @@ function buildReviewPayload(buyerId, ticketChannelId, estado = 'abierta', score 
             `${OK_EMOJI} **¡Gracias por tu valoración!**` +
             (score ? ` Calificaste la atención con **${score}/5**.` : '') +
             '\n\nNos ayuda a mejorar y a que otros compren con confianza.' +
-            (comentado ? '' : '\n-# Si quieres, cuéntanos más con **Agregar comentario**.');
+            (comentado ? '' : '\n-# ¿Algo más? Toca una frase o usa **Agregar comentario**.');
     } else if (estado === 'cerrada') {
         texto =
             `${SHOP_EMOJI} Compra por <@${buyerId}>\n\n` +
@@ -59,20 +59,24 @@ function buildReviewPayload(buyerId, ticketChannelId, estado = 'abierta', score 
             `Elige tu valoración: **1/5** es la peor y **5/5** la mejor.\n-# Tienes ${horas} horas para valorar.`;
     }
 
-    // Las valoraciones van DEBAJO del pie, cada una en su fila, y el botón de
-    // comentario al final.
+    // Debajo del pie: las cinco valoraciones en UNA fila, y después los
+    // comentarios (las frases de un clic y el de escribirlo).
     const container = v2.tarjeta({ color: 0x2B2D31, texto, pie: '7x Community • Sistema de reseñas' });
-    container.addSectionComponents(...buildEstrellas(ticketChannelId, estado, score));
-    container.addActionRowComponents(buildCommentRow(ticketChannelId, estado, comentado));
+    container.addActionRowComponents(buildEstrellas(ticketChannelId, estado, score));
+    if (!comentado && estado !== 'cerrada') {
+        container.addTextDisplayComponents(new TextDisplayBuilder().setContent('-# ¿Sin ganas de escribir? Toca una frase y queda como tu comentario.'));
+    }
+    container.addActionRowComponents(...buildComentarioRows(ticketChannelId, estado, comentado));
     return { flags: MessageFlags.IsComponentsV2, components: [container] };
 }
 
-// Una fila por valoración: los emojis a la izquierda, como TEXTO, y su botón a
-// la derecha. Va así porque un botón de Discord sólo admite UN emoji: en el
-// texto sí caben los que hagan falta — de 1 a 4 el de estadísticas, tantos
-// como la puntuación, y en el 5 las cinco estrellas animadas.
-function emojisDe(n) {
-    return n >= 5 ? STAR_EMOJI.repeat(5) : STATS_EMOJI.repeat(n);
+// El emoji va DENTRO del botón, y un botón sólo admite uno: de 1 a 4 el de
+// estadísticas, y en el 5 la estrella animada. Lo que distingue cada botón es
+// su etiqueta (1/5 … 5/5).
+function emojiDe(n) {
+    return n >= 5
+        ? { id: '1514369366878064650', name: 'star', animated: true }
+        : { id: '1190502686886481991', name: 'stats' };
 }
 
 function buildEstrellas(ticketChannelId, estado = 'abierta', score = null) {
@@ -80,32 +84,47 @@ function buildEstrellas(ticketChannelId, estado = 'abierta', score = null) {
     if (estado === false) estado = 'abierta';
     const apagada = estado !== 'abierta';
 
-    return [1, 2, 3, 4, 5].map(n =>
-        new SectionBuilder()
-            .addTextDisplayComponents(new TextDisplayBuilder().setContent(emojisDe(n)))
-            .setButtonAccessory(
-                new ButtonBuilder()
-                    .setCustomId(`review_star:${ticketChannelId}:${n}`)
-                    .setLabel(`${n}/5`)
-                    // La que eligió queda en verde: al volver al mensaje se ve
-                    // qué puso sin tener que leer el texto.
-                    .setStyle(estado === 'calificada' && n === score ? ButtonStyle.Success : ButtonStyle.Secondary)
-                    .setDisabled(apagada)
-            )
-    );
+    return new ActionRowBuilder().addComponents([1, 2, 3, 4, 5].map(n =>
+        new ButtonBuilder()
+            .setCustomId(`review_star:${ticketChannelId}:${n}`)
+            .setEmoji(emojiDe(n))
+            .setLabel(`${n}/5`)
+            // La que eligió queda en verde: al volver al mensaje se ve qué
+            // puso sin tener que leer el texto.
+            .setStyle(estado === 'calificada' && n === score ? ButtonStyle.Success : ButtonStyle.Secondary)
+            .setDisabled(apagada)
+    ));
 }
 
 // El comentario va aparte de las estrellas: valorar sigue siendo un clic, y
 // quien quiera contar más lo hace antes o después. Una vez, dentro del plazo.
-function buildCommentRow(ticketChannelId, estado = 'abierta', comentado = false) {
-    return new ActionRowBuilder().addComponents(
+//
+// Las frases (config.RESENAS.FRASES) son un comentario de un clic, para quien
+// no va a escribir. Tres en la primera fila; en la segunda las otras dos y el
+// botón de escribirlo. `comentado` es el comentario guardado (o true/false):
+// si es una de las frases, esa queda en verde.
+function buildComentarioRows(ticketChannelId, estado = 'abierta', comentado = false) {
+    const apagado = !!comentado || estado === 'cerrada';
+    const frases = config.RESENAS.FRASES.map((frase, i) =>
         new ButtonBuilder()
-            .setCustomId(`review_comment:${ticketChannelId}`)
-            .setEmoji({ id: '1501217620437897227' })
-            .setLabel(comentado ? 'Comentario enviado' : 'Agregar comentario')
-            .setStyle(ButtonStyle.Secondary)
-            .setDisabled(comentado || estado === 'cerrada')
+            .setCustomId(`review_frase:${ticketChannelId}:${i}`)
+            .setLabel(frase)
+            .setStyle(comentado === frase ? ButtonStyle.Success : ButtonStyle.Secondary)
+            .setDisabled(apagado)
     );
+    const escribir = new ButtonBuilder()
+        .setCustomId(`review_comment:${ticketChannelId}`)
+        .setEmoji({ id: '1501217620437897227' })
+        .setLabel(comentado ? 'Comentario enviado' : 'Agregar comentario')
+        .setStyle(ButtonStyle.Secondary)
+        .setDisabled(apagado);
+
+    const botones = [...frases, escribir];
+    // Una fila de Discord admite 5 botones: si un día hay más frases, siguen
+    // en filas de 5 después de la primera.
+    const filas = [botones.slice(0, 3)];
+    for (let i = 3; i < botones.length; i += 5) filas.push(botones.slice(i, i + 5));
+    return filas.map(b => new ActionRowBuilder().addComponents(b));
 }
 
 // Figures out what the ticket was for, so the review announcement can show
@@ -223,7 +242,7 @@ async function requestReview(client, channel, ticketChannelId, buyerId) {
 // el estado nuevo. Nunca lanza: el canal del ticket ya se habrá borrado casi
 // siempre, y que no se pueda editar no puede tirar lo demás.
 async function repintarPeticiones(client, rec, ticketChannelId, estado, score = null) {
-    const payload = buildReviewPayload(rec.buyerId, ticketChannelId, estado, score, !!rec.comment);
+    const payload = buildReviewPayload(rec.buyerId, ticketChannelId, estado, score, rec.comment || false);
 
     if (rec.ticketMessageRef) {
         try {

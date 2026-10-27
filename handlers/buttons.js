@@ -10,10 +10,10 @@ const { isGone, safeReply, safeEditReply, safeDeferReply, safeShowModal } = requ
 const { isLocked, lock } = require('../utils/spam');
 const { esAdminDeInteraccion, puedeGestionarTicket } = require('../utils/permisos');
 const tickets            = require('../utils/tickets');
-const { buildOtraCosaModal, buildDuelsModal, buildCalcDineroModal, buildCalcRobuxModal, buildGpDineroModal, buildGpRobuxModal, buildVerifModal, buildComentarioModal } = require('./modals');
+const { buildOtraCosaModal, buildDuelsModal, buildCalcDineroModal, buildCalcRobuxModal, buildGpDineroModal, buildGpRobuxModal, buildVerifModal, buildComentarioModal, MOTIVOS_COMENTARIO } = require('./modals');
 const { buildRefRow, sendPurchaseDM } = require('../utils/purchaseDm');
 const reviews            = require('../utils/reviews');
-const { requestReview, finalizeReview, cerrarResena, buildReviewPayload, PLAZO_MS: PLAZO_RESENA_MS } = require('../utils/reviewFlow');
+const { requestReview, finalizeReview, cerrarResena, buildReviewPayload, actualizarComentario, PLAZO_MS: PLAZO_RESENA_MS } = require('../utils/reviewFlow');
 const fidelidad          = require('../utils/fidelidad');
 const { sendOrderCompletionSummary } = require('../utils/orderNotify');
 const { startSeguidoresTicket, handleSeguidoresButton } = require('./seguidoresFlow');
@@ -501,6 +501,27 @@ async function onReviewComment(interaction) {
     await interaction.showModal(buildComentarioModal(ticketChannelId));
 }
 
+// review_frase:<canal del ticket>:<i> — el comentario de un clic: la frase
+// config.RESENAS.FRASES[i] se guarda como su comentario. Las mismas reglas que
+// el escrito (reviews.addComment): sólo el comprador, una vez, en plazo.
+async function onReviewFrase(interaction) {
+    if (interaction.replied || interaction.deferred) return;
+
+    const [, ticketChannelId, i] = interaction.customId.split(':');
+    const frase = config.RESENAS.FRASES[Number(i)];
+    if (!frase) {
+        return safeReply(interaction, { content: '❌ Esa frase ya no está disponible. Usa **Agregar comentario**.', ephemeral: true });
+    }
+
+    const r = reviews.addComment(ticketChannelId, interaction.user.id, frase, PLAZO_RESENA_MS);
+    if (r !== 'ok') {
+        return safeReply(interaction, { content: MOTIVOS_COMENTARIO[r] ?? '❌ No se pudo guardar el comentario.', ephemeral: true });
+    }
+
+    await safeReply(interaction, { content: `✅ ¡Gracias! Tu comentario **${frase}** se publicó con tu reseña.`, ephemeral: true });
+    await actualizarComentario(interaction.client, ticketChannelId);
+}
+
 // ── Auto-close countdown (shared with /close command) ─────────────────────────
 
 async function startAutoClose(channel) {
@@ -568,6 +589,7 @@ async function handleButton(interaction) {
     const isReview = interaction.customId.startsWith('review_rate:');
     const isStar   = interaction.customId.startsWith('review_star:');
     const isComment = interaction.customId.startsWith('review_comment:');
+    const isFrase  = interaction.customId.startsWith('review_frase:');
     // Paging of the /groups license listing. Its message is ephemeral and
     // owner-only, and the handler re-checks the owner itself — the customId
     // carries the page number and nothing else, so a forged one can only ask
@@ -580,6 +602,7 @@ async function handleButton(interaction) {
         : isReview ? onReviewRate
         : isStar ? onReviewStar
         : isComment ? onReviewComment
+        : isFrase ? onReviewFrase
         : isGroupList ? handleGroupsPageButton
         : HANDLERS[interaction.customId];
     if (!fn) return;

@@ -149,6 +149,11 @@ module.exports = {
     // valoración se cierra y los botones dejan de funcionar.
     RESENAS: {
         PLAZO_HORAS: 12,
+        // Comentarios de un clic en la tarjeta de valoración: a quien le da
+        // pereza escribir, deja uno igual. El orden es el de los botones, y el
+        // índice va en el customId (review_frase:<canal>:<i>), así que una frase
+        // nueva se añade AL FINAL. Máximo 80 caracteres (etiqueta de botón).
+        FRASES: ['Legittt', 'Buen servicio', 'Rápido y legit', '100% recomendado', 'Entrega al instante'],
     },
 
     // ── Venta por gamepass ───────────────────────────────────────────────────

@@ -638,5 +638,5 @@ async function handleModal(interaction) {
 module.exports = {
     handleModal, buildOtraCosaModal, buildDuelsModal,
     buildCalcDineroModal, buildCalcRobuxModal, buildGpDineroModal, buildGpRobuxModal,
-    buildVerifModal, buildReviewModal, buildComentarioModal,
+    buildVerifModal, buildReviewModal, buildComentarioModal, MOTIVOS_COMENTARIO,
 };

@@ -724,10 +724,57 @@ async function handleGActive(interaction) {
     await safeReply(interaction, { content: lineas.join('\n'), ephemeral: true });
 }
 
+// ── /msg ──────────────────────────────────────────────────────────────────────
+// El bot escribe lo que pone el owner, como un mensaje suyo normal: se envía
+// con channel.send y NO como respuesta a la interacción, así que no sale el
+// "X usó /msg" encima. La confirmación es efímera: sólo la ve quien lo lanzó.
+//
+// Las opciones de texto de un comando no admiten saltos de línea: se escribe
+// \n donde se quiera uno.
+
+function textoDeMsg(crudo) {
+    return (crudo ?? '').replace(/\\n/g, '\n').trim();
+}
+
+async function handleMsg(interaction) {
+    if (!esAdminDeInteraccion(interaction)) {
+        return safeReply(interaction, { content: '❌ No tienes permiso para usar este comando.', ephemeral: true });
+    }
+
+    const texto   = textoDeMsg(interaction.options.getString('mensaje'));
+    const archivo = interaction.options.getAttachment?.('archivo') ?? null;
+    if (!texto && !archivo) {
+        return safeReply(interaction, { content: '❌ Escribe un mensaje o adjunta un archivo.', ephemeral: true });
+    }
+
+    // Diferido: con un archivo, subirlo puede pasar de los 3 segundos que da
+    // Discord para responder.
+    await safeDeferReply(interaction, { ephemeral: true });
+
+    const elegido = interaction.options.getChannel?.('canal') ?? null;
+    let canal = elegido ? await interaction.client.channels.fetch(elegido.id).catch(() => null) : interaction.channel;
+    if (typeof canal?.send !== 'function') {
+        return safeEditReply(interaction, { content: '❌ No puedo escribir en ese canal.' });
+    }
+
+    try {
+        await canal.send({
+            ...(texto ? { content: texto } : {}),
+            ...(archivo ? { files: [{ attachment: archivo.url, name: archivo.name }] } : {}),
+            // Lo escribe el owner a propósito: si pone una mención, que avise.
+            allowedMentions: { parse: ['users', 'roles', 'everyone'] },
+        });
+    } catch (err) {
+        return safeEditReply(interaction, { content: `❌ No se pudo enviar el mensaje: ${err.message}` });
+    }
+
+    await safeEditReply(interaction, { content: `✅ Mensaje enviado en <#${canal.id}>.` });
+}
+
 module.exports = {
     handleOutfit, handlePagos, handlePagoVerified, handleOffer, handleClose,
     handleHeadless, handleGroupActive, handleTopCompradores, handleCrypto, handleAvatar,
-    handleCompras, handleRobuxGastados, handleMisCompras, handleInvitaciones, handleGActive,
+    handleCompras, handleRobuxGastados, handleMisCompras, handleInvitaciones, handleGActive, handleMsg,
     refreshCouponEmbed,
-    __test: { buildCryptoTexto, buildCryptoRow, segundos, minutos, buildAvatarEmbed, buildAvatarPie, buildComprasTexto, buildRobuxGastadosTexto, buildMisComprasTexto, buildInvitacionesTexto },
+    __test: { buildCryptoTexto, buildCryptoRow, segundos, minutos, buildAvatarEmbed, buildAvatarPie, buildComprasTexto, buildRobuxGastadosTexto, buildMisComprasTexto, buildInvitacionesTexto, textoDeMsg },
 };

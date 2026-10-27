@@ -51,7 +51,7 @@ if (RUN_BOT) {
     const { handleButton, clearTimers } = require('./handlers/buttons');
     const { handleModal }     = require('./handlers/modals');
     const { handleAcc, handleAccDispo, handleAccDispoAutocomplete } = require('./handlers/accounts');
-    const { handleOutfit, handlePagos, handlePagoVerified, handleOffer, handleClose, handleHeadless, handleGroupActive, handleTopCompradores, handleCrypto, handleAvatar, handleCompras, handleRobuxGastados, handleMisCompras, handleInvitaciones, handleGActive } = require('./handlers/commands');
+    const { handleOutfit, handlePagos, handlePagoVerified, handleOffer, handleClose, handleHeadless, handleGroupActive, handleTopCompradores, handleCrypto, handleAvatar, handleCompras, handleRobuxGastados, handleMisCompras, handleInvitaciones, handleGActive, handleMsg } = require('./handlers/commands');
     const invitesTracker      = require('./utils/invitesTracker');
     const ticketInactivo      = require('./utils/ticketInactivo');
     const { iniciarCaducidad } = require('./utils/reviewFlow');
@@ -308,6 +308,35 @@ if (RUN_BOT) {
                 ],
             },
 
+            // El bot escribe lo que pone el owner. El gate real es el chequeo
+            // de permisos dentro de handleMsg.
+            {
+                name: 'msg',
+                description: 'El bot envía el mensaje que escribas (solo owner)',
+                options: [
+                    {
+                        name: 'mensaje',
+                        type: 3,
+                        description: 'Lo que dirá el bot. Usa \\n para un salto de línea',
+                        required: false,
+                        max_length: 2000,
+                    },
+                    {
+                        name: 'canal',
+                        type: 7,
+                        description: 'Dónde enviarlo (por defecto, este canal)',
+                        required: false,
+                        channel_types: [0, 5, 10, 11, 12],
+                    },
+                    {
+                        name: 'archivo',
+                        type: 11,
+                        description: 'Imagen o archivo para enviar con el mensaje',
+                        required: false,
+                    },
+                ],
+            },
+
             // El gate real es el chequeo de permisos dentro de handleHeadless,
             // igual que /offer: el registro del comando no decide permisos.
             {
@@ -521,6 +550,7 @@ if (RUN_BOT) {
             else if (interaction.isChatInputCommand() && interaction.commandName === 'headless')      await handleHeadless(interaction);
             else if (interaction.isChatInputCommand() && interaction.commandName === 'groupactive')   await handleGroupActive(interaction);
             else if (interaction.isChatInputCommand() && interaction.commandName === 'gactive')       await handleGActive(interaction);
+            else if (interaction.isChatInputCommand() && interaction.commandName === 'msg')           await handleMsg(interaction);
             else if (interaction.isChatInputCommand() && interaction.commandName === 'addgroup')      await handleAddGroup(interaction);
             else if (interaction.isChatInputCommand() && interaction.commandName === 'regeneratetoken') await handleRegenerateToken(interaction);
             else if (interaction.isChatInputCommand() && interaction.commandName === 'deletegroup')   await handleDeleteGroup(interaction);

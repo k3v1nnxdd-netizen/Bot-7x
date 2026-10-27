@@ -283,7 +283,7 @@ if (RUN_BOT) {
             // chequeo de permisos dentro de handleGActive.
             {
                 name: 'gactive',
-                description: 'Activa o desactiva las consultas de días de una comunidad en Check Group's (solo owner)',
+                description: "Activa o desactiva las consultas de días de una comunidad en Check Group's (solo owner)",
                 options: [
                     {
                         name: 'grupo',

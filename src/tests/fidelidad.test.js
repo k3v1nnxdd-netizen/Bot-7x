@@ -504,6 +504,24 @@ async function simularResenas() {
         msg: 'el botón y el formulario del comentario están enrutados' });
     out.push({ ok: fila.every((b, i) => b.custom_id === `review_star:t:${i + 1}`), msg: 'cada uno con su puntuación en el customId' });
 
+    // Un ticket donde ya se pidió la reseña de OTRO comprador (el ticket del
+    // staff, con /pagoverified @cliente): la del nuevo también se envía.
+    limpiar();
+    const enviadas = [];
+    const canalStaff = { id: 'soporte-1', topic: 'ticket:{"userId":"staff","type":"soporte","ts":1}', send: async p => { enviadas.push(p); return { channelId: 'soporte-1', id: `m${enviadas.length}` }; } };
+    const cliStaff = clienteFalso();
+    await reviewFlow.requestReview(cliStaff, canalStaff, 'soporte-1', 'cliente-a');
+    await reviewFlow.requestReview(cliStaff, canalStaff, 'soporte-1', 'cliente-a');
+    out.push({ ok: enviadas.length === 1, msg: 'el mismo comprador dos veces en el mismo ticket: una sola reseña' });
+    await reviewFlow.requestReview(cliStaff, canalStaff, 'soporte-1', 'cliente-b');
+    const recB = reviews.getReview('soporte-1-cliente-b');
+    out.push({ ok: enviadas.length === 2 && recB?.buyerId === 'cliente-b' && reviews.getReview('soporte-1').buyerId === 'cliente-a',
+        msg: 'otro comprador en ese ticket: se le envía su propia reseña sin pisar la anterior' });
+    out.push({ ok: botonesDe(enviadas[1]).filter(b => b.custom_id?.startsWith('review_star:soporte-1-cliente-b:')).length === 5,
+        msg: 'y sus botones apuntan a la reseña nueva' });
+    await reviewFlow.requestReview(cliStaff, canalStaff, 'soporte-1', 'cliente-b');
+    out.push({ ok: enviadas.length === 2, msg: 'repetirlo con ese comprador no la duplica' });
+
     // El anuncio pendiente ya no es "???"
     const pendiente = buildAnnounceEmbed('u', null, null, '1,000 Robux').toJSON().description;
     out.push({ ok: !pendiente.includes('???'), msg: 'el anuncio pendiente ya no dice "???"' });

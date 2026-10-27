@@ -219,23 +219,37 @@ async function sendPendingAnnouncement(client, ticketChannelId, buyerId, orderLa
 
 // Single entry point for kicking off a review request — called both from the
 // "PAGO REALIZADO" ticket button and from /pagoverified. Idempotent: a
-// second call for the same ticket (either trigger firing twice) is a no-op.
+// second call for the same ticket AND buyer (either trigger firing twice) is a
+// no-op.
+//
+// La clave de la reseña es el canal del ticket, salvo que ese ticket ya tenga
+// la de OTRO comprador (un ticket del staff donde se verifican pagos de varios
+// clientes con /pagoverified @cliente): entonces es <canal>-<comprador>. Antes
+// la segunda no se enviaba nunca, sin decir nada. Fuera de aquí la clave es
+// opaca (va tal cual en los customId), así que lo demás no cambia.
+function claveResena(ticketChannelId, buyerId) {
+    const rec = reviews.getReview(ticketChannelId);
+    if (!rec || rec.buyerId === buyerId) return ticketChannelId;
+    return `${ticketChannelId}-${buyerId}`;
+}
+
 async function requestReview(client, channel, ticketChannelId, buyerId) {
-    if (reviews.getReview(ticketChannelId)) return;
+    const id = claveResena(ticketChannelId, buyerId);
+    if (reviews.getReview(id)) return;
 
     const ticketType = tickets.getType(channel);
     const orderLabel = await detectOrderLabel(channel, ticketType);
-    reviews.createReviewRequest(ticketChannelId, buyerId, orderLabel);
+    reviews.createReviewRequest(id, buyerId, orderLabel);
 
     try {
-        const ticketMsg = await channel.send(buildReviewPayload(buyerId, ticketChannelId));
-        reviews.setTicketMessageRef(ticketChannelId, ticketMsg.channelId, ticketMsg.id);
+        const ticketMsg = await channel.send(buildReviewPayload(buyerId, id));
+        reviews.setTicketMessageRef(id, ticketMsg.channelId, ticketMsg.id);
     } catch (err) {
         console.warn('[reviewFlow] Could not send ticket review prompt:', err.message);
     }
 
-    await sendReviewDM(client, buyerId, ticketChannelId);
-    await sendPendingAnnouncement(client, ticketChannelId, buyerId, orderLabel);
+    await sendReviewDM(client, buyerId, id);
+    await sendPendingAnnouncement(client, id, buyerId, orderLabel);
 }
 
 // Re-pinta los dos sitios donde se pidió la valoración (el ticket y el DM) con

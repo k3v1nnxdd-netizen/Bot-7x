@@ -10,6 +10,7 @@ const { safeReply, safeEditReply, safeDeferReply, safeShowModal } = require('../
 const { checkMembership, getGroup, getPlayerAvatar, getCommunityIcon, isValidUsername, GroupCheckError } = require('../utils/groupMembership');
 const { lock, lockedUntil, registerHit, slotFreesAt } = require('../utils/spam');
 const config = require('../config');
+const consultasGrupo = require('../utils/consultasGrupo');
 
 const EMBED_COLOR = 0x2B2D31; // gray, per request
 
@@ -70,6 +71,11 @@ async function handleCheckGroupButton(interaction) {
             content: `❌ La comunidad **${group.label}** todavía no está configurada. Avisa a un administrador.`,
             ephemeral: true,
         });
+    }
+
+    // Apagada con /gactive: ni se abre el formulario.
+    if (!consultasGrupo.disponible(groupKey)) {
+        return safeReply(interaction, { content: consultasGrupo.mensajeNoDisponible(group.label), ephemeral: true });
     }
 
     const ok = await safeShowModal(interaction, buildUsernameModal(groupKey, group.label));
@@ -264,6 +270,11 @@ async function handleCheckGroupModal(interaction) {
     const groupKey = interaction.customId.slice('cg_modal_'.length);
     const group = getGroup(groupKey);
     if (!group) return;
+
+    // Otra vez aquí: el formulario pudo abrirse antes de apagarla.
+    if (!consultasGrupo.disponible(groupKey)) {
+        return safeReply(interaction, { content: consultasGrupo.mensajeNoDisponible(group.label), ephemeral: true });
+    }
 
     const username = interaction.fields.getTextInputValue('roblox_username').trim();
     if (!username) {

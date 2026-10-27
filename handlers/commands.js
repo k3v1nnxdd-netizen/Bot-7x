@@ -20,6 +20,7 @@ const cripto = require('../utils/cryptoPrecios');
 const fidelidad = require('../utils/fidelidad');
 const v2 = require('../utils/panelV2');
 const invitaciones = require('../utils/invitaciones');
+const consultasGrupo = require('../utils/consultasGrupo');
 
 async function handleOutfit(interaction) {
     if (interaction.channelId !== config.CHANNELS.OUTFIT) {
@@ -692,10 +693,41 @@ async function handleInvitaciones(interaction) {
     });
 }
 
+// ── /gactive ──────────────────────────────────────────────────────────────────
+// Enciende o apaga las consultas de días de una comunidad en Check Group's.
+// Distinto de /groupactive, que es el estado de ENVÍO de Robux.
+
+async function handleGActive(interaction) {
+    if (!esAdminDeInteraccion(interaction)) {
+        return safeReply(interaction, { content: '❌ No tienes permiso para usar este comando.', ephemeral: true });
+    }
+
+    const clave = interaction.options.getString('grupo');
+    const on = interaction.options.getString('estado') === 'on';
+    const r = consultasGrupo.setDisponible(clave, on, interaction.user.id);
+    if (!r.ok) {
+        return safeReply(interaction, { content: '❌ Esa comunidad no existe en la configuración del bot.', ephemeral: true });
+    }
+
+    const label = config.CHECK_GROUPS[clave].label;
+    const lineas = [
+        on
+            ? `<:working:1547108520669741157> Consultas de **${label}**: **ACTIVADAS** — los usuarios pueden consultar sus días.`
+            : `<:down:1547141212530679899> Consultas de **${label}**: **DESACTIVADAS** — se responde que no está disponible en este momento.`,
+        ...(r.changed ? [] : ['-# Ya estaba así: no ha cambiado nada.']),
+        '',
+        '**Estado de las consultas**',
+        ...consultasGrupo.getState().map(g =>
+            `${g.disponible ? '<:working:1547108520669741157>' : '<:down:1547141212530679899>'} ${g.label} — ${g.disponible ? 'on' : 'off'}`),
+    ];
+
+    await safeReply(interaction, { content: lineas.join('\n'), ephemeral: true });
+}
+
 module.exports = {
     handleOutfit, handlePagos, handlePagoVerified, handleOffer, handleClose,
     handleHeadless, handleGroupActive, handleTopCompradores, handleCrypto, handleAvatar,
-    handleCompras, handleRobuxGastados, handleMisCompras, handleInvitaciones,
+    handleCompras, handleRobuxGastados, handleMisCompras, handleInvitaciones, handleGActive,
     refreshCouponEmbed,
     __test: { buildCryptoTexto, buildCryptoRow, segundos, minutos, buildAvatarEmbed, buildAvatarPie, buildComprasTexto, buildRobuxGastadosTexto, buildMisComprasTexto, buildInvitacionesTexto },
 };

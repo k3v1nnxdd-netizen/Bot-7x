@@ -51,7 +51,7 @@ if (RUN_BOT) {
     const { handleButton, clearTimers } = require('./handlers/buttons');
     const { handleModal }     = require('./handlers/modals');
     const { handleAcc, handleAccDispo, handleAccDispoAutocomplete } = require('./handlers/accounts');
-    const { handleOutfit, handlePagos, handlePagoVerified, handleOffer, handleClose, handleHeadless, handleGroupActive, handleTopCompradores, handleCrypto, handleAvatar, handleCompras, handleRobuxGastados, handleMisCompras, handleInvitaciones } = require('./handlers/commands');
+    const { handleOutfit, handlePagos, handlePagoVerified, handleOffer, handleClose, handleHeadless, handleGroupActive, handleTopCompradores, handleCrypto, handleAvatar, handleCompras, handleRobuxGastados, handleMisCompras, handleInvitaciones, handleGActive } = require('./handlers/commands');
     const invitesTracker      = require('./utils/invitesTracker');
     const ticketInactivo      = require('./utils/ticketInactivo');
     const { iniciarCaducidad } = require('./utils/reviewFlow');
@@ -279,6 +279,35 @@ if (RUN_BOT) {
                 ],
             },
 
+            // Las consultas de Check Group's, por comunidad. El gate real es el
+            // chequeo de permisos dentro de handleGActive.
+            {
+                name: 'gactive',
+                description: 'Activa o desactiva las consultas de días de una comunidad en Check Group's (solo owner)',
+                options: [
+                    {
+                        name: 'grupo',
+                        type: 3,
+                        description: 'Comunidad',
+                        required: true,
+                        choices: Object.entries(config.CHECK_GROUPS).map(([clave, grupo]) => ({
+                            name:  grupo.label.slice(0, 100),
+                            value: clave,
+                        })),
+                    },
+                    {
+                        name: 'estado',
+                        type: 3,
+                        description: 'on = se puede consultar · off = no disponible',
+                        required: true,
+                        choices: [
+                            { name: 'on',  value: 'on' },
+                            { name: 'off', value: 'off' },
+                        ],
+                    },
+                ],
+            },
+
             // El gate real es el chequeo de permisos dentro de handleHeadless,
             // igual que /offer: el registro del comando no decide permisos.
             {
@@ -491,6 +520,7 @@ if (RUN_BOT) {
             else if (interaction.isChatInputCommand() && interaction.commandName === 'invitaciones') await handleInvitaciones(interaction);
             else if (interaction.isChatInputCommand() && interaction.commandName === 'headless')      await handleHeadless(interaction);
             else if (interaction.isChatInputCommand() && interaction.commandName === 'groupactive')   await handleGroupActive(interaction);
+            else if (interaction.isChatInputCommand() && interaction.commandName === 'gactive')       await handleGActive(interaction);
             else if (interaction.isChatInputCommand() && interaction.commandName === 'addgroup')      await handleAddGroup(interaction);
             else if (interaction.isChatInputCommand() && interaction.commandName === 'regeneratetoken') await handleRegenerateToken(interaction);
             else if (interaction.isChatInputCommand() && interaction.commandName === 'deletegroup')   await handleDeleteGroup(interaction);

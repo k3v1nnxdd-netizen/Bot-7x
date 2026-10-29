@@ -21,6 +21,8 @@ const fidelidad = require('../utils/fidelidad');
 const v2 = require('../utils/panelV2');
 const invitaciones = require('../utils/invitaciones');
 const consultasGrupo = require('../utils/consultasGrupo');
+const apartados = require('../utils/apartadosTicket');
+const { ensurePanel, OPCIONES: PANEL_OPCIONES } = require('../panel');
 
 async function handleOutfit(interaction) {
     if (interaction.channelId !== config.CHANNELS.OUTFIT) {
@@ -724,6 +726,52 @@ async function handleGActive(interaction) {
     await safeReply(interaction, { content: lineas.join('\n'), ephemeral: true });
 }
 
+// ── /ticketactive ─────────────────────────────────────────────────────────────
+// Enciende o apaga un apartado del panel de tickets, con la razón que verá quien
+// lo intente abrir. Después repinta el panel para que marque el apartado.
+
+async function handleTicketActive(interaction) {
+    if (!esAdminDeInteraccion(interaction)) {
+        return safeReply(interaction, { content: '❌ No tienes permiso para usar este comando.', ephemeral: true });
+    }
+
+    const id = interaction.options.getString('apartado');
+    const on = interaction.options.getString('estado') === 'on';
+    const opcion = PANEL_OPCIONES.find(o => o.id === id);
+    if (!opcion) {
+        return safeReply(interaction, { content: '❌ Ese apartado no existe en el panel.', ephemeral: true });
+    }
+
+    // Diferido: repintar el panel sube el banner y puede pasar de 3 segundos.
+    await safeDeferReply(interaction, { ephemeral: true });
+
+    const r = apartados.setEstado(id, on, interaction.options.getString('razon'), interaction.user.id);
+    let panelOk = true;
+    try {
+        await ensurePanel(interaction.client);
+    } catch (err) {
+        panelOk = false;
+        console.warn('[ticketactive] No se pudo actualizar el panel:', err.message);
+    }
+
+    const ON = '<:working:1547108520669741157>', OFF = '<:down:1547141212530679899>';
+    const lineas = [
+        on
+            ? `${ON} Tickets de **${opcion.label}**: **ACTIVADOS** — se pueden abrir con normalidad.`
+            : `${OFF} Tickets de **${opcion.label}**: **DESACTIVADOS**\n**Motivo que verán:** ${apartados.estado(id).razon}`,
+        ...(r.changed ? [] : ['-# Ya estaba así: no ha cambiado nada.']),
+        ...(panelOk ? [] : ['-# ⚠️ El cambio se guardó, pero no se pudo actualizar el panel. Se actualizará al reiniciar el bot.']),
+        '',
+        '**Estado de los apartados**',
+        ...PANEL_OPCIONES.filter(o => (o.activo ? o.activo() : true)).map(o => {
+            const e = apartados.estado(o.id);
+            return `${e.activo ? ON : OFF} ${o.label} — ${e.activo ? 'on' : `off · ${e.razon}`}`;
+        }),
+    ];
+
+    await safeEditReply(interaction, { content: lineas.join('\n') });
+}
+
 // ── /msg ──────────────────────────────────────────────────────────────────────
 // El bot escribe lo que pone el owner, como un mensaje suyo normal: se envía
 // con channel.send y NO como respuesta a la interacción, así que no sale el
@@ -774,7 +822,7 @@ async function handleMsg(interaction) {
 module.exports = {
     handleOutfit, handlePagos, handlePagoVerified, handleOffer, handleClose,
     handleHeadless, handleGroupActive, handleTopCompradores, handleCrypto, handleAvatar,
-    handleCompras, handleRobuxGastados, handleMisCompras, handleInvitaciones, handleGActive, handleMsg,
+    handleCompras, handleRobuxGastados, handleMisCompras, handleInvitaciones, handleGActive, handleMsg, handleTicketActive,
     refreshCouponEmbed,
     __test: { buildCryptoTexto, buildCryptoRow, segundos, minutos, buildAvatarEmbed, buildAvatarPie, buildComprasTexto, buildRobuxGastadosTexto, buildMisComprasTexto, buildInvitacionesTexto, textoDeMsg },
 };

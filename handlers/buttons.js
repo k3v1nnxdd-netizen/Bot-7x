@@ -25,6 +25,8 @@ const { handleGroupsPageButton } = require('./groupLicenses');
 const { handleMetodosButton, handleCopiarButton, BOTONES: METODOS_BUTTONS, COPY_BOTONES } = require('../metodos');
 const v2                 = require('../utils/panelV2');
 const { handleCopiarAnuncio } = require('../anuncio');
+const apartados          = require('../utils/apartadosTicket');
+const { OPCIONES: PANEL_OPCIONES } = require('../panel');
 const config             = require('../config');
 
 // ── Countdown timers per ticket channel ───────────────────────────────────────
@@ -88,6 +90,17 @@ async function guardButton(interaction) {
     // Panel-only buttons must come from the panel channel
     if (PANEL_BUTTONS.has(interaction.customId) && interaction.channelId !== config.CHANNELS.PANEL) {
         await safeReply(interaction, { content: 'Usa los botones del panel oficial para crear tickets.', ephemeral: true });
+        return false;
+    }
+
+    // Apartado apagado con /ticketactive: no se abre, y se dice por qué.
+    if (PANEL_BUTTONS.has(interaction.customId) && !apartados.disponible(interaction.customId)) {
+        const opcion = PANEL_OPCIONES.find(o => o.id === interaction.customId);
+        await safeReply(interaction, {
+            content: apartados.mensajeNoDisponible(opcion?.label ?? interaction.customId,
+                apartados.estado(interaction.customId).razon, apartados.disponible('otra_cosa')),
+            ephemeral: true,
+        });
         return false;
     }
 

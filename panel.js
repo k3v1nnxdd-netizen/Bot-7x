@@ -13,6 +13,7 @@ const {
 } = require('discord.js');
 const config = require('./config');
 const v2 = require('./utils/panelV2');
+const apartados = require('./utils/apartadosTicket');
 
 // ── Banner ────────────────────────────────────────────────────────────────────
 // El GIF va DENTRO del contenedor, justo encima de los botones. Se sube como
@@ -41,6 +42,7 @@ const E = {
     gamepass:   '<:roblox:1525317838938701967>',
     otra:       '<:up:1501217620437897227>',
     alert:      '<:alert:1501220021035204658>',
+    down:       '<:down:1547141212530679899>',
 };
 
 // ── Contenido ─────────────────────────────────────────────────────────────────
@@ -71,8 +73,13 @@ function opcionesActivas() {
     return OPCIONES.filter(o => (o.activo ? o.activo() : true));
 }
 
+// Un apartado apagado con /ticketactive sigue en la lista y con su botón —
+// quien lo pulsa lee el motivo—, pero el panel avisa de que no está disponible.
 function buildOpciones() {
-    return opcionesActivas().map(o => `${o.emoji} **${o.label}** — ${o.texto}`).join('\n');
+    return opcionesActivas().map(o =>
+        `${o.emoji} **${o.label}** — ${o.texto}` +
+        (apartados.disponible(o.id) ? '' : ` · ${E.down} **No disponible**`)
+    ).join('\n');
 }
 
 const AVISO = [
@@ -211,4 +218,4 @@ async function ensurePanel(client) {
     console.log('[panel] Panel sent and pinned.');
 }
 
-module.exports = { ensurePanel, __test: { buildContainer, buildButtons, buildOpciones, opcionesActivas, OPCIONES } };
+module.exports = { ensurePanel, OPCIONES, __test:{ buildContainer, buildButtons, buildOpciones, opcionesActivas, OPCIONES } };

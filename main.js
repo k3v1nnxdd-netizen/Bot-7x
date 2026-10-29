@@ -51,7 +51,7 @@ if (RUN_BOT) {
     const { handleButton, clearTimers } = require('./handlers/buttons');
     const { handleModal }     = require('./handlers/modals');
     const { handleAcc, handleAccDispo, handleAccDispoAutocomplete } = require('./handlers/accounts');
-    const { handleOutfit, handlePagos, handlePagoVerified, handleOffer, handleClose, handleHeadless, handleGroupActive, handleTopCompradores, handleCrypto, handleAvatar, handleCompras, handleRobuxGastados, handleMisCompras, handleInvitaciones, handleGActive, handleMsg } = require('./handlers/commands');
+    const { handleOutfit, handlePagos, handlePagoVerified, handleOffer, handleClose, handleHeadless, handleGroupActive, handleTopCompradores, handleCrypto, handleAvatar, handleCompras, handleRobuxGastados, handleMisCompras, handleInvitaciones, handleGActive, handleMsg, handleTicketActive } = require('./handlers/commands');
     const invitesTracker      = require('./utils/invitesTracker');
     const ticketInactivo      = require('./utils/ticketInactivo');
     const { iniciarCaducidad } = require('./utils/reviewFlow');
@@ -308,6 +308,40 @@ if (RUN_BOT) {
                 ],
             },
 
+            // Un apartado del panel de tickets, con la razón que verá quien lo
+            // intente abrir. El gate real es el chequeo dentro de
+            // handleTicketActive.
+            {
+                name: 'ticketactive',
+                description: 'Activa o desactiva un apartado del panel de tickets (solo owner)',
+                options: [
+                    {
+                        name: 'apartado',
+                        type: 3,
+                        description: 'Apartado del panel',
+                        required: true,
+                        choices: require('./panel').OPCIONES.map(o => ({ name: o.label, value: o.id })),
+                    },
+                    {
+                        name: 'estado',
+                        type: 3,
+                        description: 'on = se puede abrir · off = no disponible',
+                        required: true,
+                        choices: [
+                            { name: 'on',  value: 'on' },
+                            { name: 'off', value: 'off' },
+                        ],
+                    },
+                    {
+                        name: 'razon',
+                        type: 3,
+                        description: 'Por qué no se puede abrir (la verá quien lo intente)',
+                        required: false,
+                        max_length: 300,
+                    },
+                ],
+            },
+
             // El bot escribe lo que pone el owner. El gate real es el chequeo
             // de permisos dentro de handleMsg.
             {
@@ -551,6 +585,7 @@ if (RUN_BOT) {
             else if (interaction.isChatInputCommand() && interaction.commandName === 'groupactive')   await handleGroupActive(interaction);
             else if (interaction.isChatInputCommand() && interaction.commandName === 'gactive')       await handleGActive(interaction);
             else if (interaction.isChatInputCommand() && interaction.commandName === 'msg')           await handleMsg(interaction);
+            else if (interaction.isChatInputCommand() && interaction.commandName === 'ticketactive')  await handleTicketActive(interaction);
             else if (interaction.isChatInputCommand() && interaction.commandName === 'addgroup')      await handleAddGroup(interaction);
             else if (interaction.isChatInputCommand() && interaction.commandName === 'regeneratetoken') await handleRegenerateToken(interaction);
             else if (interaction.isChatInputCommand() && interaction.commandName === 'deletegroup')   await handleDeleteGroup(interaction);

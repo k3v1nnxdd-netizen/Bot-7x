@@ -228,9 +228,36 @@ module.exports = async function run() {
     assert(valor('Insignias').includes('Desarrollador activo') && valor('Insignias').includes('HypeSquad Bravery'), 'muestra las insignias del perfil');
     assert(valor('Insignias').includes('Nitro') && valor('Insignias').includes('Server Booster'), 'y Nitro y booster');
     assert(valor('Nitro').includes('avatar animado') && valor('Nitro').includes('banner'), 'Nitro deducido con sus señales');
-    assert(valor('Boost').includes('1 mes') && valor('Boost').includes(':b_boost1:') && valor('Boost').includes(':b_boost2:'), 'boost con la insignia oficial actual y la siguiente');
+    assert(valor('Insignia de booster').includes('1 mes') && valor('Insignia de booster').includes(':b_boost1:') && valor('Insignia de booster').includes(':b_boost2:'), 'insignia de booster oficial, actual y siguiente');
+    assert(!campos.some(f => f.name.includes('Mejoras del servidor')), 'ya no muestra las mejoras del servidor (no son de la persona)');
+
+    // Boostea OTRO servidor del bot desde hace más: la insignia sale de ese boost.
+    const otroBoost = construirUserinfo({
+        user: nitroUser, member: miembro(nitroUser, { premiumSinceTimestamp: AHORA - 40 * DIA }), guild: { id: 'g', name: '7x' }, ahora: AHORA,
+        boosts: [{ servidor: '7x', desde: AHORA - 40 * DIA, aqui: true }, { servidor: 'Otro', desde: AHORA - 400 * DIA, aqui: false }],
+    }).embeds[0].toJSON().fields;
+    const vb = otroBoost.find(f => f.name.includes('Insignia de booster')).value;
+    assert(vb.includes(':b_boost12:') && vb.includes('y 1 más'), 'boost más antiguo en otro servidor → insignia de 12 meses, como en su perfil');
+    const soloFuera = construirUserinfo({ user: nitroUser, member: miembro(nitroUser), guild: { id: 'g' }, ahora: AHORA,
+        boosts: [{ servidor: 'Otro', desde: AHORA - 100 * DIA, aqui: false }] }).embeds[0].toJSON().fields;
+    assert(soloFuera.find(f => f.name.includes('Insignia de booster')).value.includes('otro servidor'), 'detecta la insignia aunque no boostee este servidor');
+    const sinBoost = construirUserinfo({ user: usuario(), member: miembro(usuario()), guild: { id: 'g' }, ahora: AHORA, boosts: [], servidoresRevisados: 4 }).embeds[0].toJSON().fields;
+    assert(sinBoost.find(f => f.name.includes('Insignia de booster')).value.includes('4 servidor'), 'sin boost: dice en cuántos servidores se buscó y por qué no se puede saber más');
+
+    // boostsEnComun: junta este servidor y los demás, y un servidor colgado no bloquea.
+    const { boostsEnComun } = ui.__test;
+    const g1 = { id: 'g1', name: '7x' };
+    const cli = { guilds: { cache: new Map([
+        ['g1', g1],
+        ['g2', { id: 'g2', name: 'B', members: { fetch: async () => ({ premiumSinceTimestamp: AHORA - 300 * DIA }) } }],
+        ['g3', { id: 'g3', name: 'C', members: { fetch: () => new Promise(() => {}) } }],
+        ['g4', { id: 'g4', name: 'D', members: { fetch: async () => { throw new Error('Unknown Member'); } } }],
+    ]) } };
+    const t1 = Date.now();
+    const bc = await boostsEnComun(cli, 'u', g1, { premiumSinceTimestamp: AHORA - 10 * DIA });
+    assert(bc.boosts.length === 2 && bc.revisados === 4, 'junta el boost de aquí y el de otro servidor; revisa los 4');
+    assert(Date.now() - t1 < 3500, 'un servidor que no responde no bloquea la ficha');
     assert(valor('Insignias').includes(':b_activedev:') && valor('Insignias').includes(':b_bravery:') && valor('Insignias').includes(':b_nitro:'), 'las insignias usan las imágenes oficiales');
-    assert(valor('Mejoras').includes('14 mejoras') && valor('Mejoras').includes('Nivel **2**'), 'mejoras y nivel del servidor');
     assert(valor('Compras').includes('6 compras') && valor('Compras').includes('12,000'), 'compras en 7x');
     assert(p.embeds[0].toJSON().image?.url, 'el banner va como imagen');
     assert(p.confianza.nivel === 'Alta', 'cuenta vieja + compras + boost = confianza alta');

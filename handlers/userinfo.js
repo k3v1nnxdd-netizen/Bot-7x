@@ -108,7 +108,7 @@ function confianza({ user, member, compras, boostDesde, alertaSuplantacion, ahor
 
     if (compras >= 5) { p += 3; r.push(`${compras} compras en 7x`); }
     else if (compras >= 1) { p += 2; r.push(`${compras} compra${compras === 1 ? '' : 's'} en 7x`); }
-    if (boostDesde) { p += 2; r.push('boostea el servidor'); }
+    if (boostDesde) { p += 2; r.push('tiene insignia de booster'); }
     if (!user.avatar) { p -= 1; r.push('sin foto de perfil'); }
     if (user.flags?.has?.(UserFlags.Spammer)) { p -= 5; r.push('Discord lo marcó como spammer'); }
     if (alertaSuplantacion) { p -= 3; r.push('aviso de suplantación abierto'); }
@@ -120,7 +120,13 @@ function confianza({ user, member, compras, boostDesde, alertaSuplantacion, ahor
 
 // ── Construcción (pura) ──────────────────────────────────────────────────────
 
-function construirUserinfo({ user, member, guild, datos7x = {}, alertaSuplantacion = false, ahora = Date.now() }) {
+// `boosts` = [{ servidor, desde }]: dónde boostea entre los servidores en los
+// que está el bot (incluido este). Es lo único que Discord deja ver a un bot:
+// el perfil, que es donde sale la insignia, está vetado a los bots ("Bots
+// cannot use this endpoint"). La insignia de booster del perfil cuenta desde el
+// boost activo MÁS ANTIGUO, así que si se ve aquí, el nivel coincide con el del
+// perfil.
+function construirUserinfo({ user, member, guild, datos7x = {}, boosts = null, servidoresRevisados = 1, alertaSuplantacion = false, ahora = Date.now() }) {
     const campos = [];
     const f = (name, value, inline = true) => campos.push({ name, value: String(value).slice(0, 1024) || '—', inline });
 
@@ -143,10 +149,14 @@ function construirUserinfo({ user, member, guild, datos7x = {}, alertaSuplantaci
     // Insignias
     const insignias = INSIGNIAS.filter(([flag]) => user.flags?.has?.(flag)).map(([, clave, reserva, n]) => `${insignia(clave, reserva)} ${n}`);
     const nitro = senalesNitro(user, member);
-    const boostDesde = member?.premiumSinceTimestamp ?? null;
+    const lista = (boosts ?? (member?.premiumSinceTimestamp ? [{ servidor: guild?.name ?? 'este servidor', desde: member.premiumSinceTimestamp, aqui: true }] : []))
+        .filter(x => x.desde).sort((a, z) => a.desde - z.desde);
+    const boostDesde = lista[0]?.desde ?? null;
+    const boosteaAqui = lista.some(x => x.aqui);
     const b = infoBoost(boostDesde, ahora);
     if (nitro.length || boostDesde) insignias.push(`${insignia('nitro', ui('nitro'))} Nitro${nitro.length ? '' : ' (probable)'}`);
     if (b) insignias.push(`${insignia(`boost${b.actual}`, ui('boost'))} Server Booster · ${b.actual} mes${b.actual === 1 ? '' : 'es'}`);
+    else insignias.push(`${ui('boost')} Booster: no detectado`);
     if (user.flags?.has?.(UserFlags.Spammer)) insignias.push(`${ui('alerta')} **Marcado como spammer por Discord**`);
     f(`${ui('insignia')} Insignias`, insignias.length ? insignias.join('\n') : 'Ninguna', false);
 
@@ -157,20 +167,17 @@ function construirUserinfo({ user, member, guild, datos7x = {}, alertaSuplantaci
             ? `**Probable** — está boosteando\nAl menos desde <t:${s(boostDesde)}:D>\n-# Discord no comparte el tipo ni la antigüedad exacta`
             : 'No detectado\n-# Sólo se ve si usa algo exclusivo de Nitro');
 
-    // Boost
+    // Insignia de booster (la del perfil)
     if (b) {
-        f(`${insignia(`boost${b.actual}`, ui('boost'))} Boost`, [
-            `Boosteando desde <t:${s(boostDesde)}:D> (${duracion(ahora - boostDesde)})`,
-            `Insignia actual: ${insignia(`boost${b.actual}`)} **${b.actual} mes${b.actual === 1 ? '' : 'es'}**`,
+        f(`${insignia(`boost${b.actual}`, ui('boost'))} Insignia de booster`, [
+            `${insignia(`boost${b.actual}`)} **${b.actual} mes${b.actual === 1 ? '' : 'es'}** · boosteando desde <t:${s(boostDesde)}:D> (${duracion(ahora - boostDesde)})`,
             b.siguiente
                 ? `Siguiente: ${insignia(`boost${b.siguiente}`)} **${b.siguiente} meses** <t:${s(b.siguienteEn)}:R>`
                 : 'Ya tiene la insignia máxima (24 meses)',
-        ].join('\n'));
+            `Boostea ${boosteaAqui ? 'este servidor' : 'otro servidor'}${lista.length > 1 ? ` y ${lista.length - 1} más` : ''}`,
+        ].join('\n'), false);
     } else {
-        f(`${ui('boost')} Boost`, 'No boostea este servidor');
-    }
-    if (guild) {
-        f(`${ui('server')} Mejoras del servidor`, `Nivel **${guild.premiumTier ?? 0}** · ${guild.premiumSubscriptionCount ?? 0} mejoras\n-# Discord no dice cuántas pone cada persona`);
+        f(`${ui('boost')} Insignia de booster`, `No detectada en los ${servidoresRevisados} servidor(es) en común con el bot\n-# Discord no deja a los bots ver el perfil: si boostea un servidor donde no está el bot, no se puede saber`, false);
     }
 
     // Roles
@@ -249,6 +256,19 @@ function datosDe7x(userId, guild, member) {
     return out;
 }
 
+// Desde cuándo boostea en cada servidor donde está el bot. En paralelo y con
+// tope de tiempo: un servidor lento no puede retrasar la ficha.
+async function boostsEnComun(client, userId, guild, member) {
+    const otros = [...(client?.guilds?.cache?.values?.() ?? [])].filter(g => g.id !== guild?.id);
+    const conTope = p => Promise.race([p, new Promise(r => setTimeout(() => r(null), 2500))]);
+    const resultados = await Promise.all(otros.map(g =>
+        conTope(g.members.fetch(userId).catch(() => null)).then(m => ({ g, m }))));
+    const boosts = [];
+    if (member?.premiumSinceTimestamp) boosts.push({ servidor: guild.name, desde: member.premiumSinceTimestamp, aqui: true });
+    for (const { g, m } of resultados) if (m?.premiumSinceTimestamp) boosts.push({ servidor: g.name, desde: m.premiumSinceTimestamp, aqui: false });
+    return { boosts, revisados: otros.length + (guild ? 1 : 0) };
+}
+
 // ── Comando ──────────────────────────────────────────────────────────────────
 
 async function handleUserinfo(interaction) {
@@ -276,10 +296,12 @@ async function handleUserinfo(interaction) {
         alerta = Boolean(sup.alertas[user.id]) && sup.legitimos[user.id] !== sup.alertas[user.id];
     } catch { /* sin datos */ }
 
+    const { boosts, revisados } = await boostsEnComun(interaction.client, user.id, guild, member);
     const { confianza: _, ...payload } = construirUserinfo({
         user, member, guild, datos7x: datosDe7x(user.id, guild, member), alertaSuplantacion: alerta,
+        boosts, servidoresRevisados: revisados,
     });
     await safeEditReply(interaction, payload);
 }
 
-module.exports = { handleUserinfo, __test: { construirUserinfo, infoBoost, mesesEntre, confianza, senalesNitro, duracion } };
+module.exports = { handleUserinfo, __test: { boostsEnComun, construirUserinfo, infoBoost, mesesEntre, confianza, senalesNitro, duracion } };

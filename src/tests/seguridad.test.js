@@ -199,6 +199,16 @@ module.exports = async function run() {
     const efimera = r => r?.ephemeral === true || (Number(r?.flags) & 64) === 64;
     assert(respuestas[0]?.content?.includes('privada') && efimera(respuestas[0]), 'nadie puede ver la ficha de un owner');
 
+    // La ficha siempre es pública: el defer no es efímero.
+    let diferido = null;
+    const itPub = {
+        user: { id: '555555555555555555' }, replied: false, deferred: false, client: { users: { fetch: async () => usuario() } },
+        guild: null, options: { getUser: () => ({ id: '111111111111111111' }), getString: () => 'solo_yo' },
+        deferReply: async o => { diferido = o ?? {}; itPub.deferred = true; }, editReply: async () => {},
+    };
+    await ui.handleUserinfo(itPub);
+    assert(diferido && !efimera(diferido), 'la ficha de /userinfo siempre es visible para todos');
+
     const { infoBoost, construirUserinfo, confianza } = ui.__test;
     const b = infoBoost(AHORA - 200 * DIA, AHORA);
     assert(b.meses === 6 && b.actual === 6 && b.siguiente === 9, '200 días boosteando → insignia de 6 meses, siguiente 9');

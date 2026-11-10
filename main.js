@@ -356,10 +356,6 @@ if (RUN_BOT) {
                 description: 'Ficha de un miembro: insignias, Nitro, boost, roles, compras y confianza',
                 options: [
                     { name: 'usuario', type: 6, description: 'De quién (si no pones a nadie, la tuya)', required: false },
-                    {
-                        name: 'visibilidad', type: 3, description: 'Quién ve el resultado (por defecto, solo tú)', required: false,
-                        choices: [{ name: 'Solo yo', value: 'solo_yo' }, { name: 'Todos', value: 'todos' }],
-                    },
                 ],
             },
 

@@ -11,7 +11,8 @@ const config = require('../config');
 // La ficha de un miembro: perfil, insignias, Nitro, boost, roles, su historial
 // en 7x y un nivel de confianza calculado. Lo puede usar cualquiera, sobre
 // cualquiera MENOS sobre los owners (config.ADMIN_IDS): su información es
-// privada. Un owner sí puede verse a sí mismo.
+// privada. Un owner sí puede verse a sí mismo. La ficha se ve en el canal
+// para todos.
 //
 // Lo que Discord NO da a los bots, y por eso no se inventa:
 //   · Si alguien tiene Nitro, ni de qué tipo, ni desde cuándo. Se DEDUCE de lo
@@ -252,13 +253,14 @@ function datosDe7x(userId, guild, member) {
 
 async function handleUserinfo(interaction) {
     const objetivo = interaction.options.getUser('usuario') ?? interaction.user;
-    const publico = interaction.options.getString('visibilidad') === 'todos';
 
     if (esAdmin(objetivo.id) && objetivo.id !== interaction.user.id) {
         return safeReply(interaction, { content: '🔒 La información de los owners es privada.', ephemeral: true });
     }
 
-    const ok = await safeDeferReply(interaction, { ephemeral: !publico });
+    // La ficha es SIEMPRE pública (decisión del owner). Sólo la negativa de
+    // ver a un owner, arriba, es privada.
+    const ok = await safeDeferReply(interaction);
     if (!ok) return;
 
     const guild = interaction.guild;

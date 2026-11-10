@@ -1242,6 +1242,33 @@ consultar", nunca en un precio a medias.
   dinero: con decimales fijos uno sale como "0,00" y el otro con ceros de
   relleno.
 
+## Notificador de Roblox (catálogo oficial)
+
+Publica en un canal todo lo nuevo del catálogo **oficial** de Roblox (creador
+Roblox, id 1) y menciona a `config.ROBLOX_NOTIFIER.MENCION_USER_ID`:
+
+| Aviso | Cuándo |
+|---|---|
+| Nuevo Item | Un item oficial que no se había visto, creado hace menos de `EDAD_MAX_NUEVO_HORAS` (incluye los que salen offsale) |
+| Nuevo Limited | Lo mismo, pero Limited / Limited U / Collectible (con stock y límite por usuario) |
+| Ya a la venta | Un item que estaba offsale y ahora se puede comprar |
+| Cambio de precio | Un item a la venta que cambia de precio |
+| Limited en oferta | La reventa más barata de un Limited oficial baja y queda ≥ `OFERTA_DESCUENTO_MIN` bajo su RAP |
+
+Cada aviso lleva imagen del item, ID, precio, fecha de creación, tipo,
+propiedades y botones directos a Roblox. Todo sale de APIs oficiales
+(`catalog.roblox.com/v2/search`, `marketplace-sales`, `thumbnails`).
+
+- `/notifier canal #canal` — elige el canal y lo activa (solo owner)
+- `/notifier on` / `off` — enciende o apaga los avisos
+- `/notifier estado` — configuración y cuánto está vigilando
+- `/notifier prueba` — manda el item oficial más reciente como ejemplo
+
+El primer ciclo sólo memoriza el catálogo (no anuncia 120 "nuevos" falsos). El
+estado va a `data/robloxNotifier.json`. Los emojis se dibujan y suben con
+`node scripts/notifierIconos.js --subir`; sus ids van en
+`config.ROBLOX_NOTIFIER.ICONOS`. Umbrales e intervalos, en el mismo bloque.
+
 ## Quien puede hacer cosas de owner
 
 `config.OWNER_ID` es el dueno: la persona concreta, la que sale nombrada en los

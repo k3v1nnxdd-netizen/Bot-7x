@@ -464,6 +464,11 @@ const groupsBucket = makeBucket('groups', { startingMaxTokens: 60 });
 //     returns early), so this simply paces at the starting assumption below
 //     and still self-corrects the moment Roblox does send them.
 const openCloudGroupsBucket = makeBucket('open cloud group memberships', { startingMaxTokens: 60 });
+// catalog.roblox.com/v2/search/items/details — el feed del notificador de
+// Roblox (utils/robloxNotifier.js). Observado en vivo (2026-11): 12 req/60s.
+// Bucket PROPIO y no el de items/details: el notificador sondea cada minuto y
+// no puede comerse la cuota de la valoración de /avatar, ni al revés.
+const catalogSearchBucket = makeBucket('catalog search', { startingMaxTokens: 12 });
 
 function getMetrics() {
     return {
@@ -478,6 +483,7 @@ function getMetrics() {
         thumbnail: thumbnailBucket.getMetrics(),
         groups: groupsBucket.getMetrics(),
         openCloudGroups: openCloudGroupsBucket.getMetrics(),
+        catalogSearch: catalogSearchBucket.getMetrics(),
     };
 }
 
@@ -504,6 +510,8 @@ module.exports = {
     observeGroupsLimit: groupsBucket.observeLimit,
     limitedOpenCloudGroupsRequest: openCloudGroupsBucket.run,
     observeOpenCloudGroupsLimit: openCloudGroupsBucket.observeLimit,
+    limitedCatalogSearchRequest: catalogSearchBucket.run,
+    observeCatalogSearchLimit: catalogSearchBucket.observeLimit,
     getMetrics,
     CircuitOpenError,
     __test: {

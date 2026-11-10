@@ -15,6 +15,7 @@ const {
     limitedBundlesRequest, observeBundlesLimit,
     limitedLegacyRapRequest, observeLegacyRapLimit,
     limitedRapRequest, observeRapLimit,
+    limitedCatalogSearchRequest, observeCatalogSearchLimit,
 } = require('./rateLimiter');
 const { logRequestContext } = require('../observability/requestLogger'); // TEMPORARY — see that file
 
@@ -517,7 +518,64 @@ async function getCollectibleRAP(collectibleItemId) {
     return res.data?.recentAveragePrice ?? null;
 }
 
+// ── Notificador de Roblox (utils/robloxNotifier.js) ──────────────────────────
+
+// Búsqueda del catálogo con detalles completos: hasta 120 items por página, con
+// precio, restricciones (Limited/LimitedUnique/Collectible), stock, reventa
+// más barata, creador y fecha de creación. `IncludeNotForSale=true` es lo que
+// hace que salgan los items recién publicados que todavía están offsale —
+// sin él el feed sólo enseña lo que ya se puede comprar. Devuelve
+// { items, nextPageCursor }.
+async function searchCatalog(params) {
+    const res = await limitedCatalogSearchRequest(() => api.get(
+        'https://catalog.roblox.com/v2/search/items/details',
+        { params }
+    ));
+    observeCatalogSearchLimit(res.headers);
+    return { items: res.data?.data ?? [], nextPageCursor: res.data?.nextPageCursor ?? null };
+}
+
+// Miniaturas 420x420 de items del catálogo, assets y bundles mezclados (son
+// endpoints distintos en Roblox). Devuelve Map<"Asset:id"|"Bundle:id", url>;
+// lo que Roblox aún no ha renderizado simplemente no está.
+async function getCatalogThumbnails(items) {
+    const urls = new Map();
+    const porTipo = { Asset: [], Bundle: [] };
+    for (const it of items) if (porTipo[it.itemType]) porTipo[it.itemType].push(it.id);
+
+    const pedir = async (tipo, ids) => {
+        for (let i = 0; i < ids.length; i += 100) {
+            const lote = ids.slice(i, i + 100).join(',');
+            const url = tipo === 'Asset'
+                ? `https://thumbnails.roblox.com/v1/assets?assetIds=${lote}&size=420x420&format=Png&isCircular=false`
+                : `https://thumbnails.roblox.com/v1/bundles/thumbnails?bundleIds=${lote}&size=420x420&format=Png&isCircular=false`;
+            const res = await limitedThumbnailRequest(() => api.get(url));
+            observeThumbnailLimit(res.headers);
+            for (const t of res.data?.data ?? []) {
+                if (t.state === 'Completed' && t.imageUrl) urls.set(`${tipo}:${t.targetId}`, t.imageUrl);
+            }
+        }
+    };
+    await Promise.all(Object.entries(porTipo).filter(([, ids]) => ids.length).map(([t, ids]) => pedir(t, ids)));
+    return urls;
+}
+
+// Lo mismo que getCollectibleRAP pero con el volumen: el RAP y cuántas unidades
+// se vendieron el último día registrado. Para las ofertas del notificador.
+async function getCollectibleResaleData(collectibleItemId) {
+    const res = await limitedRapRequest(() => api.get(`https://apis.roblox.com/marketplace-sales/v1/item/${collectibleItemId}/resale-data`));
+    observeRapLimit(res.headers);
+    const d = res.data ?? {};
+    return {
+        rap: typeof d.recentAveragePrice === 'number' ? d.recentAveragePrice : null,
+        ventasUltimoDia: d.volumeDataPoints?.[0]?.value ?? null,
+    };
+}
+
 module.exports = {
+    searchCatalog,
+    getCatalogThumbnails,
+    getCollectibleResaleData,
     getUserByUsername,
     getUserProfile,
     getFollowerCount,

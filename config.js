@@ -102,6 +102,54 @@ module.exports = {
         },
     },
 
+    // ── Notificador de Roblox (utils/robloxNotifier.js) ──────────────────────
+    // Avisa de lo nuevo del catálogo OFICIAL (creador Roblox, id 1): items
+    // nuevos, Limiteds nuevos, items que pasan a estar a la venta, cambios de
+    // precio y Limiteds revendiéndose muy por debajo de su RAP. Todo sale de
+    // las APIs oficiales de Roblox (catálogo + marketplace-sales).
+    //
+    // El canal se elige con /notifier canal (se guarda en disco); CANAL es sólo
+    // el valor por defecto si nadie lo ha elegido todavía.
+    ROBLOX_NOTIFIER: {
+        CANAL:               null,
+        MENCION_USER_ID:     '620310742138224661',
+
+        INTERVALO_FEED_SEG:     60,    // items nuevos / a la venta / precio
+        INTERVALO_OFERTAS_SEG:  300,   // barrido de Limiteds buscando gangas
+        PAGINAS_OFERTAS:        10,    // x120 Limiteds oficiales por barrido
+        EDAD_MAX_NUEVO_HORAS:   72,    // más viejo que esto no es "nuevo"
+        MAX_AVISOS_POR_CICLO:   15,    // freno contra una avalancha
+
+        // Ganga = reventa más barata al menos este % por debajo del RAP, en un
+        // Limited cuyo RAP valga la pena (filtra la basura de 50 Robux).
+        OFERTA_DESCUENTO_MIN:   0.30,
+        OFERTA_RAP_MIN:         1000,
+        RAP_CONSULTAS_POR_CICLO: 25,
+        OFERTA_REPETIR_HORAS:   12,    // no repetir la misma ganga antes de esto
+
+        // Emojis de la APLICACIÓN, dibujados y subidos con
+        // scripts/notifierIconos.js. Si se rehacen, los ids nuevos van aquí.
+        ICONOS: {
+            nuevo:    '1569815750112186430',
+            limited:  '1569815751030734978',
+            limitedu: '1569815751718600959',
+            venta:    '1569815752507269205',
+            update:   '1569815753992048702',
+            oferta:   '1569815754738503772',
+            id:       '1569815756479139900',
+            precio:   '1569815757393502238',
+            fecha:    '1569815758215708703',
+            props:    '1569815759054573600',
+            tipo:     '1569815759993966662',
+            stock:    '1569815760883425340',
+            rap:      '1569815761629745194',
+            baja:     '1569815763102077029',
+            sube:     '1569815764209504367',
+            limite:   '1569815765618790593',
+            link:     '1569815766734471248',
+        },
+    },
+
     // ── Descuento por fidelidad ──────────────────────────────────────────────
     // Cada CADA compras completadas se gana un descuento de DESCUENTO% para UNA
     // compra, y el cliente elige en cuál usarlo: se le ofrece en la

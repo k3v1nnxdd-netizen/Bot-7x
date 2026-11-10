@@ -51,9 +51,10 @@ if (RUN_BOT) {
     const { handleButton, clearTimers } = require('./handlers/buttons');
     const { handleModal }     = require('./handlers/modals');
     const { handleAcc, handleAccDispo, handleAccDispoAutocomplete } = require('./handlers/accounts');
-    const { handleOutfit, handlePagos, handlePagoVerified, handleOffer, handleClose, handleHeadless, handleGroupActive, handleTopCompradores, handleCrypto, handleAvatar, handleCompras, handleRobuxGastados, handleMisCompras, handleInvitaciones, handleGActive, handleMsg, handleTicketActive } = require('./handlers/commands');
+    const { handleOutfit, handlePagos, handlePagoVerified, handleOffer, handleClose, handleHeadless, handleGroupActive, handleTopCompradores, handleCrypto, handleAvatar, handleCompras, handleRobuxGastados, handleMisCompras, handleInvitaciones, handleGActive, handleMsg, handleTicketActive, handleNotifier } = require('./handlers/commands');
     const invitesTracker      = require('./utils/invitesTracker');
     const ticketInactivo      = require('./utils/ticketInactivo');
+    const robloxNotifier      = require('./utils/robloxNotifier');
     const { iniciarCaducidad } = require('./utils/reviewFlow');
     const cryptoPrecios       = require('./utils/cryptoPrecios');
     const {
@@ -342,6 +343,26 @@ if (RUN_BOT) {
                 ],
             },
 
+            // Notificador del catálogo oficial de Roblox. El gate real es el
+            // chequeo de permisos dentro de handleNotifier.
+            {
+                name: 'notifier',
+                description: 'Notificador de items nuevos, Limiteds y ofertas de Roblox (solo owner)',
+                options: [
+                    {
+                        name: 'canal', type: 1, description: 'Elige el canal de avisos y lo activa',
+                        options: [{
+                            name: 'canal', type: 7, description: 'Canal donde se publican los avisos',
+                            required: true, channel_types: [0, 5],
+                        }],
+                    },
+                    { name: 'on',     type: 1, description: 'Enciende los avisos' },
+                    { name: 'off',    type: 1, description: 'Apaga los avisos' },
+                    { name: 'estado', type: 1, description: 'Muestra cómo está configurado' },
+                    { name: 'prueba', type: 1, description: 'Envía al canal el item oficial más reciente como prueba' },
+                ],
+            },
+
             // El bot escribe lo que pone el owner. El gate real es el chequeo
             // de permisos dentro de handleMsg.
             {
@@ -553,6 +574,9 @@ if (RUN_BOT) {
         // Tickets de compra sin pago ni mensajes: aviso con barra y cierre.
         ticketInactivo.iniciar(client);
 
+        // Items nuevos, Limiteds y ofertas del catálogo oficial de Roblox.
+        robloxNotifier.iniciar(client);
+
         await updateLeaderboardMessage(client).catch(err =>
             console.error('[bot] updateLeaderboardMessage failed:', err)
         );
@@ -586,6 +610,7 @@ if (RUN_BOT) {
             else if (interaction.isChatInputCommand() && interaction.commandName === 'gactive')       await handleGActive(interaction);
             else if (interaction.isChatInputCommand() && interaction.commandName === 'msg')           await handleMsg(interaction);
             else if (interaction.isChatInputCommand() && interaction.commandName === 'ticketactive')  await handleTicketActive(interaction);
+            else if (interaction.isChatInputCommand() && interaction.commandName === 'notifier')      await handleNotifier(interaction);
             else if (interaction.isChatInputCommand() && interaction.commandName === 'addgroup')      await handleAddGroup(interaction);
             else if (interaction.isChatInputCommand() && interaction.commandName === 'regeneratetoken') await handleRegenerateToken(interaction);
             else if (interaction.isChatInputCommand() && interaction.commandName === 'deletegroup')   await handleDeleteGroup(interaction);

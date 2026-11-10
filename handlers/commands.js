@@ -819,7 +819,67 @@ async function handleMsg(interaction) {
     await safeEditReply(interaction, { content: `✅ Mensaje enviado en <#${canal.id}>.` });
 }
 
+// ── /notifier ─────────────────────────────────────────────────────────────────
+// El notificador del catálogo oficial de Roblox (utils/robloxNotifier.js).
+
+async function handleNotifier(interaction) {
+    if (!esAdminDeInteraccion(interaction)) {
+        return safeReply(interaction, { content: '❌ No tienes permiso para usar este comando.', ephemeral: true });
+    }
+    const notifier = require('../utils/robloxNotifier');
+    const sub = interaction.options.getSubcommand();
+
+    if (sub === 'canal') {
+        const canal = interaction.options.getChannel('canal');
+        notifier.setCanal(canal.id);
+        return safeReply(interaction, {
+            content: `✅ Notificador de Roblox **activado** en <#${canal.id}>.\n` +
+                '-# El primer ciclo sólo memoriza el catálogo actual; desde ahí se avisa de todo lo nuevo. Usa `/notifier prueba` para ver el formato.',
+            ephemeral: true,
+        });
+    }
+
+    if (sub === 'off' || sub === 'on') {
+        notifier.setActivo(sub === 'on');
+        return safeReply(interaction, {
+            content: sub === 'on' ? '✅ Notificador de Roblox **encendido**.' : '⏸️ Notificador de Roblox **apagado**. Nada se envía hasta `/notifier on`.',
+            ephemeral: true,
+        });
+    }
+
+    if (sub === 'prueba') {
+        await safeDeferReply(interaction, { ephemeral: true });
+        const r = notifier.resumen();
+        if (!r.canal) return safeEditReply(interaction, { content: '❌ Primero elige un canal con `/notifier canal`.' });
+        const n = await notifier.enviarPrueba(interaction.client).catch(err => {
+            console.warn('[notifier] prueba:', err.message);
+            return 0;
+        });
+        return safeEditReply(interaction, {
+            content: n ? `✅ Mensaje de prueba enviado a <#${r.canal}>.` : '❌ No se pudo enviar la prueba (Roblox no respondió o el canal no es válido).',
+        });
+    }
+
+    // estado
+    const r = notifier.resumen();
+    const c = config.ROBLOX_NOTIFIER;
+    return safeReply(interaction, {
+        content: [
+            '**Notificador de Roblox**',
+            `Estado: ${r.activo && r.canal ? '🟢 activo' : '🔴 inactivo'}`,
+            `Canal: ${r.canal ? `<#${r.canal}>` : 'sin elegir'}`,
+            `Menciona a: ${c.MENCION_USER_ID ? `<@${c.MENCION_USER_ID}>` : 'nadie'}`,
+            `Items oficiales vistos: ${r.itemsVistos}${r.feedIniciado ? '' : ' (aún sin iniciar)'}`,
+            `Limiteds vigilados: ${r.limitedsVigilados}${r.ofertasIniciado ? '' : ' (aún sin iniciar)'}`,
+            `Ganga = ≥${Math.round(c.OFERTA_DESCUENTO_MIN * 100)}% bajo el RAP, RAP ≥ R$ ${c.OFERTA_RAP_MIN.toLocaleString('en-US')}`,
+        ].join('\n'),
+        ephemeral: true,
+        allowedMentions: { parse: [] },
+    });
+}
+
 module.exports = {
+    handleNotifier,
     handleOutfit, handlePagos, handlePagoVerified, handleOffer, handleClose,
     handleHeadless, handleGroupActive, handleTopCompradores, handleCrypto, handleAvatar,
     handleCompras, handleRobuxGastados, handleMisCompras, handleInvitaciones, handleGActive, handleMsg, handleTicketActive,

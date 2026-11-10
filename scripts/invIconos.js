@@ -168,7 +168,10 @@ function muestra() {
     return png(tira, ancho, LADO);
 }
 
-module.exports = { generar, muestra, ICONOS };
+// Las primitivas se reutilizan en scripts/notifierIconos.js.
+const primitivas = { circulo, anillo, rect, trazo, linea, poligono, arco, union, menos, si };
+
+module.exports = { generar, muestra, ICONOS, primitivas };
 
 if (require.main === module) {
     (async () => {

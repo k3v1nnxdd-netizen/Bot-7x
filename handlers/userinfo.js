@@ -78,14 +78,41 @@ function duracion(ms) {
     return h >= 1 ? `${h} hora${h === 1 ? '' : 's'}` : 'menos de una hora';
 }
 
-// Nitro deducido de lo que sólo se puede tener con Nitro.
-function senalesNitro(user, member) {
+// Nitro deducido de lo que SÓLO se puede tener con Nitro. `raw` son los objetos
+// crudos de la API (usuario y miembro): traen campos que discord.js todavía no
+// expone, como el estilo del nombre.
+//
+// Lo que NO cuenta, aunque parezca: placas de nombre y decoraciones de avatar
+// se pueden comprar en la tienda sin Nitro, y el tag de servidor lo puede
+// llevar cualquiera.
+function senalesNitro(user, member, raw = {}) {
     const senales = [];
     if (user.avatar?.startsWith('a_')) senales.push('avatar animado');
     if (user.banner) senales.push(user.banner.startsWith('a_') ? 'banner animado' : 'banner de perfil');
     if (member?.avatar) senales.push('avatar propio en este servidor');
     if (member?.banner) senales.push('banner propio en este servidor');
+    if (raw.usuario?.display_name_styles || raw.miembro?.display_name_styles) senales.push('estilo de nombre');
     return senales;
+}
+
+// "nameplates/nameplates/cherry_blossoms/" → "Cherry Blossoms"
+function nombreColeccionable(asset) {
+    const ultimo = String(asset ?? '').split('/').filter(Boolean).pop() ?? '';
+    return ultimo.split('_').filter(Boolean).map(w => w[0].toUpperCase() + w.slice(1)).join(' ');
+}
+
+// Lo que la persona lleva puesto: placa de nombre, decoración de avatar y tag
+// de servidor. Cosmético: no prueba Nitro, pero sí que la cuenta está cuidada.
+function personalizacion(raw = {}) {
+    const u = raw.usuario ?? {}, m = raw.miembro ?? {};
+    const out = [];
+    const placa = m.collectibles?.nameplate ?? u.collectibles?.nameplate;
+    if (placa?.asset) out.push(`**Placa de nombre:** ${nombreColeccionable(placa.asset)}`);
+    const deco = m.avatar_decoration_data ?? u.avatar_decoration_data;
+    if (deco?.asset) out.push('**Decoración de avatar:** sí');
+    const tag = u.primary_guild ?? u.clan;
+    if (tag?.identity_enabled && tag.tag) out.push(`**Tag de servidor:** \`${tag.tag}\``);
+    return out;
 }
 
 // Confianza: una puntuación con sus razones, para que se vea POR QUÉ.
@@ -126,7 +153,7 @@ function confianza({ user, member, compras, boostDesde, alertaSuplantacion, ahor
 // cannot use this endpoint"). La insignia de booster del perfil cuenta desde el
 // boost activo MÁS ANTIGUO, así que si se ve aquí, el nivel coincide con el del
 // perfil.
-function construirUserinfo({ user, member, guild, datos7x = {}, boosts = null, servidoresRevisados = 1, alertaSuplantacion = false, ahora = Date.now() }) {
+function construirUserinfo({ user, member, guild, datos7x = {}, boosts = null, servidoresRevisados = 1, raw = {}, alertaSuplantacion = false, ahora = Date.now() }) {
     const campos = [];
     const f = (name, value, inline = true) => campos.push({ name, value: String(value).slice(0, 1024) || '—', inline });
 
@@ -148,7 +175,7 @@ function construirUserinfo({ user, member, guild, datos7x = {}, boosts = null, s
 
     // Insignias
     const insignias = INSIGNIAS.filter(([flag]) => user.flags?.has?.(flag)).map(([, clave, reserva, n]) => `${insignia(clave, reserva)} ${n}`);
-    const nitro = senalesNitro(user, member);
+    const nitro = senalesNitro(user, member, raw);
     const lista = (boosts ?? (member?.premiumSinceTimestamp ? [{ servidor: guild?.name ?? 'este servidor', desde: member.premiumSinceTimestamp, aqui: true }] : []))
         .filter(x => x.desde).sort((a, z) => a.desde - z.desde);
     const boostDesde = lista[0]?.desde ?? null;
@@ -156,16 +183,23 @@ function construirUserinfo({ user, member, guild, datos7x = {}, boosts = null, s
     const b = infoBoost(boostDesde, ahora);
     if (nitro.length || boostDesde) insignias.push(`${insignia('nitro', ui('nitro'))} Nitro${nitro.length ? '' : ' (probable)'}`);
     if (b) insignias.push(`${insignia(`boost${b.actual}`, ui('boost'))} Server Booster · ${b.actual} mes${b.actual === 1 ? '' : 'es'}`);
-    else insignias.push(`${ui('boost')} Booster: no detectado`);
     if (user.flags?.has?.(UserFlags.Spammer)) insignias.push(`${ui('alerta')} **Marcado como spammer por Discord**`);
-    f(`${ui('insignia')} Insignias`, insignias.length ? insignias.join('\n') : 'Ninguna', false);
+    // Nunca "Ninguna": que el bot no vea una insignia no significa que no la
+    // tenga (Nitro, booster de otros servidores, Quests y Orbs no se ven).
+    f(`${ui('insignia')} Insignias`, [
+        insignias.length ? insignias.join('\n') : 'Ninguna de las que Discord muestra a los bots',
+        '-# Las de Nitro (bronce…diamante), Quests, Orbs y booster de otros servidores sólo se ven en el perfil: Discord no las comparte con bots.',
+    ].join('\n'), false);
+
+    const extra = personalizacion(raw);
+    if (extra.length) f(`${ui('perfil')} Personalización`, extra.join('\n'));
 
     // Nitro
     f(`${insignia('nitro', ui('nitro'))} Nitro`, nitro.length
         ? `**Sí** — ${nitro.join(', ')}${boostDesde ? `\nActivo al menos desde <t:${s(boostDesde)}:D>` : ''}\n-# Discord no comparte el tipo ni la antigüedad exacta`
         : boostDesde
             ? `**Probable** — está boosteando\nAl menos desde <t:${s(boostDesde)}:D>\n-# Discord no comparte el tipo ni la antigüedad exacta`
-            : 'No detectado\n-# Sólo se ve si usa algo exclusivo de Nitro');
+            : '**No se puede comprobar**\n-# Discord no le dice a los bots quién tiene Nitro ni su nivel. Sólo se ve si usa algo exclusivo: avatar animado, banner o estilo de nombre.');
 
     // Insignia de booster (la del perfil)
     if (b) {
@@ -177,7 +211,7 @@ function construirUserinfo({ user, member, guild, datos7x = {}, boosts = null, s
             `Boostea ${boosteaAqui ? 'este servidor' : 'otro servidor'}${lista.length > 1 ? ` y ${lista.length - 1} más` : ''}`,
         ].join('\n'), false);
     } else {
-        f(`${ui('boost')} Insignia de booster`, `No detectada en los ${servidoresRevisados} servidor(es) en común con el bot\n-# Discord no deja a los bots ver el perfil: si boostea un servidor donde no está el bot, no se puede saber`, false);
+        f(`${ui('boost')} Insignia de booster`, `**No se puede comprobar** · no boostea ninguno de los ${servidoresRevisados} servidor(es) donde está el bot\n-# Si boostea otro servidor, la insignia sólo se ve en su perfil: Discord no la comparte con bots.`, false);
     }
 
     // Roles
@@ -269,6 +303,18 @@ async function boostsEnComun(client, userId, guild, member) {
     return { boosts, revisados: otros.length + (guild ? 1 : 0) };
 }
 
+// El usuario y el miembro tal cual los da la API: traen el estilo de nombre,
+// placas, decoraciones y tag de servidor, que discord.js aún no expone.
+async function datosCrudos(client, userId, guild) {
+    const { Routes } = require('discord.js');
+    const pedir = ruta => client?.rest?.get(ruta).catch(() => null) ?? null;
+    const [usuario, miembro] = await Promise.all([
+        pedir(Routes.user(userId)),
+        guild ? pedir(Routes.guildMember(guild.id, userId)) : null,
+    ]);
+    return { usuario, miembro };
+}
+
 // ── Comando ──────────────────────────────────────────────────────────────────
 
 async function handleUserinfo(interaction) {
@@ -296,12 +342,15 @@ async function handleUserinfo(interaction) {
         alerta = Boolean(sup.alertas[user.id]) && sup.legitimos[user.id] !== sup.alertas[user.id];
     } catch { /* sin datos */ }
 
-    const { boosts, revisados } = await boostsEnComun(interaction.client, user.id, guild, member);
+    const [{ boosts, revisados }, raw] = await Promise.all([
+        boostsEnComun(interaction.client, user.id, guild, member),
+        datosCrudos(interaction.client, user.id, guild),
+    ]);
     const { confianza: _, ...payload } = construirUserinfo({
         user, member, guild, datos7x: datosDe7x(user.id, guild, member), alertaSuplantacion: alerta,
-        boosts, servidoresRevisados: revisados,
+        boosts, servidoresRevisados: revisados, raw,
     });
     await safeEditReply(interaction, payload);
 }
 
-module.exports = { handleUserinfo, __test: { boostsEnComun, construirUserinfo, infoBoost, mesesEntre, confianza, senalesNitro, duracion } };
+module.exports = { handleUserinfo, __test: { boostsEnComun, datosCrudos, personalizacion, nombreColeccionable, construirUserinfo, infoBoost, mesesEntre, confianza, senalesNitro, duracion } };

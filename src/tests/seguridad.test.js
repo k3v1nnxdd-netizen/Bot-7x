@@ -244,6 +244,25 @@ module.exports = async function run() {
     const sinBoost = construirUserinfo({ user: usuario(), member: miembro(usuario()), guild: { id: 'g' }, ahora: AHORA, boosts: [], servidoresRevisados: 4 }).embeds[0].toJSON().fields;
     assert(sinBoost.find(f => f.name.includes('Insignia de booster')).value.includes('4 servidor'), 'sin boost: dice en cuántos servidores se buscó y por qué no se puede saber más');
 
+    // Nunca dice que NO tiene Nitro o insignia: dice que no se puede comprobar.
+    const sinNada = construirUserinfo({ user: usuario(), member: miembro(usuario()), guild: { id: 'g' }, ahora: AHORA, boosts: [] }).embeds[0].toJSON().fields;
+    const vn = sinNada.find(f => f.name.includes('Nitro')).value;
+    assert(vn.includes('No se puede comprobar') && !/No detectado|No tiene/i.test(vn), 'sin señales de Nitro: "No se puede comprobar", nunca "no tiene"');
+    assert(sinNada.find(f => f.name.includes('Insignia de booster')).value.includes('No se puede comprobar'), 'booster sin detectar: "No se puede comprobar"');
+    assert(!/^Ninguna$/m.test(sinNada.find(f => f.name.includes('Insignias')).value), 'insignias: nunca un "Ninguna" a secas');
+
+    // El caso real de 29v56: placa de nombre + tag, avatar normal → Nitro no comprobable.
+    const raw29 = {
+        usuario: { display_name_styles: null, primary_guild: { identity_enabled: true, tag: 'vqz' } },
+        miembro: { collectibles: { nameplate: { asset: 'nameplates/nameplates/cherry_blossoms/' } } },
+    };
+    const f29 = construirUserinfo({ user: usuario(), member: miembro(usuario()), guild: { id: 'g' }, ahora: AHORA, boosts: [], raw: raw29 }).embeds[0].toJSON().fields;
+    const per = f29.find(f => f.name.includes('Personalización'))?.value ?? '';
+    assert(per.includes('Cherry Blossoms') && per.includes('vqz'), 'muestra la placa de nombre y el tag de servidor');
+    assert(f29.find(f => f.name.includes('Nitro')).value.includes('No se puede comprobar'), 'una placa de nombre (se compra sin Nitro) no se toma como prueba de Nitro');
+    const fEstilo = construirUserinfo({ user: usuario(), member: miembro(usuario()), guild: { id: 'g' }, ahora: AHORA, boosts: [], raw: { usuario: { display_name_styles: { font_id: 3 } } } }).embeds[0].toJSON().fields;
+    assert(fEstilo.find(f => f.name.includes('Nitro')).value.includes('estilo de nombre'), 'el estilo de nombre (exclusivo de Nitro) sí cuenta');
+
     // boostsEnComun: junta este servidor y los demás, y un servidor colgado no bloquea.
     const { boostsEnComun } = ui.__test;
     const g1 = { id: 'g1', name: '7x' };

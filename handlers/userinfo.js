@@ -153,7 +153,7 @@ function confianza({ user, member, compras, boostDesde, alertaSuplantacion, ahor
 // cannot use this endpoint"). La insignia de booster del perfil cuenta desde el
 // boost activo MÁS ANTIGUO, así que si se ve aquí, el nivel coincide con el del
 // perfil.
-function construirUserinfo({ user, member, guild, datos7x = {}, boosts = null, servidoresRevisados = 1, raw = {}, alertaSuplantacion = false, ahora = Date.now() }) {
+function construirUserinfo({ user, member, guild, datos7x = {}, boosts = null, raw = {}, alertaSuplantacion = false, ahora = Date.now() }) {
     const campos = [];
     const f = (name, value, inline = true) => campos.push({ name, value: String(value).slice(0, 1024) || '—', inline });
 
@@ -181,38 +181,24 @@ function construirUserinfo({ user, member, guild, datos7x = {}, boosts = null, s
     const boostDesde = lista[0]?.desde ?? null;
     const boosteaAqui = lista.some(x => x.aqui);
     const b = infoBoost(boostDesde, ahora);
-    if (nitro.length || boostDesde) insignias.push(`${insignia('nitro', ui('nitro'))} Nitro${nitro.length ? '' : ' (probable)'}`);
-    if (b) insignias.push(`${insignia(`boost${b.actual}`, ui('boost'))} Server Booster · ${b.actual} mes${b.actual === 1 ? '' : 'es'}`);
+    // Sólo lo que el bot VE. Nitro y la insignia de booster no se pueden leer
+    // del perfil (Discord lo veta a los bots), así que aparecen únicamente
+    // cuando hay prueba: una señal exclusiva de Nitro, o un boost en un
+    // servidor donde está el bot. Si no hay nada, la sección no se muestra.
+    if (nitro.length) insignias.push(`${insignia('nitro', ui('nitro'))} **Nitro** · ${nitro.join(', ')}`);
+    if (b) {
+        insignias.push([
+            `${insignia(`boost${b.actual}`, ui('boost'))} **Server Booster · ${b.actual} mes${b.actual === 1 ? '' : 'es'}** · desde <t:${s(boostDesde)}:D>`,
+            b.siguiente
+                ? `-# Siguiente: ${insignia(`boost${b.siguiente}`)} ${b.siguiente} meses <t:${s(b.siguienteEn)}:R> · boostea ${boosteaAqui ? 'este servidor' : 'otro servidor'}${lista.length > 1 ? ` y ${lista.length - 1} más` : ''}`
+                : '-# Ya tiene la insignia máxima (24 meses)',
+        ].join('\n'));
+    }
     if (user.flags?.has?.(UserFlags.Spammer)) insignias.push(`${ui('alerta')} **Marcado como spammer por Discord**`);
-    // Nunca "Ninguna": que el bot no vea una insignia no significa que no la
-    // tenga (Nitro, booster de otros servidores, Quests y Orbs no se ven).
-    f(`${ui('insignia')} Insignias`, [
-        insignias.length ? insignias.join('\n') : 'Ninguna de las que Discord muestra a los bots',
-        '-# Las de Nitro (bronce…diamante), Quests, Orbs y booster de otros servidores sólo se ven en el perfil: Discord no las comparte con bots.',
-    ].join('\n'), false);
+    if (insignias.length) f(`${ui('insignia')} Insignias`, insignias.join('\n'), false);
 
     const extra = personalizacion(raw);
     if (extra.length) f(`${ui('perfil')} Personalización`, extra.join('\n'));
-
-    // Nitro
-    f(`${insignia('nitro', ui('nitro'))} Nitro`, nitro.length
-        ? `**Sí** — ${nitro.join(', ')}${boostDesde ? `\nActivo al menos desde <t:${s(boostDesde)}:D>` : ''}\n-# Discord no comparte el tipo ni la antigüedad exacta`
-        : boostDesde
-            ? `**Probable** — está boosteando\nAl menos desde <t:${s(boostDesde)}:D>\n-# Discord no comparte el tipo ni la antigüedad exacta`
-            : '**No se puede comprobar**\n-# Discord no le dice a los bots quién tiene Nitro ni su nivel. Sólo se ve si usa algo exclusivo: avatar animado, banner o estilo de nombre.');
-
-    // Insignia de booster (la del perfil)
-    if (b) {
-        f(`${insignia(`boost${b.actual}`, ui('boost'))} Insignia de booster`, [
-            `${insignia(`boost${b.actual}`)} **${b.actual} mes${b.actual === 1 ? '' : 'es'}** · boosteando desde <t:${s(boostDesde)}:D> (${duracion(ahora - boostDesde)})`,
-            b.siguiente
-                ? `Siguiente: ${insignia(`boost${b.siguiente}`)} **${b.siguiente} meses** <t:${s(b.siguienteEn)}:R>`
-                : 'Ya tiene la insignia máxima (24 meses)',
-            `Boostea ${boosteaAqui ? 'este servidor' : 'otro servidor'}${lista.length > 1 ? ` y ${lista.length - 1} más` : ''}`,
-        ].join('\n'), false);
-    } else {
-        f(`${ui('boost')} Insignia de booster`, `**No se puede comprobar** · no boostea ninguno de los ${servidoresRevisados} servidor(es) donde está el bot\n-# Si boostea otro servidor, la insignia sólo se ve en su perfil: Discord no la comparte con bots.`, false);
-    }
 
     // Roles
     if (member) {
@@ -342,13 +328,13 @@ async function handleUserinfo(interaction) {
         alerta = Boolean(sup.alertas[user.id]) && sup.legitimos[user.id] !== sup.alertas[user.id];
     } catch { /* sin datos */ }
 
-    const [{ boosts, revisados }, raw] = await Promise.all([
+    const [{ boosts }, raw] = await Promise.all([
         boostsEnComun(interaction.client, user.id, guild, member),
         datosCrudos(interaction.client, user.id, guild),
     ]);
     const { confianza: _, ...payload } = construirUserinfo({
         user, member, guild, datos7x: datosDe7x(user.id, guild, member), alertaSuplantacion: alerta,
-        boosts, servidoresRevisados: revisados, raw,
+        boosts, raw,
     });
     await safeEditReply(interaction, payload);
 }

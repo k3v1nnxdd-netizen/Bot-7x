@@ -227,8 +227,8 @@ module.exports = async function run() {
     const valor = nombre => campos.find(f => f.name.includes(nombre))?.value ?? '';
     assert(valor('Insignias').includes('Desarrollador activo') && valor('Insignias').includes('HypeSquad Bravery'), 'muestra las insignias del perfil');
     assert(valor('Insignias').includes('Nitro') && valor('Insignias').includes('Server Booster'), 'y Nitro y booster');
-    assert(valor('Nitro').includes('avatar animado') && valor('Nitro').includes('banner'), 'Nitro deducido con sus señales');
-    assert(valor('Insignia de booster').includes('1 mes') && valor('Insignia de booster').includes(':b_boost1:') && valor('Insignia de booster').includes(':b_boost2:'), 'insignia de booster oficial, actual y siguiente');
+    assert(valor('Insignias').includes('avatar animado') && valor('Insignias').includes('banner'), 'Nitro con las señales que lo prueban');
+    assert(valor('Insignias').includes('1 mes') && valor('Insignias').includes(':b_boost1:') && valor('Insignias').includes(':b_boost2:'), 'insignia de booster oficial, actual y siguiente');
     assert(!campos.some(f => f.name.includes('Mejoras del servidor')), 'ya no muestra las mejoras del servidor (no son de la persona)');
 
     // Boostea OTRO servidor del bot desde hace más: la insignia sale de ese boost.
@@ -236,20 +236,16 @@ module.exports = async function run() {
         user: nitroUser, member: miembro(nitroUser, { premiumSinceTimestamp: AHORA - 40 * DIA }), guild: { id: 'g', name: '7x' }, ahora: AHORA,
         boosts: [{ servidor: '7x', desde: AHORA - 40 * DIA, aqui: true }, { servidor: 'Otro', desde: AHORA - 400 * DIA, aqui: false }],
     }).embeds[0].toJSON().fields;
-    const vb = otroBoost.find(f => f.name.includes('Insignia de booster')).value;
+    const vb = otroBoost.find(f => f.name.includes('Insignias')).value;
     assert(vb.includes(':b_boost12:') && vb.includes('y 1 más'), 'boost más antiguo en otro servidor → insignia de 12 meses, como en su perfil');
     const soloFuera = construirUserinfo({ user: nitroUser, member: miembro(nitroUser), guild: { id: 'g' }, ahora: AHORA,
         boosts: [{ servidor: 'Otro', desde: AHORA - 100 * DIA, aqui: false }] }).embeds[0].toJSON().fields;
-    assert(soloFuera.find(f => f.name.includes('Insignia de booster')).value.includes('otro servidor'), 'detecta la insignia aunque no boostee este servidor');
-    const sinBoost = construirUserinfo({ user: usuario(), member: miembro(usuario()), guild: { id: 'g' }, ahora: AHORA, boosts: [], servidoresRevisados: 4 }).embeds[0].toJSON().fields;
-    assert(sinBoost.find(f => f.name.includes('Insignia de booster')).value.includes('4 servidor'), 'sin boost: dice en cuántos servidores se buscó y por qué no se puede saber más');
+    assert(soloFuera.find(f => f.name.includes('Insignias')).value.includes('otro servidor'), 'detecta la insignia aunque no boostee este servidor');
 
-    // Nunca dice que NO tiene Nitro o insignia: dice que no se puede comprobar.
+    // Sin nada visible: ni campos vacíos ni "no se puede comprobar". No sale nada.
     const sinNada = construirUserinfo({ user: usuario(), member: miembro(usuario()), guild: { id: 'g' }, ahora: AHORA, boosts: [] }).embeds[0].toJSON().fields;
-    const vn = sinNada.find(f => f.name.includes('Nitro')).value;
-    assert(vn.includes('No se puede comprobar') && !/No detectado|No tiene/i.test(vn), 'sin señales de Nitro: "No se puede comprobar", nunca "no tiene"');
-    assert(sinNada.find(f => f.name.includes('Insignia de booster')).value.includes('No se puede comprobar'), 'booster sin detectar: "No se puede comprobar"');
-    assert(!/^Ninguna$/m.test(sinNada.find(f => f.name.includes('Insignias')).value), 'insignias: nunca un "Ninguna" a secas');
+    assert(!sinNada.some(f => /Insignia|Nitro|booster/i.test(f.name)), 'sin insignias visibles: no aparece ninguna sección de insignias, Nitro ni booster');
+    assert(!sinNada.some(f => /No se puede comprobar|No detectad|No tiene/i.test(f.value)), 'y nunca dice que no tiene algo');
 
     // El caso real de 29v56: placa de nombre + tag, avatar normal → Nitro no comprobable.
     const raw29 = {
@@ -259,9 +255,9 @@ module.exports = async function run() {
     const f29 = construirUserinfo({ user: usuario(), member: miembro(usuario()), guild: { id: 'g' }, ahora: AHORA, boosts: [], raw: raw29 }).embeds[0].toJSON().fields;
     const per = f29.find(f => f.name.includes('Personalización'))?.value ?? '';
     assert(per.includes('Cherry Blossoms') && per.includes('vqz'), 'muestra la placa de nombre y el tag de servidor');
-    assert(f29.find(f => f.name.includes('Nitro')).value.includes('No se puede comprobar'), 'una placa de nombre (se compra sin Nitro) no se toma como prueba de Nitro');
+    assert(!f29.some(f => f.value.includes('Nitro')), 'una placa de nombre (se compra sin Nitro) no se toma como prueba de Nitro');
     const fEstilo = construirUserinfo({ user: usuario(), member: miembro(usuario()), guild: { id: 'g' }, ahora: AHORA, boosts: [], raw: { usuario: { display_name_styles: { font_id: 3 } } } }).embeds[0].toJSON().fields;
-    assert(fEstilo.find(f => f.name.includes('Nitro')).value.includes('estilo de nombre'), 'el estilo de nombre (exclusivo de Nitro) sí cuenta');
+    assert(fEstilo.find(f => f.name.includes('Insignias')).value.includes('estilo de nombre'), 'el estilo de nombre (exclusivo de Nitro) sí cuenta');
 
     // boostsEnComun: junta este servidor y los demás, y un servidor colgado no bloquea.
     const { boostsEnComun } = ui.__test;

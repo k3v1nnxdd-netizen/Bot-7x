@@ -87,6 +87,107 @@ module.exports = async function run() {
     assert(sup.exento(miembro(usuario({ bot: true }))), 'los bots están exentos');
     assert(!sup.exento(miembro(usuario())), 'un miembro normal no está exento');
 
+    // ── 2b. Botones del aviso ────────────────────────────────────────────────
+    // El fallo real en producción: "La aplicación no ha respondido". Lo que se
+    // exige: confirmar (deferUpdate) ANTES de cualquier consulta lenta.
+    const fs = require('fs');
+    const { EmbedBuilder } = require('discord.js');
+    const supMod = require('../../utils/suplantacion');
+    const SOSPECHOSO = '1348083484974911651';
+    const avisoEmbed = new EmbedBuilder().setTitle('Posible suplantación').setThumbnail('https://cdn/x.png')
+        .addFields({ name: 'Cuenta creada', value: 'x' }).toJSON();
+    // Como llega de Discord: con proxy_url, width y height.
+    avisoEmbed.thumbnail = { ...avisoEmbed.thumbnail, proxy_url: 'https://media/x.png', width: 256, height: 256 };
+
+    function clic(accion, { quien = config.OWNER_ID, lento = 0, falla = null, miembro: m } = {}) {
+        const orden = [];
+        const sospechoso = m ?? miembro(usuario({ id: SOSPECHOSO, username: 'kevvv7x2', globalName: 'Crizzzz' }), {
+            timeout: async () => { orden.push('timeout'); if (falla) throw falla; },
+            kick: async () => { orden.push('kick'); if (falla) throw falla; },
+        });
+        const it = {
+            customId: `${accion}:${SOSPECHOSO}`, user: { id: quien, username: 'kev' },
+            message: { embeds: [{ data: avisoEmbed }] },
+            guild: { members: {
+                cache: new Map(),
+                fetch: async () => { orden.push('fetch'); await new Promise(r => setTimeout(r, lento)); return sospechoso; },
+                ban: async () => { orden.push('ban'); if (falla) throw falla; },
+            } },
+            deferUpdate: async () => { orden.push('defer'); },
+            editReply: async o => { orden.push('edit'); it.editado = o; },
+            followUp: async o => { orden.push('followUp'); it.seguimiento = o; },
+            reply: async o => { orden.push('reply'); it.respuesta = o; },
+        };
+        return { it, orden };
+    }
+
+    let c1 = clic('sup_ok', { lento: 50 });
+    await supMod.alBoton(c1.it);
+    assert(c1.orden[0] === 'defer', 'Es legítimo: confirma a Discord lo PRIMERO, antes de buscar al miembro');
+    assert(c1.orden.includes('edit') && !c1.orden.includes('followUp'), 'y después edita el aviso');
+    const ed = c1.it.editado.embeds[0].toJSON();
+    assert(ed.fields.some(f => f.name === 'Resolución' && f.value.includes('legítimo')), 'el aviso muestra la resolución');
+    assert(ed.thumbnail?.url === 'https://cdn/x.png', 'conserva la miniatura del aviso original');
+    assert(c1.it.editado.components[0].toJSON().components.every(b => b.disabled), 'y deja los botones desactivados');
+    assert(sup.load().legitimos[SOSPECHOSO] === sup.firma(miembro(usuario({ username: 'kevvv7x2', globalName: 'Crizzzz' }))), 'guarda que es legítimo con su nombre actual');
+
+    // Legítimo de verdad: el mismo nombre ya no avisa; otro nombre, sí.
+    const mismo = miembro(usuario({ id: SOSPECHOSO, username: 'kevvv7x2', globalName: 'Crizzzz' }), { guild: { id: 'g' } });
+    const enviados = [];
+    const logC = require('../../utils/logCanales');
+    const enviarOriginal = logC.enviar;
+    logC.enviar = async (g, t, p) => { enviados.push(p); return {}; };
+    supMod.__test.setProtegidos?.(prot);
+    assert(await supMod.revisar(mismo, 'prueba', { aislar: false }) === null, 'legítimo con ese nombre: no vuelve a avisar');
+    const otro = miembro(usuario({ id: SOSPECHOSO, username: 'kevvv7x2', globalName: 'kevshito' }), { guild: { id: 'g' } });
+    assert(Array.isArray(await supMod.revisar(otro, 'prueba', { aislar: false })) && enviados.length === 1, 'si se cambia a OTRO nombre sospechoso, avisa de nuevo');
+    const tj = enviados[0].embeds[0].toJSON();
+    assert(tj.description.includes(SOSPECHOSO), 'el ID va en la descripción, a todo el ancho (no partido en una columna)');
+    assert(!tj.fields.some(f => f.inline && f.value.includes(SOSPECHOSO)), 'ningún campo estrecho lleva el ID');
+    assert(tj.fields.some(f => f.name === 'En el servidor'), 'muestra cuándo entró');
+    assert(tj.fields.some(f => f.value.includes('**kevshito**') && f.value.includes('nombre de usuario')), 'dice a quién se parece y de qué nombre');
+    logC.enviar = enviarOriginal;
+
+    let c2 = clic('sup_ais', { lento: 50 });
+    await supMod.alBoton(c2.it);
+    assert(c2.orden.join(',') === 'defer,fetch,timeout,edit', 'Aislar: confirma, busca, aísla y edita, en ese orden');
+
+    let c3 = clic('sup_kick');
+    await supMod.alBoton(c3.it);
+    assert(c3.orden.includes('kick') && c3.orden[0] === 'defer', 'Expulsar funciona');
+
+    let c4 = clic('sup_ban');
+    await supMod.alBoton(c4.it);
+    assert(c4.orden[0] === 'defer' && c4.orden.includes('ban'), 'Banear funciona');
+
+    const sinPermiso = Object.assign(new Error('Missing Permissions'), { code: 50013 });
+    let c5 = clic('sup_ban', { falla: sinPermiso });
+    await supMod.alBoton(c5.it);
+    assert(c5.orden[0] === 'defer' && c5.orden.includes('followUp') && !c5.orden.includes('edit'), 'si falla, avisa sólo a quien pulsó y no toca el aviso');
+    assert(c5.it.seguimiento.content.includes('rol del bot') && (c5.it.seguimiento.flags & 64), 'con el motivo legible, en privado');
+
+    let c6 = clic('sup_ban', { quien: '555555555555555555' });
+    await supMod.alBoton(c6.it);
+    assert(c6.orden.join(',') === 'reply' && (c6.it.respuesta.flags & 64), 'alguien que no es owner: se le responde en privado y no se hace nada');
+
+    // Con la API de Discord lenta (2.5 s), la confirmación sigue siendo inmediata.
+    let c7 = clic('sup_ok', { lento: 2500 });
+    const t0 = Date.now();
+    let confirmadoEn = null;
+    const deferOriginal = c7.it.deferUpdate;
+    c7.it.deferUpdate = async () => { confirmadoEn = Date.now() - t0; return deferOriginal(); };
+    await supMod.alBoton(c7.it);
+    assert(confirmadoEn !== null && confirmadoEn < 100, `con la API lenta, confirma en ${confirmadoEn} ms (límite de Discord: 3000)`);
+
+    // Y por el router real de botones (handlers/buttons.js).
+    const { handleButton } = require('../../handlers/buttons');
+    let c8 = clic('sup_ok');
+    c8.it.channelId = 'canal'; c8.it.replied = false; c8.it.deferred = false;
+    await handleButton(c8.it);
+    assert(c8.orden[0] === 'defer' && c8.orden.includes('edit'), 'el router de botones lleva sup_* al anti-suplantación');
+
+    if (fs.existsSync(sup.FILE)) fs.unlinkSync(sup.FILE);
+
     // ── 3. /userinfo ─────────────────────────────────────────────────────────
     let respuestas = [];
     const it = (objetivoId, quien = '555555555555555555') => ({

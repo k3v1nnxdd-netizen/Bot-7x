@@ -182,8 +182,8 @@ function evaluar(member, lista = protegidos) {
 // ── Aviso ────────────────────────────────────────────────────────────────────
 
 const TEXTO_TIPO = {
-    exacto: 'Idéntico (tras normalizar)',
-    parecido: 'Casi idéntico (1-2 letras)',
+    exacto: 'Idéntico',
+    parecido: 'Casi idéntico',
     contiene: 'Contiene el nombre',
     marca: 'Marca + palabra de staff',
 };
@@ -200,6 +200,35 @@ function botones(userId, deshabilitar = false) {
 // `aislar: false` en la revisión de arranque: quien ya estaba en el servidor
 // (puede ser una cuenta alternativa de un owner) sólo genera aviso. El
 // aislamiento automático es para lo que pasa EN VIVO: entrar o renombrarse.
+// La tarjeta del aviso. El ID va en la descripción, a todo el ancho: en una
+// columna estrecha un id de 19 cifras se parte en dos líneas.
+function tarjeta(member, hallazgos, { grave, origen, accion }) {
+    const s = x => Math.floor(x / 1000);
+    const u = member.user;
+    const fuente = { usuario: 'su nombre de usuario', visible: 'su nombre visible', apodo: 'su apodo', marca: 'la marca' };
+    const embed = new EmbedBuilder()
+        .setColor(grave ? 0xDC2626 : 0xF59E0B)
+        .setAuthor({ name: u.username, iconURL: u.displayAvatarURL({ size: 128 }) })
+        .setTitle(`${ui('alerta')} Posible suplantación${grave ? ' · riesgo alto' : ''}`)
+        .setThumbnail(u.displayAvatarURL({ size: 256 }))
+        .setDescription(`<@${member.id}> · \`${member.id}\``)
+        .addFields(
+            { name: 'Cuenta creada', value: `<t:${s(u.createdTimestamp)}:D>\n<t:${s(u.createdTimestamp)}:R>`, inline: true },
+            { name: 'En el servidor', value: member.joinedTimestamp ? `<t:${s(member.joinedTimestamp)}:D>\n<t:${s(member.joinedTimestamp)}:R>` : '—', inline: true },
+            { name: 'Detectado', value: origen, inline: true },
+            ...hallazgos.map(h => ({
+                name: `${h.campo}: ${String(h.valor).slice(0, 80)}`,
+                value: h.protegido.userId
+                    ? `${TEXTO_TIPO[h.tipo]} a **${h.protegido.original}**, ${fuente[h.protegido.fuente] ?? 'nombre'} de <@${h.protegido.userId}>`
+                    : `${TEXTO_TIPO[h.tipo]}: ${h.protegido.original}`,
+            })),
+            { name: 'Acción automática', value: accion },
+        )
+        .setFooter({ text: 'Anti-suplantación 7x · comparación normalizada (unicode, leet, cirílico)' })
+        .setTimestamp();
+    return embed;
+}
+
 async function revisar(member, origen = 'cambio de nombre', { aislar = true } = {}) {
     try {
         if (!member?.guild || exento(member)) return null;
@@ -228,24 +257,7 @@ async function revisar(member, origen = 'cambio de nombre', { aislar = true } = 
             }
         }
 
-        const s = x => Math.floor(x / 1000);
-        const embed = new EmbedBuilder()
-            .setColor(grave ? 0xDC2626 : 0xF59E0B)
-            .setAuthor({ name: `${member.user.tag ?? member.user.username}`, iconURL: member.user.displayAvatarURL({ size: 128 }) })
-            .setTitle(`${ui('alerta')} Posible suplantación${grave ? ' — riesgo alto' : ''}`)
-            .setThumbnail(member.user.displayAvatarURL({ size: 256 }))
-            .addFields(
-                { name: 'Usuario', value: `<@${member.id}>\n\`${member.id}\``, inline: true },
-                { name: 'Cuenta creada', value: `<t:${s(member.user.createdTimestamp)}:D>\n<t:${s(member.user.createdTimestamp)}:R>`, inline: true },
-                { name: 'Detectado', value: origen, inline: true },
-                ...hallazgos.map(h => ({
-                    name: `${h.campo}: ${String(h.valor).slice(0, 80)}`,
-                    value: `${TEXTO_TIPO[h.tipo]} → ${h.protegido.userId ? `<@${h.protegido.userId}> (${h.protegido.original})` : h.protegido.original}`,
-                })),
-                { name: 'Acción automática', value: accion },
-            )
-            .setFooter({ text: 'Anti-suplantación 7x · comparación normalizada (unicode, leet, cirílico)' })
-            .setTimestamp();
+        const embed = tarjeta(member, hallazgos, { grave, origen, accion });
 
         await logCanales.enviar(member.guild, 'seguridad', {
             content: config.ADMIN_IDS.map(id => `<@${id}>`).join(' '),
@@ -303,49 +315,69 @@ async function iniciar(client) {
 
 // ── Botones del aviso ────────────────────────────────────────────────────────
 
+// Discord da 3 SEGUNDOS para responder a un botón. Lo primero es confirmarlo
+// (deferUpdate), sin ninguna consulta antes: buscar al miembro o banearlo
+// puede tardar más, sobre todo justo después de un arranque, y entonces Discord
+// enseña "La aplicación no ha respondido". El resultado se escribe después
+// editando el propio aviso; un error, en un mensaje sólo para quien pulsó.
 async function alBoton(interaction) {
-    const { safeReply } = require('./safe');
     if (!esAdmin(interaction.user.id)) {
-        return safeReply(interaction, { content: '❌ Sólo los owners pueden usar estos botones.', ephemeral: true });
+        return interaction.reply({ content: '❌ Sólo los owners pueden usar estos botones.', flags: 64 }).catch(() => {});
     }
+    try {
+        await interaction.deferUpdate();
+    } catch (err) {
+        console.error('[suplantacion] deferUpdate falló:', err.message);
+        return;
+    }
+
     const [accion, userId] = interaction.customId.split(':');
     const guild = interaction.guild;
-    const member = await guild.members.fetch(userId).catch(() => null);
-    const razon = `Anti-suplantación · decisión de ${interaction.user.tag ?? interaction.user.username}`;
+    const razon = `Anti-suplantación · decisión de ${interaction.user.username}`;
+    const quien = `<@${interaction.user.id}>`;
 
     let resultado;
     try {
+        const member = guild.members.cache.get(userId) ?? await guild.members.fetch(userId).catch(() => null);
         if (accion === 'sup_ok') {
             const estado = load();
             estado.legitimos[userId] = member ? firma(member) : estado.alertas[userId];
             save(estado);
             if (member?.isCommunicationDisabled?.()) await member.timeout(null, razon).catch(() => {});
-            resultado = `${ui('escudo')} Marcado como **legítimo** por <@${interaction.user.id}>`;
+            resultado = `${ui('escudo')} Marcado como **legítimo** por ${quien}. No se volverá a avisar con este nombre.`;
         } else if (accion === 'sup_ais') {
             if (!member) throw new Error('ya no está en el servidor');
             await member.timeout(S().AISLAR_HORAS * 3_600_000, razon);
-            resultado = `${ui('reloj')} **Aislado ${S().AISLAR_HORAS}h** por <@${interaction.user.id}>`;
+            resultado = `${ui('reloj')} **Aislado ${S().AISLAR_HORAS}h** por ${quien}`;
         } else if (accion === 'sup_kick') {
             if (!member) throw new Error('ya no está en el servidor');
             await member.kick(razon);
-            resultado = `**Expulsado** por <@${interaction.user.id}>`;
+            resultado = `**Expulsado** por ${quien}`;
         } else if (accion === 'sup_ban') {
             await guild.members.ban(userId, { reason: razon, deleteMessageSeconds: 24 * 3600 });
-            resultado = `**Baneado** por <@${interaction.user.id}> (mensajes de las últimas 24h borrados)`;
+            resultado = `**Baneado** por ${quien} · se borraron sus mensajes de las últimas 24h`;
         } else {
             return;
         }
     } catch (err) {
-        return safeReply(interaction, { content: `❌ No se pudo: ${err.code === 50013 ? 'el rol del bot está por debajo del usuario' : err.message}`, ephemeral: true });
+        console.error(`[suplantacion] ${accion} sobre ${userId} falló:`, err.message);
+        return interaction.followUp({
+            content: `❌ No se pudo: ${err.code === 50013 ? 'el rol del bot está por debajo de ese usuario' : err.message}`,
+            flags: 64,
+        }).catch(() => {});
     }
 
-    const embed = EmbedBuilder.from(interaction.message.embeds[0]).addFields({ name: 'Resolución', value: `${resultado}\n<t:${Math.floor(Date.now() / 1000)}:R>` });
-    if (accion === 'sup_ok') embed.setColor(0x22C55E);
-    await interaction.update({ embeds: [embed], components: [botones(userId, true)] })
-        .catch(() => safeReply(interaction, { content: resultado, ephemeral: true }));
+    const original = interaction.message.embeds[0];
+    const embed = new EmbedBuilder(original?.data ?? original?.toJSON?.() ?? {})
+        .addFields({ name: 'Resolución', value: `${resultado}\n<t:${Math.floor(Date.now() / 1000)}:R>` })
+        .setColor(accion === 'sup_ok' ? 0x22C55E : 0x64748B);
+    await interaction.editReply({ embeds: [embed], components: [botones(userId, true)] }).catch(err => {
+        console.error('[suplantacion] No se pudo actualizar el aviso:', err.message);
+        return interaction.followUp({ content: resultado, flags: 64 }).catch(() => {});
+    });
 }
 
 module.exports = {
     iniciar, revisar, alActualizarMiembro, alActualizarUsuario, alBoton, refrescarProtegidos,
-    __test: { normalizar, levenshtein, compararNombre, evaluar, exento, firma, load, FILE },
+    __test: { normalizar, levenshtein, compararNombre, evaluar, exento, firma, load, tarjeta, FILE, setProtegidos: l => { protegidos = l; } },
 };

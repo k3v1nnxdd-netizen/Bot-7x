@@ -169,6 +169,36 @@ module.exports = {
         server:   '1569822289124397192',
     },
 
+    // ── Insignias oficiales de Discord (scripts/insigniasEmojis.js) ─────────
+    // Las imágenes del CDN de Discord (assets/insignias/), subidas como emojis
+    // de la aplicación para /userinfo.
+    INSIGNIAS_EMOJIS: {
+        activedev:      '1569830756446904450',
+        balance:        '1569830757378035812',
+        boost1:         '1569830758674079894',
+        boost12:        '1569830759496155156',
+        boost15:        '1569830760695861398',
+        boost18:        '1569830762130182214',
+        boost2:         '1569830763090677901',
+        boost24:        '1569830763975938048',
+        boost3:         '1569830765347209357',
+        boost6:         '1569830774935519365',
+        boost9:         '1569830775522599127',
+        bravery:        '1569830776919298119',
+        brilliance:     '1569830778639220836',
+        bughunter:      '1569830779649790003',
+        bughunter2:     '1569830780568342529',
+        earlysupporter: '1569830783303028737',
+        hypesquad:      '1569830784490152137',
+        legacyname:     '1569830785542914259',
+        moderador:      '1569830786633572530',
+        nitro:          '1569830787883343904',
+        partner:        '1569830788873060442',
+        quest:          '1569830790127292556',
+        staff:          '1569830791083462726',
+        verifdev:       '1569830792685813760',
+    },
+
     // ── Canales de registro (utils/logCanales.js) ────────────────────────────
     // El bot crea él solo una categoría privada (sólo admins y el bot la ven)
     // con estos canales la primera vez que arranca, y guarda sus ids en disco.
@@ -181,6 +211,18 @@ module.exports = {
             transcripciones:{ nombre: '📁・transcripciones', id: null },
             seguridad:      { nombre: '🛡️・seguridad-log',  id: null },
         },
+    },
+
+    // ── Protección (utils/proteccion.js) ─────────────────────────────────────
+    // Los registros tienen copia en disco (DATA_DIR/archivo): si borran un
+    // mensaje, un canal o la categoría de registros, el bot lo restaura todo.
+    // Anti-nuke: quien borre ANTINUKE_CANALES canales (que no sean tickets) en
+    // ANTINUKE_VENTANA_SEG segundos se queda sin roles. Los owners de
+    // ADMIN_IDS sólo generan aviso.
+    PROTECCION: {
+        ANTINUKE_ACTIVO:       true,
+        ANTINUKE_CANALES:      3,
+        ANTINUKE_VENTANA_SEG:  60,
     },
 
     // ── Transcripciones de tickets (utils/transcripcion.js) ──────────────────

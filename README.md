@@ -1305,13 +1305,34 @@ Copiar exacto el *nombre de usuario* (único) de un owner con una cuenta de
 menos de `AISLAR_CUENTA_DIAS` días aísla solo, pero sólo en vivo (la revisión de
 arranque nunca aísla). Staff con permisos de moderación está exento.
 
+### Protección de los registros y anti-nuke
+Todo lo que se publica en los canales de registro se guarda también en
+`DATA_DIR/archivo/` (el Volume de Railway, fuera del alcance de Discord), con
+los archivos comprimidos. Así borrar no pierde nada:
+- **Mensaje de registro borrado** → se vuelve a publicar con la nota de quién lo borró.
+- **Canal de registro borrado** → se recrea al momento y se restaura su contenido
+  (transcripciones todas, con su archivo; mensajes y seguridad: los 50 últimos
+  uno a uno y el resto en un .txt).
+- **Categoría borrada** → se recrea y los canales vuelven dentro, privados.
+- Borrado con el bot apagado → se recrea y restaura al arrancar.
+- Siempre: aviso en `seguridad-log` y por MD a los owners con quién fue.
+
+**Anti-nuke** (`config.PROTECCION`): quien borre 3 canales (que no sean tickets)
+en 60 s se queda sin roles; a los owners de `ADMIN_IDS` sólo se les avisa.
+
+Probado de verdad en el servidor con una categoría de prueba: borrar un
+mensaje, un canal y la categoría restaura todo (archivo idéntico al original).
+
 ### /userinfo
 Ficha de un miembro: perfil, fechas, insignias, Nitro (deducido: Discord no lo
 expone a bots), boost con su insignia y la siguiente, mejoras del servidor,
 roles, compras e invitaciones en 7x, y un **nivel de confianza** con sus
 razones. Lo puede usar cualquiera, **excepto sobre los owners**.
 
-Iconos: `node scripts/uiIconos.js --subir`, ids en `config.UI_ICONOS`.
+Iconos: `node scripts/uiIconos.js --subir`, ids en `config.UI_ICONOS`. Las insignias
+oficiales de Discord (badges, Nitro, los 9 niveles de booster) están en
+`assets/insignias/` y se suben con `node scripts/insigniasEmojis.js`
+(`config.INSIGNIAS_EMOJIS`).
 
 ## Quien puede hacer cosas de owner
 

@@ -3,7 +3,7 @@
 const { EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, UserFlags, PermissionFlagsBits } = require('discord.js');
 const { safeReply, safeDeferReply, safeEditReply } = require('../utils/safe');
 const { esAdmin } = require('../utils/permisos');
-const { ui, uiBoton } = require('../utils/uiIconos');
+const { ui, uiBoton, insignia } = require('../utils/uiIconos');
 const config = require('../config');
 
 // ── /userinfo ────────────────────────────────────────────────────────────────
@@ -23,25 +23,27 @@ const DIA = 86_400_000;
 const s = ms => Math.floor(ms / 1000);
 
 // Insignias públicas del perfil (public_flags).
+// [flag, clave de la insignia oficial (config.INSIGNIAS_EMOJIS), reserva, nombre]
 const INSIGNIAS = [
-    [UserFlags.Staff, '🛠️', 'Staff de Discord'],
-    [UserFlags.Partner, '🤝', 'Partner de Discord'],
-    [UserFlags.CertifiedModerator, '🎓', 'Moderador certificado'],
-    [UserFlags.Hypesquad, '🎉', 'HypeSquad Events'],
-    [UserFlags.HypeSquadOnlineHouse1, '🟣', 'HypeSquad Bravery'],
-    [UserFlags.HypeSquadOnlineHouse2, '🟠', 'HypeSquad Brilliance'],
-    [UserFlags.HypeSquadOnlineHouse3, '🟢', 'HypeSquad Balance'],
-    [UserFlags.BugHunterLevel1, '🐛', 'Bug Hunter'],
-    [UserFlags.BugHunterLevel2, '🐞', 'Bug Hunter (oro)'],
-    [UserFlags.PremiumEarlySupporter, '💠', 'Early Supporter'],
-    [UserFlags.VerifiedDeveloper, '⚙️', 'Desarrollador de bots verificado'],
-    [UserFlags.ActiveDeveloper, '💻', 'Desarrollador activo'],
-    [UserFlags.VerifiedBot, '✅', 'Bot verificado'],
+    [UserFlags.Staff, 'staff', '🛠️', 'Staff de Discord'],
+    [UserFlags.Partner, 'partner', '🤝', 'Partner de Discord'],
+    [UserFlags.CertifiedModerator, 'moderador', '🎓', 'Moderador certificado'],
+    [UserFlags.Hypesquad, 'hypesquad', '🎉', 'HypeSquad Events'],
+    [UserFlags.HypeSquadOnlineHouse1, 'bravery', '🟣', 'HypeSquad Bravery'],
+    [UserFlags.HypeSquadOnlineHouse2, 'brilliance', '🟠', 'HypeSquad Brilliance'],
+    [UserFlags.HypeSquadOnlineHouse3, 'balance', '🟢', 'HypeSquad Balance'],
+    [UserFlags.BugHunterLevel1, 'bughunter', '🐛', 'Bug Hunter'],
+    [UserFlags.BugHunterLevel2, 'bughunter2', '🐞', 'Bug Hunter (oro)'],
+    [UserFlags.PremiumEarlySupporter, 'earlysupporter', '💠', 'Early Supporter'],
+    [UserFlags.VerifiedDeveloper, 'verifdev', '⚙️', 'Desarrollador de bots verificado'],
+    [UserFlags.ActiveDeveloper, 'activedev', '💻', 'Desarrollador activo'],
+    [UserFlags.VerifiedBot, null, '✅', 'Bot verificado'],
 ];
 
-// Insignia de booster de Discord: cambia a los 1, 2, 3, 6, 9, 12, 15, 18 y 24
-// meses boosteando sin parar.
+// Insignia de booster de Discord: la de "1 mes" sale EL PRIMER DÍA de boost, y
+// cambia a los 2, 3, 6, 9, 12, 15, 18 y 24 meses boosteando sin parar.
 const NIVELES_BOOST = [1, 2, 3, 6, 9, 12, 15, 18, 24];
+const umbralBoost = n => (n === 1 ? 0 : n);
 
 function sumarMeses(ms, meses) {
     const d = new Date(ms);
@@ -58,8 +60,8 @@ function mesesEntre(desde, hasta) {
 function infoBoost(desde, ahora) {
     if (!desde) return null;
     const meses = mesesEntre(desde, ahora);
-    const actual = [...NIVELES_BOOST].reverse().find(n => meses >= n) ?? 0;
-    const siguiente = NIVELES_BOOST.find(n => n > meses) ?? null;
+    const actual = [...NIVELES_BOOST].reverse().find(n => meses >= umbralBoost(n));
+    const siguiente = NIVELES_BOOST.find(n => n > actual) ?? null;
     return { meses, actual, siguiente, siguienteEn: siguiente ? sumarMeses(desde, siguiente) : null };
 }
 
@@ -138,28 +140,30 @@ function construirUserinfo({ user, member, guild, datos7x = {}, alertaSuplantaci
     }
 
     // Insignias
-    const insignias = INSIGNIAS.filter(([flag]) => user.flags?.has?.(flag)).map(([, e, n]) => `${e} ${n}`);
+    const insignias = INSIGNIAS.filter(([flag]) => user.flags?.has?.(flag)).map(([, clave, reserva, n]) => `${insignia(clave, reserva)} ${n}`);
     const nitro = senalesNitro(user, member);
     const boostDesde = member?.premiumSinceTimestamp ?? null;
-    if (nitro.length) insignias.push(`${ui('nitro')} Nitro`);
-    if (boostDesde) insignias.push(`${ui('boost')} Server Booster`);
+    const b = infoBoost(boostDesde, ahora);
+    if (nitro.length || boostDesde) insignias.push(`${insignia('nitro', ui('nitro'))} Nitro${nitro.length ? '' : ' (probable)'}`);
+    if (b) insignias.push(`${insignia(`boost${b.actual}`, ui('boost'))} Server Booster · ${b.actual} mes${b.actual === 1 ? '' : 'es'}`);
     if (user.flags?.has?.(UserFlags.Spammer)) insignias.push(`${ui('alerta')} **Marcado como spammer por Discord**`);
     f(`${ui('insignia')} Insignias`, insignias.length ? insignias.join('\n') : 'Ninguna', false);
 
     // Nitro
-    f(`${ui('nitro')} Nitro`, nitro.length
+    f(`${insignia('nitro', ui('nitro'))} Nitro`, nitro.length
         ? `**Sí** — ${nitro.join(', ')}${boostDesde ? `\nActivo al menos desde <t:${s(boostDesde)}:D>` : ''}\n-# Discord no comparte el tipo ni la antigüedad exacta`
         : boostDesde
             ? `**Probable** — está boosteando\nAl menos desde <t:${s(boostDesde)}:D>\n-# Discord no comparte el tipo ni la antigüedad exacta`
             : 'No detectado\n-# Sólo se ve si usa algo exclusivo de Nitro');
 
     // Boost
-    const b = infoBoost(boostDesde, ahora);
     if (b) {
-        f(`${ui('boost')} Boost`, [
+        f(`${insignia(`boost${b.actual}`, ui('boost'))} Boost`, [
             `Boosteando desde <t:${s(boostDesde)}:D> (${duracion(ahora - boostDesde)})`,
-            `Insignia de booster: **${b.actual ? `${b.actual} mes${b.actual === 1 ? '' : 'es'}` : 'menos de 1 mes'}**`,
-            b.siguiente ? `Siguiente (${b.siguiente} meses): <t:${s(b.siguienteEn)}:R>` : 'Nivel máximo de insignia',
+            `Insignia actual: ${insignia(`boost${b.actual}`)} **${b.actual} mes${b.actual === 1 ? '' : 'es'}**`,
+            b.siguiente
+                ? `Siguiente: ${insignia(`boost${b.siguiente}`)} **${b.siguiente} meses** <t:${s(b.siguienteEn)}:R>`
+                : 'Ya tiene la insignia máxima (24 meses)',
         ].join('\n'));
     } else {
         f(`${ui('boost')} Boost`, 'No boostea este servidor');

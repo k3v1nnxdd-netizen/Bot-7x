@@ -20,4 +20,10 @@ function uiBoton(clave) {
     return id ? { id, name: `ui_${clave}` } : { name: RESERVA[clave] ?? '•' };
 }
 
-module.exports = { ui, uiBoton };
+// Insignia oficial de Discord (config.INSIGNIAS_EMOJIS) o el unicode dado.
+function insignia(clave, reserva = '') {
+    const id = config.INSIGNIAS_EMOJIS?.[clave];
+    return id ? `<:b_${clave}:${id}>` : reserva;
+}
+
+module.exports = { ui, uiBoton, insignia };

@@ -202,7 +202,8 @@ module.exports = async function run() {
     const { infoBoost, construirUserinfo, confianza } = ui.__test;
     const b = infoBoost(AHORA - 200 * DIA, AHORA);
     assert(b.meses === 6 && b.actual === 6 && b.siguiente === 9, '200 días boosteando → insignia de 6 meses, siguiente 9');
-    assert(infoBoost(AHORA - 10 * DIA, AHORA).actual === 0, 'menos de un mes → sin insignia aún');
+    assert(infoBoost(AHORA - 10 * DIA, AHORA).actual === 1 && infoBoost(AHORA - 10 * DIA, AHORA).siguiente === 2, 'desde el primer día: insignia de 1 mes, siguiente 2');
+    assert(infoBoost(AHORA - 800 * DIA, AHORA).siguiente === null, '24 meses o más: insignia máxima');
 
     const nitroUser = usuario({ avatar: 'a_anim', banner: 'b1', flags: new UserFlagsBitField(UserFlags.ActiveDeveloper | UserFlags.HypeSquadOnlineHouse1) });
     const p = construirUserinfo({
@@ -217,7 +218,8 @@ module.exports = async function run() {
     assert(valor('Insignias').includes('Desarrollador activo') && valor('Insignias').includes('HypeSquad Bravery'), 'muestra las insignias del perfil');
     assert(valor('Insignias').includes('Nitro') && valor('Insignias').includes('Server Booster'), 'y Nitro y booster');
     assert(valor('Nitro').includes('avatar animado') && valor('Nitro').includes('banner'), 'Nitro deducido con sus señales');
-    assert(valor('Boost').includes('1 mes'), 'insignia de booster calculada');
+    assert(valor('Boost').includes('1 mes') && valor('Boost').includes(':b_boost1:') && valor('Boost').includes(':b_boost2:'), 'boost con la insignia oficial actual y la siguiente');
+    assert(valor('Insignias').includes(':b_activedev:') && valor('Insignias').includes(':b_bravery:') && valor('Insignias').includes(':b_nitro:'), 'las insignias usan las imágenes oficiales');
     assert(valor('Mejoras').includes('14 mejoras') && valor('Mejoras').includes('Nivel **2**'), 'mejoras y nivel del servidor');
     assert(valor('Compras').includes('6 compras') && valor('Compras').includes('12,000'), 'compras en 7x');
     assert(p.embeds[0].toJSON().image?.url, 'el banner va como imagen');
@@ -312,6 +314,59 @@ module.exports = async function run() {
     await regMod.alBorrar(msg({ author: { ...autor, bot: true } }));
     assert(registrados.length === 0, 'los mensajes de bots no se registran');
     logs2.enviar = envOrig;
+
+    // ── 7. Anti-nuke ─────────────────────────────────────────────────────────
+    const proteccionMod = require('../../utils/proteccion');
+    const logs3 = require('../../utils/logCanales');
+    const env3 = logs3.enviar;
+    let avisos = [];
+    logs3.enviar = async (g, t, p) => { avisos.push(p); return {}; };
+    function guildNuke(manageable = true) {
+        const roles = new Map([['g', { id: 'g', name: '@everyone' }], ['r1', { id: 'r1', name: 'Staff' }], ['r2', { id: 'r2', name: 'Admin' }]]);
+        const m = { manageable, roles: { cache: { filter: f => ({ map: fn => [...roles.values()].filter(f).map(fn) }) }, set: async r => { m.rolesQuedan = r; } } };
+        return { id: 'g', name: '7x', client: { users: { fetch: async () => null } }, members: { fetch: async () => m }, _m: m };
+    }
+    const canalFalso = { name: 'general' };
+    proteccionMod.__test.borrados.clear();
+    let gN = guildNuke();
+    for (let i = 0; i < config.PROTECCION.ANTINUKE_CANALES - 1; i++) await proteccionMod.__test.antiNuke(gN, { id: '999', username: 'malo' }, canalFalso);
+    assert(gN._m.rolesQuedan === undefined && avisos.length === 0, 'por debajo del umbral: nada');
+    await proteccionMod.__test.antiNuke(gN, { id: '999', username: 'malo' }, canalFalso);
+    assert(Array.isArray(gN._m.rolesQuedan) && gN._m.rolesQuedan.length === 0, `${config.PROTECCION.ANTINUKE_CANALES} canales en la ventana: se le quitan TODOS los roles`);
+    assert(avisos.length === 1 && avisos[0].embeds[0].toJSON().fields.some(f => f.value.includes('Roles retirados') && f.value.includes('Staff')), 'y se avisa con los roles retirados');
+    await proteccionMod.__test.antiNuke(gN, { id: '999', username: 'malo' }, canalFalso);
+    assert(avisos.length === 1, 'un solo aviso por ráfaga');
+
+    proteccionMod.__test.borrados.clear(); avisos = [];
+    gN = guildNuke();
+    for (let i = 0; i < config.PROTECCION.ANTINUKE_CANALES; i++) await proteccionMod.__test.antiNuke(gN, { id: config.OWNER_ID, username: 'owner' }, canalFalso);
+    assert(gN._m.rolesQuedan === undefined && avisos[0]?.embeds[0].toJSON().fields.some(f => f.value.includes('owner')), 'a un owner sólo se le avisa, nunca se le quitan roles');
+
+    proteccionMod.__test.borrados.clear(); avisos = [];
+    gN = guildNuke(false);
+    for (let i = 0; i < config.PROTECCION.ANTINUKE_CANALES; i++) await proteccionMod.__test.antiNuke(gN, { id: '998', username: 'alto' }, canalFalso);
+    assert(avisos[0]?.embeds[0].toJSON().fields.some(f => f.value.includes('por encima del bot')), 'si su rol está por encima del bot, lo dice');
+
+    // Los tickets no cuentan (ni se consulta la auditoría).
+    let auditoriaConsultada = false;
+    await proteccionMod.alBorrarCanal({ id: 't1', name: 'soporte-0001', parentId: config.CATEGORIES.TICKETS, guild: { fetchAuditLogs: async () => { auditoriaConsultada = true; return null; } } });
+    assert(!auditoriaConsultada, 'borrar un ticket no cuenta para el anti-nuke');
+    logs3.enviar = env3;
+
+    // ── 8. Archivo en disco ──────────────────────────────────────────────────
+    const arch = require('../../utils/archivo');
+    const { AttachmentBuilder } = require('discord.js');
+    arch.__test.reset();
+    const idA = arch.registrar('pruebatipo', { content: 'hola', embeds: [new EmbedBuilder().setTitle('T1')], files: [new AttachmentBuilder(Buffer.from('datos'), { name: 'a.txt' })] }, 'MSG1');
+    assert(idA && arch.entradas('pruebatipo').length === 1, 'registrar guarda la entrada');
+    const enc = arch.porMensaje('MSG1', ['pruebatipo']);
+    assert(enc?.entrada.id === idA, 'se encuentra por el id del mensaje de Discord');
+    const pl = arch.payloadDe('pruebatipo', enc.entrada, 'Restaurado');
+    assert(pl.embeds[0].toJSON().footer.text.includes('Restaurado') && pl.files[0].attachment.toString() === 'datos', 'el payload restaurado lleva la nota y el archivo idéntico');
+    arch.alias('pruebatipo', 'MSG2', idA);
+    arch.__test.reset();
+    assert(arch.porMensaje('MSG2', ['pruebatipo'])?.entrada.id === idA, 'un mensaje re-publicado apunta al mismo registro (también tras reiniciar)');
+    fs.rmSync(require('path').join(arch.DIR), { recursive: true, force: true });
 
     return finish();
 };

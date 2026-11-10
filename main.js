@@ -60,6 +60,7 @@ if (RUN_BOT) {
     const registroMensajes    = require('./utils/registroMensajes');
     const transcripcion       = require('./utils/transcripcion');
     const suplantacion        = require('./utils/suplantacion');
+    const proteccion          = require('./utils/proteccion');
     const { iniciarCaducidad } = require('./utils/reviewFlow');
     const cryptoPrecios       = require('./utils/cryptoPrecios');
     const {
@@ -599,8 +600,13 @@ if (RUN_BOT) {
         // Registros privados (mensajes, transcripciones, seguridad): crea la
         // categoría y los canales si faltan, apunta el estado del registro de
         // auditoría y revisa el servidor buscando suplantaciones.
-        await logCanales.asegurarTodos(guild).catch(err =>
-            console.error('[bot] logCanales.asegurarTodos failed:', err.message));
+        const logs = await logCanales.asegurarTodos(guild).catch(err => {
+            console.error('[bot] logCanales.asegurarTodos failed:', err.message);
+            return null;
+        });
+        // Un canal de registro borrado con el bot apagado: se rellena desde la copia.
+        proteccion.alArrancar(guild, logs?.creados).catch(err =>
+            console.error('[bot] proteccion.alArrancar failed:', err.message));
         registroMensajes.iniciar(guild).catch(() => {});
         suplantacion.iniciar(client).catch(err =>
             console.error('[bot] suplantacion.iniciar failed:', err.message));
@@ -685,12 +691,17 @@ if (RUN_BOT) {
         // El registro privado va aparte y sin esperar: su consulta al registro
         // de auditoría no puede retrasar el aviso público.
         registroMensajes.alBorrar(message);
+        // Un registro borrado (en los canales de registro) se vuelve a publicar.
+        proteccion.alBorrarMensaje(message);
         try { await handleMessageDelete(message); }
         catch (err) { console.error('[messageDelete] error:', err); }
     });
 
     client.on(Events.MessageUpdate, (viejo, nuevo) => { registroMensajes.alEditar(viejo, nuevo); });
-    client.on(Events.MessageBulkDelete, (mensajes, canal) => { registroMensajes.alBorradoMasivo(mensajes, canal); });
+    client.on(Events.MessageBulkDelete, (mensajes, canal) => {
+        registroMensajes.alBorradoMasivo(mensajes, canal);
+        proteccion.alBorradoMasivo(mensajes, canal);
+    });
 
     // ── Reaction roles ────────────────────────────────────────────────────────
 
@@ -780,6 +791,9 @@ if (RUN_BOT) {
     client.on(Events.ChannelDelete, channel => {
         // Ticket borrado a mano: transcripción parcial con lo que hay en memoria.
         transcripcion.alBorrarCanal(channel);
+        // Canal o categoría de registros borrados: se recrean y se restauran.
+        // Y el anti-nuke cuenta el borrado.
+        proteccion.alBorrarCanal(channel);
         const ownerId = tickets.getOwner(channel.id);
         tickets.cleanup(channel.id, ownerId);
         clearTimers(channel.id);

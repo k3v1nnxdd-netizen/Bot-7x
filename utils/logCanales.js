@@ -50,24 +50,39 @@ async function existe(guild, id) {
 // categorías duplicadas.
 let enCurso = null;
 
+// Crea lo que falte. Si se borró la CATEGORÍA, Discord deja sus canales sueltos
+// fuera de ella: se crea otra y se devuelven dentro, con sus permisos. Devuelve
+// los ids guardados y qué tipos se tuvieron que crear de cero (esos son los que
+// hay que restaurar desde el archivo).
 async function asegurarTodos(guild) {
     if (enCurso) return enCurso;
     enCurso = (async () => {
         const d = load();
+        const creados = [];
         let categoria = await existe(guild, d.categoria);
-        const faltan = Object.entries(config.LOGS.CANALES)
-            .filter(([tipo, c]) => !c.id);
+        const necesitaCategoria = Object.values(config.LOGS.CANALES).some(c => !c.id);
 
-        for (const [tipo, def] of faltan) {
-            if (await existe(guild, d[tipo])) continue;
-            if (!categoria) {
-                categoria = await guild.channels.create({
-                    name: config.LOGS.CATEGORIA_NOMBRE,
-                    type: ChannelType.GuildCategory,
-                    permissionOverwrites: permisos(guild),
-                    reason: 'Registros privados del bot 7x',
-                });
-                d.categoria = categoria.id;
+        if (!categoria && necesitaCategoria) {
+            categoria = await guild.channels.create({
+                name: config.LOGS.CATEGORIA_NOMBRE,
+                type: ChannelType.GuildCategory,
+                permissionOverwrites: permisos(guild),
+                reason: 'Registros privados del bot 7x',
+            });
+            d.categoria = categoria.id;
+            console.log(`[logs] Categoría de registros creada (${categoria.id})`);
+        }
+
+        for (const [tipo, def] of Object.entries(config.LOGS.CANALES)) {
+            if (def.id) continue;
+            const ch = await existe(guild, d[tipo]);
+            if (ch) {
+                // Suelto tras borrar la categoría: vuelve dentro y privado.
+                if (ch.parentId !== categoria.id) {
+                    await ch.setParent(categoria.id, { lockPermissions: false, reason: 'Registros 7x: categoría restaurada' }).catch(() => {});
+                    await ch.permissionOverwrites.set(permisos(guild), 'Registros 7x: permisos restaurados').catch(() => {});
+                }
+                continue;
             }
             const canal = await guild.channels.create({
                 name: def.nombre,
@@ -77,10 +92,11 @@ async function asegurarTodos(guild) {
                 reason: 'Registros privados del bot 7x',
             });
             d[tipo] = canal.id;
+            creados.push(tipo);
             console.log(`[logs] Canal de registro creado: #${canal.name} (${canal.id})`);
         }
         save(d);
-        return d;
+        return { ...d, creados };
     })().finally(() => { enCurso = null; });
     return enCurso;
 }
@@ -114,13 +130,24 @@ function idsDeRegistro() {
     return ids;
 }
 
+// Publica en el registro Y lo guarda en el archivo en disco (utils/archivo.js),
+// que es lo que permite restaurarlo si alguien borra el mensaje o el canal.
 async function enviar(guild, tipo, payload) {
     const ch = await canal(guild, tipo);
-    if (!ch) return null;
-    return ch.send(payload).catch(err => {
+    const msg = ch ? await ch.send(payload).catch(err => {
         console.error(`[logs] No se pudo escribir en el registro de ${tipo}:`, err.message);
         return null;
-    });
+    }) : null;
+    require('./archivo').registrar(tipo, payload, msg?.id ?? null);
+    return msg;
 }
 
-module.exports = { canal, enviar, asegurarTodos, idsDeRegistro };
+// Qué es un canal: un tipo de registro ('mensajes'…), 'categoria' o null.
+function tipoDe(channelId) {
+    const d = load();
+    if (channelId && channelId === d.categoria) return 'categoria';
+    for (const [tipo, c] of Object.entries(config.LOGS.CANALES)) if ((c.id ?? d[tipo]) === channelId) return tipo;
+    return null;
+}
+
+module.exports = { canal, enviar, asegurarTodos, idsDeRegistro, tipoDe, TIPOS: () => Object.keys(config.LOGS.CANALES) };

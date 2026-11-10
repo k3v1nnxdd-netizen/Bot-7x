@@ -150,6 +150,69 @@ module.exports = {
         },
     },
 
+    // ── Iconos de /userinfo, logs y seguridad (scripts/uiIconos.js) ─────────
+    // Emojis de la APLICACIÓN. Si se rehacen, los ids nuevos van aquí.
+    UI_ICONOS: {
+        perfil:   '1569822274326896722',
+        insignia: '1569822275132330035',
+        boost:    '1569822276751466520',
+        nitro:    '1569822279410647091',
+        roles:    '1569822280782192770',
+        compras:  '1569822281763389451',
+        invita:   '1569822282610643014',
+        alerta:   '1569822283403366511',
+        ticket:   '1569822284099879143',
+        editado:  '1569822285660160040',
+        borrado:  '1569822286301888706',
+        escudo:   '1569822287182565427',
+        reloj:    '1569822288130478133',
+        server:   '1569822289124397192',
+    },
+
+    // ── Canales de registro (utils/logCanales.js) ────────────────────────────
+    // El bot crea él solo una categoría privada (sólo admins y el bot la ven)
+    // con estos canales la primera vez que arranca, y guarda sus ids en disco.
+    // Si alguno se borra, lo vuelve a crear. Para usar canales que ya existan,
+    // pon aquí su id y no se crea nada.
+    LOGS: {
+        CATEGORIA_NOMBRE: '🔒 Registros 7x',
+        CANALES: {
+            mensajes:       { nombre: '📝・mensajes-log',   id: null },
+            transcripciones:{ nombre: '📁・transcripciones', id: null },
+            seguridad:      { nombre: '🛡️・seguridad-log',  id: null },
+        },
+    },
+
+    // ── Transcripciones de tickets (utils/transcripcion.js) ──────────────────
+    // Al cerrarse un ticket (botón, /close, auto-cierre por pago o por
+    // inactividad) se guarda una copia HTML completa —con las imágenes
+    // incrustadas, para que los comprobantes de pago no caduquen— en el canal
+    // de transcripciones. Es la prueba ante una disputa o un contracargo.
+    TRANSCRIPCIONES: {
+        MAX_MENSAJES:          5000,
+        MAX_IMAGEN_BYTES:      6 * 1024 * 1024,   // por imagen incrustada
+        MAX_TOTAL_IMAGENES:    7 * 1024 * 1024,   // el HTML tiene que caber en 10 MB
+        ENVIAR_AL_CLIENTE:     true,              // copia por MD a quien abrió el ticket
+    },
+
+    // ── Anti-suplantación (utils/suplantacion.js) ────────────────────────────
+    // Avisa (y aísla, si es claro) a quien se pone el nombre de un owner, del
+    // bot o de la marca + "staff/soporte". Se comprueba al entrar, al cambiarse
+    // el nombre o apodo, y al arrancar el bot sobre todo el servidor.
+    SUPLANTACION: {
+        // Nombres extra que proteger además de los owners y el bot (se
+        // comparan normalizados: mayúsculas, acentos, 0→o, cirílico, etc.).
+        NOMBRES_PROTEGIDOS: ['7x community', '7xcommunity', '7x store', '7x shop'],
+        // Marca + cualquiera de estas palabras = suplantación ("7x soporte").
+        MARCAS:           ['7x'],
+        PALABRAS_STAFF:   ['staff', 'support', 'soporte', 'admin', 'owner', 'mod', 'moderador', 'ayuda', 'help', 'oficial', 'official', 'team', 'equipo', 'ventas', 'pagos'],
+        // Coincidencia exacta con un owner/bot y cuenta más nueva que esto →
+        // aislamiento (timeout) automático, sin esperar a un admin.
+        AISLAR_AUTO:          true,
+        AISLAR_HORAS:         24,
+        AISLAR_CUENTA_DIAS:   60,
+    },
+
     // ── Descuento por fidelidad ──────────────────────────────────────────────
     // Cada CADA compras completadas se gana un descuento de DESCUENTO% para UNA
     // compra, y el cliente elige en cuál usarlo: se le ofrece en la

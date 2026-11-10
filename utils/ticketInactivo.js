@@ -189,8 +189,11 @@ async function cerrar(client, channel, ownerId) {
             pie: '7x Community • Tickets',
         }));
     } catch { /* DMs cerrados */ }
-    setTimeout(() => channel.delete('Ticket de compra inactivo').catch(err =>
-        console.error('[ticketInactivo] No se pudo borrar el canal:', err.message)), config.TIMEOUTS.MANUAL_CLOSE_MS).unref?.();
+    setTimeout(async () => {
+        await require('./transcripcion').guardar(channel, { motivo: `Inactividad: ${C.PLAZO_HORAS} horas sin pago ni mensajes` });
+        await channel.delete('Ticket de compra inactivo').catch(err =>
+            console.error('[ticketInactivo] No se pudo borrar el canal:', err.message));
+    }, config.TIMEOUTS.MANUAL_CLOSE_MS).unref?.();
 }
 
 async function revisarCanal(client, channel, ahora = Date.now()) {

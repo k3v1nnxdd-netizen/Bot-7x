@@ -172,7 +172,7 @@ function muestra() {
     return png(tira, ancho, LADO);
 }
 
-module.exports = { generar, muestra, ICONOS };
+module.exports = { generar, muestra, ICONOS, dibujar, LADO };
 
 if (require.main === module) {
     (async () => {

@@ -10,6 +10,7 @@ const { isGone, safeReply, safeEditReply, safeDeferReply, safeShowModal } = requ
 const { isLocked, lock } = require('../utils/spam');
 const { esAdminDeInteraccion, puedeGestionarTicket } = require('../utils/permisos');
 const tickets            = require('../utils/tickets');
+const transcripcion      = require('../utils/transcripcion');
 const { buildOtraCosaModal, buildDuelsModal, buildCalcDineroModal, buildCalcRobuxModal, buildGpDineroModal, buildGpRobuxModal, buildVerifModal, buildComentarioModal, MOTIVOS_COMENTARIO } = require('./modals');
 const { buildRefRow, sendPurchaseDM } = require('../utils/purchaseDm');
 const reviews            = require('../utils/reviews');
@@ -322,7 +323,7 @@ async function onConfirmarPago(interaction) {
         console.error('[buttons] rename failed:', err.message);
     }
 
-    await startAutoClose(interaction.channel);
+    await startAutoClose(interaction.channel, { cerradoPor: interaction.user, motivo: 'Pago confirmado (cierre automático a los 10 minutos)' });
 }
 
 async function onCerrarTicket(interaction) {
@@ -370,6 +371,7 @@ async function onConfirmarCerrar(interaction) {
 
     setTimeout(async () => {
         clearTimers(channelId);
+        await transcripcion.guardar(interaction.channel, { cerradoPor: interaction.user, motivo: 'Cerrado con el botón "Cerrar ticket"' });
         try { await interaction.channel.delete(); }
         catch (err) { console.error('[buttons] close-delete failed:', err.message); }
     }, config.TIMEOUTS.MANUAL_CLOSE_MS);
@@ -537,7 +539,8 @@ async function onReviewFrase(interaction) {
 
 // ── Auto-close countdown (shared with /close command) ─────────────────────────
 
-async function startAutoClose(channel) {
+// `cierre` = quién lo provocó y por qué, para la transcripción.
+async function startAutoClose(channel, cierre = {}) {
     const channelId = channel.id;
     clearTimers(channelId);
 
@@ -553,6 +556,10 @@ async function startAutoClose(channel) {
 
     const timeout = setTimeout(async () => {
         clearTimers(channelId);
+        await transcripcion.guardar(channel, {
+            cerradoPor: cierre.cerradoPor ?? null,
+            motivo: cierre.motivo ?? 'Cierre automático programado',
+        });
         try { await channel.delete(); }
         catch (err) { console.error('[autoclose] delete failed:', err.message); }
     }, config.TIMEOUTS.PAYMENT_CLOSE_MS);
@@ -608,7 +615,10 @@ async function handleButton(interaction) {
     // carries the page number and nothing else, so a forged one can only ask
     // for a different page of a list its clicker was already allowed to see.
     const isGroupList = interaction.customId.startsWith('gl_groups:');
-    const fn = isSeg ? handleSeguidoresButton
+    // Botones de los avisos de suplantación (el handler comprueba que sea owner).
+    const isSup = interaction.customId.startsWith('sup_');
+    const fn = isSup ? require('../utils/suplantacion').alBoton
+        : isSeg ? handleSeguidoresButton
         : isAli ? handleAlianzaButton
         : isCompra ? handleCompraButton
         : isCg ? handleCheckGroupButton

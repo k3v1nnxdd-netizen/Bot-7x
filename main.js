@@ -55,6 +55,11 @@ if (RUN_BOT) {
     const invitesTracker      = require('./utils/invitesTracker');
     const ticketInactivo      = require('./utils/ticketInactivo');
     const robloxNotifier      = require('./utils/robloxNotifier');
+    const { handleUserinfo }  = require('./handlers/userinfo');
+    const logCanales          = require('./utils/logCanales');
+    const registroMensajes    = require('./utils/registroMensajes');
+    const transcripcion       = require('./utils/transcripcion');
+    const suplantacion        = require('./utils/suplantacion');
     const { iniciarCaducidad } = require('./utils/reviewFlow');
     const cryptoPrecios       = require('./utils/cryptoPrecios');
     const {
@@ -343,6 +348,20 @@ if (RUN_BOT) {
                 ],
             },
 
+            // Ficha de un miembro. Cualquiera la puede usar, menos sobre los
+            // owners (lo decide handleUserinfo).
+            {
+                name: 'userinfo',
+                description: 'Ficha de un miembro: insignias, Nitro, boost, roles, compras y confianza',
+                options: [
+                    { name: 'usuario', type: 6, description: 'De quién (si no pones a nadie, la tuya)', required: false },
+                    {
+                        name: 'visibilidad', type: 3, description: 'Quién ve el resultado (por defecto, solo tú)', required: false,
+                        choices: [{ name: 'Solo yo', value: 'solo_yo' }, { name: 'Todos', value: 'todos' }],
+                    },
+                ],
+            },
+
             // Notificador del catálogo oficial de Roblox. El gate real es el
             // chequeo de permisos dentro de handleNotifier.
             {
@@ -577,6 +596,15 @@ if (RUN_BOT) {
         // Items nuevos, Limiteds y ofertas del catálogo oficial de Roblox.
         robloxNotifier.iniciar(client);
 
+        // Registros privados (mensajes, transcripciones, seguridad): crea la
+        // categoría y los canales si faltan, apunta el estado del registro de
+        // auditoría y revisa el servidor buscando suplantaciones.
+        await logCanales.asegurarTodos(guild).catch(err =>
+            console.error('[bot] logCanales.asegurarTodos failed:', err.message));
+        registroMensajes.iniciar(guild).catch(() => {});
+        suplantacion.iniciar(client).catch(err =>
+            console.error('[bot] suplantacion.iniciar failed:', err.message));
+
         await updateLeaderboardMessage(client).catch(err =>
             console.error('[bot] updateLeaderboardMessage failed:', err)
         );
@@ -611,6 +639,7 @@ if (RUN_BOT) {
             else if (interaction.isChatInputCommand() && interaction.commandName === 'msg')           await handleMsg(interaction);
             else if (interaction.isChatInputCommand() && interaction.commandName === 'ticketactive')  await handleTicketActive(interaction);
             else if (interaction.isChatInputCommand() && interaction.commandName === 'notifier')      await handleNotifier(interaction);
+            else if (interaction.isChatInputCommand() && interaction.commandName === 'userinfo')      await handleUserinfo(interaction);
             else if (interaction.isChatInputCommand() && interaction.commandName === 'addgroup')      await handleAddGroup(interaction);
             else if (interaction.isChatInputCommand() && interaction.commandName === 'regeneratetoken') await handleRegenerateToken(interaction);
             else if (interaction.isChatInputCommand() && interaction.commandName === 'deletegroup')   await handleDeleteGroup(interaction);
@@ -653,9 +682,15 @@ if (RUN_BOT) {
     });
 
     client.on(Events.MessageDelete, async message => {
+        // El registro privado va aparte y sin esperar: su consulta al registro
+        // de auditoría no puede retrasar el aviso público.
+        registroMensajes.alBorrar(message);
         try { await handleMessageDelete(message); }
         catch (err) { console.error('[messageDelete] error:', err); }
     });
+
+    client.on(Events.MessageUpdate, (viejo, nuevo) => { registroMensajes.alEditar(viejo, nuevo); });
+    client.on(Events.MessageBulkDelete, (mensajes, canal) => { registroMensajes.alBorradoMasivo(mensajes, canal); });
 
     // ── Reaction roles ────────────────────────────────────────────────────────
 
@@ -711,6 +746,11 @@ if (RUN_BOT) {
     client.on(Events.GuildMemberUpdate, async (oldMember, newMember) => {
         try { await handleBoost(oldMember, newMember); }
         catch (err) { console.error('[boost] error:', err); }
+        suplantacion.alActualizarMiembro(oldMember, newMember).catch(err => console.error('[suplantacion] update:', err.message));
+    });
+
+    client.on(Events.UserUpdate, (viejo, nuevo) => {
+        suplantacion.alActualizarUsuario(viejo, nuevo).catch(err => console.error('[suplantacion] userUpdate:', err.message));
     });
 
     // ── Member auto-role ──────────────────────────────────────────────────────
@@ -724,6 +764,7 @@ if (RUN_BOT) {
         }
 
         invitesTracker.alEntrar(member).catch(err => console.error('[invitaciones] alEntrar:', err));
+        suplantacion.revisar(member, 'Entrada al servidor');
     });
 
     // ── Sistema de invitaciones ───────────────────────────────────────────────
@@ -737,6 +778,8 @@ if (RUN_BOT) {
     // ── Channel delete → cleanup ──────────────────────────────────────────────
 
     client.on(Events.ChannelDelete, channel => {
+        // Ticket borrado a mano: transcripción parcial con lo que hay en memoria.
+        transcripcion.alBorrarCanal(channel);
         const ownerId = tickets.getOwner(channel.id);
         tickets.cleanup(channel.id, ownerId);
         clearTimers(channel.id);

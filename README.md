@@ -1269,6 +1269,50 @@ estado va a `data/robloxNotifier.json`. Los emojis se dibujan y suben con
 `node scripts/notifierIconos.js --subir`; sus ids van en
 `config.ROBLOX_NOTIFIER.ICONOS`. Umbrales e intervalos, en el mismo bloque.
 
+## Seguridad y registros
+
+### Canales de registro
+Al arrancar, el bot crea una categoría privada **🔒 Registros 7x** (sólo la ven
+los owners de `config.ADMIN_IDS` y el bot) con `📝・mensajes-log`,
+`📁・transcripciones` y `🛡️・seguridad-log`. Sus ids se guardan en
+`data/logCanales.json`; si se borra uno, se vuelve a crear. Para usar canales
+existentes, pon su id en `config.LOGS.CANALES`.
+
+### Mensajes editados y borrados
+En `mensajes-log`: antes/después de cada edición, contenido completo de lo
+borrado, **quién lo borró** (el autor o un moderador, según el registro de
+auditoría), archivos re-subidos si el CDN aún los sirve, y los borrados
+masivos con un .txt. Discord sólo entrega el contenido de mensajes escritos
+después del último arranque del bot; si no, se registra que pasó sin contenido.
+El aviso público de `handlers/messageDelete.js` sigue igual.
+
+### Transcripciones de tickets
+Al cerrarse un ticket (botón, `/close`, cierre tras el pago o por inactividad)
+se guarda una copia HTML con aspecto de Discord en `transcripciones`, con
+**las imágenes incrustadas** (los comprobantes no caducan), los datos del
+pedido, participantes, duración y la **huella SHA-256** del archivo. El cliente
+recibe una copia por MD (`TRANSCRIPCIONES.ENVIAR_AL_CLIENTE`). Si alguien borra
+el canal a mano, se guarda una transcripción parcial con lo que hay en memoria.
+
+### Anti-suplantación
+Compara usuario, nombre visible y apodo de cada miembro con los owners, el bot
+y `SUPLANTACION.NOMBRES_PROTEGIDOS`, **normalizados** (unicode, cirílico, leet,
+acentos, separadores, letras repetidas), por igualdad, distancia de 1-2 letras
+o contenido; más la regla "7x + palabra de staff". Se revisa al entrar, al
+cambiarse el nombre y al arrancar sobre todo el servidor. El aviso en
+`seguridad-log` trae botones **Aislar / Expulsar / Banear / Es legítimo**.
+Copiar exacto el *nombre de usuario* (único) de un owner con una cuenta de
+menos de `AISLAR_CUENTA_DIAS` días aísla solo, pero sólo en vivo (la revisión de
+arranque nunca aísla). Staff con permisos de moderación está exento.
+
+### /userinfo
+Ficha de un miembro: perfil, fechas, insignias, Nitro (deducido: Discord no lo
+expone a bots), boost con su insignia y la siguiente, mejoras del servidor,
+roles, compras e invitaciones en 7x, y un **nivel de confianza** con sus
+razones. Lo puede usar cualquiera, **excepto sobre los owners**.
+
+Iconos: `node scripts/uiIconos.js --subir`, ids en `config.UI_ICONOS`.
+
 ## Quien puede hacer cosas de owner
 
 `config.OWNER_ID` es el dueno: la persona concreta, la que sale nombrada en los

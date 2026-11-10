@@ -247,7 +247,7 @@ async function handleClose(interaction) {
     await safeEditReply(interaction, { content: '🔒 Cierre automático iniciado. El ticket se eliminará en 10 minutos.' });
 
     const { startAutoClose } = require('./buttons');
-    await startAutoClose(channel);
+    await startAutoClose(channel, { cerradoPor: interaction.user, motivo: 'Cierre con /close (automático a los 10 minutos)' });
 }
 
 // ── /headless on|off ──────────────────────────────────────────────────────────

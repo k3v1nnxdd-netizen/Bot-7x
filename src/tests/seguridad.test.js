@@ -254,5 +254,64 @@ module.exports = async function run() {
     assert(reg.citado('x'.repeat(3000)).length <= 1024, 'y cabe en un campo de embed');
     assert(reg.debeIgnorarse({ guildId: 'g', author: { bot: true } }), 'los mensajes de bots no se registran');
 
+    // ── 6. Registro de mensajes, de punta a punta (con Discord simulado) ─────
+    const regMod = require('../../utils/registroMensajes');
+    const logs2 = require('../../utils/logCanales');
+    const envOrig = logs2.enviar;
+    let registrados = [];
+    logs2.enviar = async (g, tipo, p) => { registrados.push({ tipo, p }); return {}; };
+    const autor = { id: '777', bot: false, username: 'cliente', tag: 'cliente', displayAvatarURL: () => 'https://a/b.png' };
+    let auditoria = [];
+    const guildFalso = { fetchAuditLogs: async () => ({ entries: new Map(auditoria.map(e => [e.id, e])) }) };
+    const msg = extra => ({
+        id: '1', guildId: 'g', guild: guildFalso, channelId: 'c', author: autor, content: 'pagué 100',
+        createdTimestamp: AHORA, editedTimestamp: AHORA, url: 'https://discord.com/channels/g/c/1',
+        attachments: new Map(), embeds: [], stickers: new Map(), partial: false, ...extra,
+    });
+
+    await regMod.alEditar(msg(), msg({ content: 'pagué 1000' }));
+    let e1 = registrados.pop();
+    const ef = e1?.p.embeds[0].toJSON().fields ?? [];
+    assert(e1?.tipo === 'mensajes' && ef.find(f => f.name === 'Antes').value.includes('pagué 100') && ef.find(f => f.name === 'Después').value.includes('pagué 1000'), 'edición: registra antes y después');
+    assert(e1.p.components[0].toJSON().components[0].url.includes('/channels/'), 'con botón al mensaje');
+
+    await regMod.alEditar(msg(), msg());
+    assert(registrados.length === 0, 'mismo texto (vista previa de un link) no es una edición');
+
+    await regMod.alEditar(msg({ partial: true }), msg({ content: 'nuevo' }));
+    assert(registrados.pop()?.p.embeds[0].toJSON().fields.find(f => f.name === 'Antes').value.includes('anterior al último reinicio'), 'edición de un mensaje viejo: dice que el "antes" no está disponible');
+
+    await regMod.alEditar(msg(), msg({ content: 'x'.repeat(2000) }));
+    assert(registrados.pop()?.p.files.length === 1, 'un texto muy largo va completo en un .txt');
+
+    // Borrado por el propio autor: sin entrada de auditoría.
+    auditoria = [];
+    await regMod.alBorrar(msg());
+    let b1 = registrados.pop()?.p.embeds[0].toJSON();
+    assert(b1?.title.includes('Mensaje borrado') && b1.fields.find(f => f.name === 'Borrado por').value.includes('Su autor'), 'borrado por su autor');
+    assert(b1.fields.find(f => f.name === 'Contenido').value.includes('pagué 100'), 'con el contenido');
+
+    // Borrado por un moderador: entrada reciente.
+    auditoria = [{ id: 'a1', createdTimestamp: Date.now(), target: { id: '777' }, extra: { channel: { id: 'c' }, count: 1 }, executor: { id: '888' } }];
+    await regMod.alBorrar(msg({ id: '2' }));
+    let b2 = registrados.pop()?.p.embeds[0].toJSON();
+    assert(b2?.title.includes('moderador') && b2.fields.find(f => f.name === 'Borrado por').value.includes('<@888>'), 'borrado por un moderador: dice quién');
+
+    // Discord AGRUPA: misma entrada vieja con el contador subido.
+    auditoria = [{ id: 'a1', createdTimestamp: Date.now() - 5 * 60_000, target: { id: '777' }, extra: { channel: { id: 'c' }, count: 2 }, executor: { id: '888' } }];
+    await regMod.alBorrar(msg({ id: '3' }));
+    assert(registrados.pop()?.p.embeds[0].toJSON().fields.find(f => f.name === 'Borrado por').value.includes('<@888>'), 'entrada agrupada (contador sube): también detecta al moderador');
+
+    // Misma entrada vieja sin cambios: fue el autor.
+    await regMod.alBorrar(msg({ id: '4' }));
+    assert(registrados.pop()?.p.embeds[0].toJSON().fields.find(f => f.name === 'Borrado por').value.includes('Su autor'), 'entrada vieja sin cambios: no se atribuye al moderador');
+
+    await regMod.alBorrar({ id: '5', guild: guildFalso, guildId: 'g', channelId: 'c', partial: true });
+    assert(registrados.pop()?.p.embeds[0].toJSON().title.includes('sin contenido'), 'mensaje anterior al reinicio: se registra igual, sin contenido');
+
+    await regMod.alBorrar(msg({ author: { ...autor, bot: true } }));
+    assert(registrados.length === 0, 'los mensajes de bots no se registran');
+    logs2.enviar = envOrig;
+
     return finish();
 };

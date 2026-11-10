@@ -178,10 +178,20 @@ function htmlMensaje(m, ctx, imagenes) {
     const adjuntos = [...(m.attachments?.values?.() ?? [])].map(a => {
         const data = imagenes.get(a.url);
         return data
-            ? `<a class="att-img" href="${data}" download="${esc(a.name)}"><img src="${data}" alt="${esc(a.name)}"></a>`
+            // UNA sola copia de la imagen: ponerla también en el enlace duplicaba
+            // el peso del archivo (y un HTML de más de 10 MB no llega por MD).
+            ? `<figure class="att-img"><img src="${data}" alt="${esc(a.name)}"><figcaption class="sub">${esc(a.name)} · ${kb(a.size)}</figcaption></figure>`
             : `<div class="att">📎 <a href="${esc(a.url)}">${esc(a.name)}</a> · ${kb(a.size)}${String(a.contentType ?? '').startsWith('image/') ? ' <span class="sub">(no incrustada)</span>' : ''}</div>`;
     }).join('');
-    const respuesta = m.reference?.messageId ? `<div class="reply">↪ respuesta a un mensaje</div>` : '';
+    // A qué responde: autor y el principio del mensaje citado, con enlace a él
+    // dentro de la transcripción si está en ella.
+    let respuesta = '';
+    if (m.reference?.messageId) {
+        const ref = ctx.porId?.get(m.reference.messageId);
+        respuesta = ref
+            ? `<a class="reply" href="#m${ref.id}">↪ <strong>${esc(ctx.usuarios?.get(ref.author?.id) ?? ref.author?.username ?? '')}</strong> ${esc(String(ref.content || '[adjunto o tarjeta]').replace(/\s+/g, ' ').slice(0, 90))}</a>`
+            : '<div class="reply">↪ respuesta a un mensaje que no está en la transcripción</div>';
+    }
     const editado = m.editedTimestamp ? ` <span class="sub">(editado ${esc(fechaLarga(m.editedTimestamp))})</span>` : '';
 
     return `<div class="msg" id="m${m.id}">
@@ -226,7 +236,7 @@ code{background:#1e1f22;padding:1px 4px;border-radius:4px;font-size:13px}pre{bac
 .e-img{display:block;max-width:100%;max-height:300px;margin-top:8px;border-radius:4px}.e-footer{margin-top:8px;font-size:12px;color:var(--mut)}
 .btn{display:inline-block;margin:6px 6px 0 0;padding:4px 12px;background:#4e5058;border-radius:4px;font-size:13px;color:#fff}
 .att{margin-top:6px;padding:8px 10px;background:var(--bg2);border:1px solid #1e1f22;border-radius:6px;display:inline-block}
-.att-img img{display:block;margin-top:6px;max-width:400px;max-height:400px;border-radius:6px}
+.att-img{margin:6px 0 0}.att-img img{display:block;max-width:400px;max-height:400px;border-radius:6px}a.reply{display:block;color:var(--mut)}
 footer{padding:16px 24px;color:var(--mut);font-size:12px;border-top:1px solid #1e1f22}
 @media (max-width:600px){.msg{padding:6px 12px;gap:10px}.avatar{width:32px;height:32px}.att-img img{max-width:100%}}
 </style></head><body>
@@ -249,7 +259,8 @@ function contexto(guild, mensajes) {
     for (const mem of guild?.members?.cache?.values?.() ?? []) if (!usuarios.has(mem.id)) usuarios.set(mem.id, mem.displayName);
     const roles = new Map([...(guild?.roles?.cache?.values?.() ?? [])].map(r => [r.id, r.name]));
     const canales = new Map([...(guild?.channels?.cache?.values?.() ?? [])].map(c => [c.id, c.name]));
-    return { usuarios, roles, canales };
+    const porId = new Map(mensajes.map(m => [m.id, m]));
+    return { usuarios, roles, canales, porId };
 }
 
 const TIPOS = {
@@ -343,16 +354,22 @@ async function guardar(channel, opciones = {}) {
             allowedMentions: { parse: [] },
         });
 
+        // Por MD el límite de Discord es 10 MB (no el del servidor): si no cabe,
+        // el cliente recibe el aviso sin archivo y la copia completa queda en
+        // el registro.
+        const cabeEnMd = r.buffer.length <= 9.5 * 1024 * 1024;
         if (T().ENVIAR_AL_CLIENTE && r.datos.userId && !opciones.parcial) {
             const user = await channel.client.users.fetch(r.datos.userId).catch(() => null);
             await user?.send({
                 embeds: [new EmbedBuilder()
                     .setColor(0x5865F2)
                     .setTitle(`${ui('ticket')} Copia de tu ticket #${channel.name}`)
-                    .setDescription('Tu ticket se cerró. Aquí tienes la conversación completa para tus registros: descarga el archivo y ábrelo en tu navegador.')
+                    .setDescription(cabeEnMd
+                        ? 'Tu ticket se cerró. Aquí tienes la conversación completa para tus registros: descarga el archivo y ábrelo en tu navegador.'
+                        : 'Tu ticket se cerró. La conversación es demasiado grande para enviarla por aquí; si necesitas una copia, pídela al staff.')
                     .setFooter({ text: '7x Community · Tickets' })
                     .setTimestamp()],
-                files: [new AttachmentBuilder(r.buffer, { name: nombre })],
+                files: cabeEnMd ? [new AttachmentBuilder(r.buffer, { name: nombre })] : [],
             }).catch(() => { /* MD cerrados */ });
         }
         return Boolean(msg);
@@ -387,4 +404,4 @@ async function alBorrarCanal(channel) {
     }
 }
 
-module.exports = { guardar, alBorrarCanal, __test: { markdown, construirHtml, htmlMensaje, esc, contexto } };
+module.exports = { guardar, alBorrarCanal, __test: { markdown, construirHtml, htmlMensaje, esc, contexto, generar } };

@@ -231,7 +231,8 @@ function tarjeta(member, hallazgos, { grave, origen, accion }) {
 
 async function revisar(member, origen = 'cambio de nombre', { aislar = true } = {}) {
     try {
-        if (!member?.guild || exento(member)) return null;
+        // Sólo 7x: en los demás servidores del bot no se vigila ni se actúa.
+        if (!member?.guild || member.guild.id !== config.GUILD_ID || exento(member)) return null;
         if (!protegidos.length) await refrescarProtegidos(member.guild);
 
         const hallazgos = evaluar(member);
@@ -282,6 +283,7 @@ function cambioDeNombre(viejo, nuevo) {
 }
 
 async function alActualizarMiembro(viejo, nuevo) {
+    if (nuevo?.guild?.id !== config.GUILD_ID) return;
     // Un owner que se cambia el nombre: la lista de protegidos se actualiza.
     if (esAdmin(nuevo.id) || nuevo.id === nuevo.client.user.id) {
         if (cambioDeNombre(viejo, nuevo)) await refrescarProtegidos(nuevo.guild).catch(() => {});
@@ -333,6 +335,7 @@ async function alBoton(interaction) {
 
     const [accion, userId] = interaction.customId.split(':');
     const guild = interaction.guild;
+    if (guild?.id !== config.GUILD_ID) return;
     const razon = `Anti-suplantación · decisión de ${interaction.user.username}`;
     const quien = `<@${interaction.user.id}>`;
 

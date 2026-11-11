@@ -108,7 +108,7 @@ module.exports = async function run() {
         const it = {
             customId: `${accion}:${SOSPECHOSO}`, user: { id: quien, username: 'kev' },
             message: { embeds: [{ data: avisoEmbed }] },
-            guild: { members: {
+            guild: { id: config.GUILD_ID, members: {
                 cache: new Map(),
                 fetch: async () => { orden.push('fetch'); await new Promise(r => setTimeout(r, lento)); return sospechoso; },
                 ban: async () => { orden.push('ban'); if (falla) throw falla; },
@@ -132,14 +132,14 @@ module.exports = async function run() {
     assert(sup.load().legitimos[SOSPECHOSO] === sup.firma(miembro(usuario({ username: 'kevvv7x2', globalName: 'Crizzzz' }))), 'guarda que es legítimo con su nombre actual');
 
     // Legítimo de verdad: el mismo nombre ya no avisa; otro nombre, sí.
-    const mismo = miembro(usuario({ id: SOSPECHOSO, username: 'kevvv7x2', globalName: 'Crizzzz' }), { guild: { id: 'g' } });
+    const mismo = miembro(usuario({ id: SOSPECHOSO, username: 'kevvv7x2', globalName: 'Crizzzz' }), { guild: { id: config.GUILD_ID } });
     const enviados = [];
     const logC = require('../../utils/logCanales');
     const enviarOriginal = logC.enviar;
     logC.enviar = async (g, t, p) => { enviados.push(p); return {}; };
     supMod.__test.setProtegidos?.(prot);
     assert(await supMod.revisar(mismo, 'prueba', { aislar: false }) === null, 'legítimo con ese nombre: no vuelve a avisar');
-    const otro = miembro(usuario({ id: SOSPECHOSO, username: 'kevvv7x2', globalName: 'kevshito' }), { guild: { id: 'g' } });
+    const otro = miembro(usuario({ id: SOSPECHOSO, username: 'kevvv7x2', globalName: 'kevshito' }), { guild: { id: config.GUILD_ID } });
     assert(Array.isArray(await supMod.revisar(otro, 'prueba', { aislar: false })) && enviados.length === 1, 'si se cambia a OTRO nombre sospechoso, avisa de nuevo');
     const tj = enviados[0].embeds[0].toJSON();
     assert(tj.description.includes(SOSPECHOSO), 'el ID va en la descripción, a todo el ancho (no partido en una columna)');
@@ -316,9 +316,9 @@ module.exports = async function run() {
     logs2.enviar = async (g, tipo, p) => { registrados.push({ tipo, p }); return {}; };
     const autor = { id: '777', bot: false, username: 'cliente', tag: 'cliente', displayAvatarURL: () => 'https://a/b.png' };
     let auditoria = [];
-    const guildFalso = { fetchAuditLogs: async () => ({ entries: new Map(auditoria.map(e => [e.id, e])) }) };
+    const guildFalso = { id: config.GUILD_ID, fetchAuditLogs: async () => ({ entries: new Map(auditoria.map(e => [e.id, e])) }) };
     const msg = extra => ({
-        id: '1', guildId: 'g', guild: guildFalso, channelId: 'c', author: autor, content: 'pagué 100',
+        id: '1', guildId: config.GUILD_ID, guild: guildFalso, channelId: 'c', author: autor, content: 'pagué 100',
         createdTimestamp: AHORA, editedTimestamp: AHORA, url: 'https://discord.com/channels/g/c/1',
         attachments: new Map(), embeds: [], stickers: new Map(), partial: false, ...extra,
     });
@@ -360,7 +360,7 @@ module.exports = async function run() {
     await regMod.alBorrar(msg({ id: '4' }));
     assert(registrados.pop()?.p.embeds[0].toJSON().fields.find(f => f.name === 'Borrado por').value.includes('Su autor'), 'entrada vieja sin cambios: no se atribuye al moderador');
 
-    await regMod.alBorrar({ id: '5', guild: guildFalso, guildId: 'g', channelId: 'c', partial: true });
+    await regMod.alBorrar({ id: '5', guild: guildFalso, guildId: config.GUILD_ID, channelId: 'c', partial: true });
     assert(registrados.pop()?.p.embeds[0].toJSON().title.includes('sin contenido'), 'mensaje anterior al reinicio: se registra igual, sin contenido');
 
     await regMod.alBorrar(msg({ author: { ...autor, bot: true } }));
@@ -376,7 +376,7 @@ module.exports = async function run() {
     function guildNuke(manageable = true) {
         const roles = new Map([['g', { id: 'g', name: '@everyone' }], ['r1', { id: 'r1', name: 'Staff' }], ['r2', { id: 'r2', name: 'Admin' }]]);
         const m = { manageable, roles: { cache: { filter: f => ({ map: fn => [...roles.values()].filter(f).map(fn) }) }, set: async r => { m.rolesQuedan = r; } } };
-        return { id: 'g', name: '7x', client: { users: { fetch: async () => null } }, members: { fetch: async () => m }, _m: m };
+        return { id: config.GUILD_ID, name: '7x', client: { users: { fetch: async () => null } }, members: { fetch: async () => m }, _m: m };
     }
     const canalFalso = { name: 'general' };
     proteccionMod.__test.borrados.clear();
@@ -405,6 +405,63 @@ module.exports = async function run() {
     assert(!auditoriaConsultada, 'borrar un ticket no cuenta para el anti-nuke');
     logs3.enviar = env3;
 
+    // ── 7b. El bug de ACxQW: nada de esto actúa fuera de 7x ──────────────────
+    const OTRO = '1111111111111111111';
+    const logs4 = require('../../utils/logCanales');
+    const env4 = logs4.enviar;
+    let enviadosFuera = 0;
+    logs4.enviar = async (g, ...r) => { if (g?.id !== config.GUILD_ID) enviadosFuera++; return env4(g, ...r); };
+    // anti-nuke en otro servidor: no quita roles ni avisa
+    proteccionMod.__test.borrados.clear(); avisos = [];
+    const gOtro = guildNuke(); gOtro.id = OTRO;
+    for (let i = 0; i < 5; i++) await proteccionMod.__test.antiNuke(gOtro, { id: '999', username: 'x' }, canalFalso);
+    assert(gOtro._m.rolesQuedan === undefined, 'anti-nuke en OTRO servidor: no le quita roles a nadie');
+    // borrar canales en otro servidor: ni auditoría ni nada
+    let auditOtro = false;
+    await proteccionMod.alBorrarCanal({ id: 'x', name: 'general', guild: { id: OTRO, fetchAuditLogs: async () => { auditOtro = true; return null; } } });
+    assert(!auditOtro, 'un canal borrado en otro servidor se ignora por completo');
+    // registro de mensajes y anti-suplantación en otro servidor
+    await regMod.alBorrar(msg({ guildId: OTRO, guild: { ...guildFalso, id: OTRO } }));
+    await regMod.alEditar(msg({ guildId: OTRO }), msg({ guildId: OTRO, content: 'otro' }));
+    const deOtro = miembro(usuario({ username: 'kevvv7x' }), { guild: { id: OTRO } });
+    assert(await supMod.revisar(deOtro, 'prueba', { aislar: false }) === null, 'anti-suplantación: un miembro de otro servidor no se revisa');
+    assert(enviadosFuera === 0, 'ningún registro se intenta publicar en otro servidor');
+    // logCanales: en otro servidor no crea NADA
+    let creadosFuera = 0;
+    const guildAjeno = { id: OTRO, channels: { cache: new Map(), fetch: async () => null, create: async () => { creadosFuera++; return { id: 'n' }; } } };
+    assert(await logs4.asegurarTodos(guildAjeno) === null && await logs4.canal(guildAjeno, 'seguridad') === null && creadosFuera === 0, 'en otro servidor no se crea ninguna categoría ni canal');
+    logs4.enviar = env4;
+
+    // logCanales: con canales repetidos ADOPTA los más antiguos y no crea más.
+    {
+        const { ChannelType } = require('discord.js');
+        const mk = (id, name, type, parentId = null) => ({ id, name, type, parentId, guildId: config.GUILD_ID,
+            setParent: async p => { mk.movidos.push(id); }, permissionOverwrites: { set: async () => {} } });
+        mk.movidos = [];
+        const nombres = config.LOGS.CANALES;
+        const canales = [
+            mk('100', config.LOGS.CATEGORIA_NOMBRE, ChannelType.GuildCategory),
+            mk('900', config.LOGS.CATEGORIA_NOMBRE, ChannelType.GuildCategory),
+            mk('101', nombres.mensajes.nombre, ChannelType.GuildText, '100'),
+            mk('102', nombres.transcripciones.nombre, ChannelType.GuildText, '100'),
+            mk('103', nombres.seguridad.nombre, ChannelType.GuildText, '100'),
+            mk('901', nombres.mensajes.nombre, ChannelType.GuildText, '900'),
+            mk('902', nombres.transcripciones.nombre, ChannelType.GuildText, '900'),
+            mk('903', nombres.seguridad.nombre, ChannelType.GuildText, '900'),
+        ];
+        let creadosAqui = 0;
+        const g7 = { id: config.GUILD_ID, roles: { everyone: { id: config.GUILD_ID } }, client: { user: { id: 'bot' } }, channels: {
+            cache: new Map(canales.map(c => [c.id, c])),
+            fetch: async id => (id ? canales.find(c => c.id === id) ?? null : null),
+            create: async () => { creadosAqui++; return mk('999', 'nuevo', 0, '100'); },
+        } };
+        const r = await logs4.asegurarTodos(g7);
+        assert(r.categoria === '100' && r.mensajes === '101' && r.transcripciones === '102' && r.seguridad === '103', 'con duplicados, usa la categoría y los canales ORIGINALES (los más antiguos)');
+        assert(creadosAqui === 0 && r.creados.length === 0, 'y no crea ninguno nuevo');
+        assert(logs4.tipoDe('901') === null && logs4.tipoDe('101') === 'mensajes', 'los duplicados dejan de ser canales de registro');
+        const fs2 = require('fs'); const f = require('../../utils/dataDir').dataPath('logCanales.json'); if (fs2.existsSync(f)) fs2.unlinkSync(f);
+    }
+
     // ── 8. Archivo en disco ──────────────────────────────────────────────────
     const arch = require('../../utils/archivo');
     const { AttachmentBuilder } = require('discord.js');
@@ -418,6 +475,15 @@ module.exports = async function run() {
     arch.alias('pruebatipo', 'MSG2', idA);
     arch.__test.reset();
     assert(arch.porMensaje('MSG2', ['pruebatipo'])?.entrada.id === idA, 'un mensaje re-publicado apunta al mismo registro (también tras reiniciar)');
+    // Limpieza de entradas de otros servidores.
+    arch.registrar('pruebatipo', { embeds: [new EmbedBuilder().setTitle('de 7x')] }, 'MSG7', config.GUILD_ID);
+    arch.registrar('pruebatipo', { embeds: [new EmbedBuilder().setTitle('de ACxQW')] }, 'MSGX', '1111111111111111111');
+    arch.registrar('pruebatipo', { embeds: [new EmbedBuilder().setTitle('vieja ajena')] }, 'MSGVIEJA');
+    const quitadas = arch.depurarAjenos(['pruebatipo'], config.GUILD_ID, new Set(['MSG1']));
+    const titulos = arch.entradas('pruebatipo').map(e => e.embeds[0]?.title);
+    assert(quitadas === 2 && titulos.includes('de 7x') && titulos.includes('T1') && !titulos.includes('de ACxQW') && !titulos.includes('vieja ajena'), 'depura: fuera lo de otros servidores y lo antiguo que no está en 7x');
+    assert(arch.porMensaje('MSG2', ['pruebatipo'])?.entrada.id === idA, 'y conserva los alias de lo que se queda');
+    assert(arch.depurarAjenos(['pruebatipo'], config.GUILD_ID, new Set()) === null, 'la limpieza sólo se hace una vez');
     fs.rmSync(require('path').join(arch.DIR), { recursive: true, force: true });
 
     return finish();

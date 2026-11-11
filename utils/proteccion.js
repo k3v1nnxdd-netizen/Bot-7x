@@ -105,7 +105,9 @@ const borrados = new Map();   // executorId -> [timestamps]
 async function alBorrarCanal(channel) {
     try {
         const guild = channel?.guild;
-        if (!guild) return;
+        // Sólo 7x. El anti-nuke llegó a quitarle un rol a alguien en OTRO
+        // servidor del bot (ACxQW) por no comprobar esto.
+        if (!guild || guild.id !== config.GUILD_ID) return;
         const tipo = logCanales.tipoDe(channel.id);
         const esTicket = channel.parentId === config.CATEGORIES.TICKETS;
         if (!tipo && esTicket) return;
@@ -144,7 +146,7 @@ async function protegerRegistro(guild, channel, tipo, quien) {
 // ── Anti-nuke ────────────────────────────────────────────────────────────────
 
 async function antiNuke(guild, quien, channel) {
-    if (!P().ANTINUKE_ACTIVO) return;
+    if (!P().ANTINUKE_ACTIVO || guild?.id !== config.GUILD_ID) return;
     const ahora = Date.now();
     const ventana = P().ANTINUKE_VENTANA_SEG * 1000;
     const lista = (borrados.get(quien.id) ?? []).filter(t => ahora - t < ventana);
@@ -182,7 +184,8 @@ async function antiNuke(guild, quien, channel) {
 async function alBorrarMensaje(message) {
     try {
         const guild = message?.guild;
-        const tipo = guild && logCanales.tipoDe(message.channelId);
+        if (guild?.id !== config.GUILD_ID) return;
+        const tipo = logCanales.tipoDe(message.channelId);
         if (!tipo || tipo === 'categoria') return;
         const encontrado = archivo.porMensaje(message.id, logCanales.TIPOS());
         if (!encontrado) return;
@@ -200,13 +203,36 @@ async function alBorrarMensaje(message) {
 }
 
 async function alBorradoMasivo(mensajes, channel) {
-    if (!logCanales.tipoDe(channel?.id)) return;
+    if (channel?.guild?.id !== config.GUILD_ID || !logCanales.tipoDe(channel?.id)) return;
     for (const m of [...mensajes.values()].reverse()) await alBorrarMensaje(m);
 }
 
 // Al arrancar: si un canal de registro se borró mientras el bot estaba
 // apagado, ya se recreó vacío en asegurarTodos; aquí se rellena.
 async function alArrancar(guild, creados) {
+    if (guild?.id !== config.GUILD_ID) return;
+
+    // Limpieza única del archivo (ver archivo.depurarAjenos): los ids de los
+    // mensajes que hay ahora en TODOS los canales con nombre de registro de 7x.
+    try {
+        const nombres = new Set(Object.values(config.LOGS.CANALES).map(c => c.nombre));
+        const validos = new Set();
+        for (const ch of guild.channels.cache.filter(c => nombres.has(c.name)).values()) {
+            let antes;
+            for (let i = 0; i < 20; i++) {
+                const lote = await ch.messages.fetch({ limit: 100, ...(antes ? { before: antes } : {}) }).catch(() => null);
+                if (!lote?.size) break;
+                for (const id of lote.keys()) validos.add(id);
+                antes = lote.last().id;
+                if (lote.size < 100) break;
+            }
+        }
+        const quitadas = archivo.depurarAjenos(logCanales.TIPOS(), config.GUILD_ID, validos);
+        if (quitadas !== null) console.log(`[proteccion] Archivo depurado: ${quitadas} entrada(s) de otros servidores descartadas.`);
+    } catch (err) {
+        console.error('[proteccion] depurar archivo:', err.message);
+    }
+
     for (const t of creados ?? []) {
         if (!archivo.entradas(t).length) continue;   // instalación nueva: nada que restaurar
         const n = await restaurarCanal(guild, t, 'Este canal no existía al arrancar el bot (se borró mientras estaba apagado).');

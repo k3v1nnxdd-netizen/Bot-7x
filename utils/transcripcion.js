@@ -341,7 +341,7 @@ function embedResumen(channel, r, { cerradoPor, motivo, parcial }) {
 // Genera la transcripción y la publica. Nunca lanza: un fallo aquí no puede
 // impedir que el ticket se cierre (se registra y se sigue).
 async function guardar(channel, opciones = {}) {
-    if (!channel?.guild || hechas.has(channel.id)) return false;
+    if (!channel?.guild || channel.guild.id !== config.GUILD_ID || hechas.has(channel.id)) return false;
     hechas.add(channel.id);
     try {
         const r = await generar(channel, opciones);
@@ -385,7 +385,7 @@ async function guardar(channel, opciones = {}) {
 // Discord, pero el objeto del canal borrado conserva la caché del bot.
 async function alBorrarCanal(channel) {
     try {
-        if (!channel?.guild || hechas.has(channel.id)) return;
+        if (!channel?.guild || channel.guild.id !== config.GUILD_ID || hechas.has(channel.id)) return;
         if (!tickets.getTicketData(channel)?.userId) return;
 
         await new Promise(r => setTimeout(r, 1500));

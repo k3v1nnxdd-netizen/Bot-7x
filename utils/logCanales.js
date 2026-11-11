@@ -41,25 +41,47 @@ function permisos(guild) {
     ];
 }
 
+// Los registros son SÓLO de 7x (config.GUILD_ID). El bot está en otros
+// servidores, y un evento de uno de ellos no puede crear canales allí ni
+// cambiar cuáles son los canales oficiales: eso fue lo que pasó con ACxQW
+// (creó "Registros 7x" en ese servidor, se perdió la referencia a los de 7x y
+// se duplicaron). Todo lo de este módulo se niega fuera del servidor principal.
+const esPrincipal = guild => Boolean(guild) && guild.id === config.GUILD_ID;
+
 async function existe(guild, id) {
-    if (!id) return null;
-    return guild.channels.cache.get(id) ?? await guild.channels.fetch(id).catch(() => null);
+    if (!id || !guild) return null;
+    const ch = guild.channels.cache.get(id) ?? await guild.channels.fetch(id).catch(() => null);
+    return ch && ch.guildId === guild.id ? ch : null;
+}
+
+// El MÁS ANTIGUO con ese nombre (los ids de Discord crecen con el tiempo). Si
+// por lo que sea hay canales repetidos, siempre se usan los originales, que son
+// los que tienen el historial, y nunca se crea otro más.
+function masAntiguo(guild, filtro) {
+    const lista = [...guild.channels.cache.values()].filter(filtro);
+    lista.sort((x, y) => (BigInt(x.id) < BigInt(y.id) ? -1 : 1));
+    return lista[0] ?? null;
 }
 
 // Un solo "asegurar" a la vez: dos eventos simultáneos no pueden crear dos
 // categorías duplicadas.
 let enCurso = null;
 
-// Crea lo que falte. Si se borró la CATEGORÍA, Discord deja sus canales sueltos
-// fuera de ella: se crea otra y se devuelven dentro, con sus permisos. Devuelve
-// los ids guardados y qué tipos se tuvieron que crear de cero (esos son los que
-// hay que restaurar desde el archivo).
+// Encuentra (o crea, si de verdad no existen) la categoría y los canales.
+// Primero ADOPTA lo que ya hay por nombre; sólo crea lo que falta. Si se borró
+// la CATEGORÍA, Discord deja sus canales sueltos: se crea otra y se devuelven
+// dentro, con sus permisos. Devuelve los ids y qué tipos se tuvieron que crear
+// de cero (esos son los que hay que restaurar desde el archivo).
 async function asegurarTodos(guild) {
+    if (!esPrincipal(guild)) return null;
     if (enCurso) return enCurso;
     enCurso = (async () => {
+        await guild.channels.fetch().catch(() => null);
         const d = load();
         const creados = [];
-        let categoria = await existe(guild, d.categoria);
+
+        let categoria = masAntiguo(guild, c => c.type === ChannelType.GuildCategory && c.name === config.LOGS.CATEGORIA_NOMBRE)
+            ?? await existe(guild, d.categoria);
         const necesitaCategoria = Object.values(config.LOGS.CANALES).some(c => !c.id);
 
         if (!categoria && necesitaCategoria) {
@@ -69,14 +91,16 @@ async function asegurarTodos(guild) {
                 permissionOverwrites: permisos(guild),
                 reason: 'Registros privados del bot 7x',
             });
-            d.categoria = categoria.id;
             console.log(`[logs] Categoría de registros creada (${categoria.id})`);
         }
+        if (categoria) d.categoria = categoria.id;
 
         for (const [tipo, def] of Object.entries(config.LOGS.CANALES)) {
             if (def.id) continue;
-            const ch = await existe(guild, d[tipo]);
+            const ch = masAntiguo(guild, c => c.type === ChannelType.GuildText && c.name === def.nombre)
+                ?? await existe(guild, d[tipo]);
             if (ch) {
+                d[tipo] = ch.id;
                 // Suelto tras borrar la categoría: vuelve dentro y privado.
                 if (ch.parentId !== categoria.id) {
                     await ch.setParent(categoria.id, { lockPermissions: false, reason: 'Registros 7x: categoría restaurada' }).catch(() => {});
@@ -105,15 +129,16 @@ async function asegurarTodos(guild) {
 // Nunca lanza: un registro que no se puede escribir no puede romper lo que lo
 // provocó (un cierre de ticket, un borrado...).
 async function canal(guild, tipo) {
+    if (!esPrincipal(guild)) return null;
     try {
         const fijo = config.LOGS.CANALES[tipo]?.id;
         if (fijo) return await existe(guild, fijo);
         let ch = await existe(guild, load()[tipo]);
         if (!ch) {
             const d = await asegurarTodos(guild);
-            ch = await existe(guild, d[tipo]);
+            ch = d && await existe(guild, d[tipo]);
         }
-        return ch;
+        return ch ?? null;
     } catch (err) {
         console.error(`[logs] No se pudo obtener el canal de ${tipo}:`, err.message);
         return null;
@@ -133,12 +158,13 @@ function idsDeRegistro() {
 // Publica en el registro Y lo guarda en el archivo en disco (utils/archivo.js),
 // que es lo que permite restaurarlo si alguien borra el mensaje o el canal.
 async function enviar(guild, tipo, payload) {
+    if (!esPrincipal(guild)) return null;
     const ch = await canal(guild, tipo);
     const msg = ch ? await ch.send(payload).catch(err => {
         console.error(`[logs] No se pudo escribir en el registro de ${tipo}:`, err.message);
         return null;
     }) : null;
-    require('./archivo').registrar(tipo, payload, msg?.id ?? null);
+    require('./archivo').registrar(tipo, payload, msg?.id ?? null, guild.id);
     return msg;
 }
 
@@ -150,4 +176,4 @@ function tipoDe(channelId) {
     return null;
 }
 
-module.exports = { canal, enviar, asegurarTodos, idsDeRegistro, tipoDe, TIPOS: () => Object.keys(config.LOGS.CANALES) };
+module.exports = { canal, enviar, asegurarTodos, idsDeRegistro, tipoDe, esPrincipal, TIPOS: () => Object.keys(config.LOGS.CANALES) };

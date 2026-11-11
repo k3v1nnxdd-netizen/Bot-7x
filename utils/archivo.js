@@ -52,7 +52,7 @@ function datosDeArchivo(a) {
 
 // Guarda un registro. Nunca lanza: un fallo de disco no puede romper el
 // registro en Discord (que ya se publicó).
-function registrar(tipo, payload, msgId = null) {
+function registrar(tipo, payload, msgId = null, guildId = null) {
     try {
         asegurarDir(tipo);
         rotarSiHaceFalta(tipo);
@@ -66,7 +66,7 @@ function registrar(tipo, payload, msgId = null) {
             archivos.push({ nombre: d.nombre, fichero });
         }
         const linea = {
-            id, ts: Date.now(), msgId,
+            id, ts: Date.now(), msgId, guildId,
             content: payload.content ?? null,
             embeds: (payload.embeds ?? []).map(e => (e?.toJSON ? e.toJSON() : e)),
             archivos,
@@ -160,7 +160,40 @@ function resumenTexto(lista) {
     }).join('\n');
 }
 
+// Limpieza ÚNICA (marca en disco): antes de que los registros fueran sólo de
+// 7x, el archivo pudo guardar entradas de otros servidores del bot (ACxQW).
+// Se quedan las que llevan el servidor correcto y, de las antiguas sin
+// servidor, sólo las que siguen publicadas en los canales de 7x (`validos` =
+// ids de esos mensajes). El resto se descarta: nunca deben restaurarse en 7x.
+function depurarAjenos(tipos, guildId, validos) {
+    const marca = path.join(DIR, '.depurado-v1');
+    if (fs.existsSync(marca)) return null;
+    asegurarDir();
+    let quitadas = 0;
+    for (const tipo of tipos) {
+        for (const n of [3, 2, 1, 0]) {
+            const f = jsonl(tipo, n);
+            if (!fs.existsSync(f)) continue;
+            const guardadas = new Set();
+            const out = [];
+            for (const l of fs.readFileSync(f, 'utf8').split('\n')) {
+                if (!l) continue;
+                let e; try { e = JSON.parse(l); } catch { continue; }
+                if (e.id) {
+                    const ok = e.guildId ? e.guildId === guildId : validos.has(e.msgId);
+                    if (ok) { guardadas.add(e.id); out.push(l); } else quitadas++;
+                } else if (e.alias && (validos.has(e.alias) || guardadas.has(e.de))) out.push(l);
+            }
+            fs.writeFileSync(f, out.length ? out.join('\n') + '\n' : '');
+        }
+    }
+    fs.writeFileSync(marca, new Date().toISOString());
+    indice = null;
+    return quitadas;
+}
+
 module.exports = {
+    depurarAjenos,
     registrar, entradas, porMensaje, alias, payloadDe, resumenTexto, cargarIndice, DIR,
     __test: { reset: () => { indice = null; } },
 };

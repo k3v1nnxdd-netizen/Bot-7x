@@ -2,6 +2,7 @@
 
 const { EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, AuditLogEvent, AttachmentBuilder } = require('discord.js');
 const logCanales = require('./logCanales');
+const config = require('../config');
 const { ui, uiBoton } = require('./uiIconos');
 
 // ── Registro privado de mensajes editados y borrados ─────────────────────────
@@ -36,8 +37,11 @@ function citado(texto) {
     return cortar(texto.split('\n').map(l => `> ${l}`).join('\n'), MAX_CAMPO);
 }
 
+// Sólo 7x: el bot está en otros servidores y lo de allí no se registra.
+const esDe7x = m => m?.guildId === config.GUILD_ID;
+
 function debeIgnorarse(message) {
-    if (!message?.guildId) return true;
+    if (!esDe7x(message)) return true;
     if (message.author?.bot || message.webhookId) return true;
     return logCanales.idsDeRegistro().has(message.channelId);
 }
@@ -113,6 +117,7 @@ const kb = n => (n >= 1024 * 1024 ? `${(n / 1024 / 1024).toFixed(1)} MB` : `${Ma
 // primera vez que un moderador borra algo tras un reinicio también se detecta
 // por el contador, aunque la entrada sea antigua.
 async function iniciar(guild) {
+    if (guild?.id !== config.GUILD_ID) return;
     const logs = await guild?.fetchAuditLogs({ type: AuditLogEvent.MessageDelete, limit: 10 }).catch(() => null);
     for (const entry of logs?.entries.values() ?? []) contadores.set(entry.id, entry.extra?.count ?? 1);
 }
@@ -164,7 +169,7 @@ async function alEditar(viejo, nuevo) {
 
 async function alBorrar(message) {
     try {
-        if (!message.guild || logCanales.idsDeRegistro().has(message.channelId)) return;
+        if (!message.guild || !esDe7x(message) || logCanales.idsDeRegistro().has(message.channelId)) return;
 
         if (message.partial || !message.author) {
             await logCanales.enviar(message.guild, 'mensajes', {
@@ -226,7 +231,7 @@ async function alBorrar(message) {
 async function alBorradoMasivo(mensajes, canal) {
     try {
         const guild = canal?.guild;
-        if (!guild || logCanales.idsDeRegistro().has(canal.id)) return;
+        if (!guild || guild.id !== config.GUILD_ID || logCanales.idsDeRegistro().has(canal.id)) return;
 
         await new Promise(r => setTimeout(r, ESPERA_AUDITORIA_MS));
         const logs = await guild.fetchAuditLogs({ type: AuditLogEvent.MessageBulkDelete, limit: 5 }).catch(() => null);

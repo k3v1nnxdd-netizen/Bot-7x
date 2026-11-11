@@ -462,6 +462,17 @@ module.exports = async function run() {
         const fs2 = require('fs'); const f = require('../../utils/dataDir').dataPath('logCanales.json'); if (fs2.existsSync(f)) fs2.unlinkSync(f);
     }
 
+    // ── 7c. main.js: TODO evento de servidor pasa por el filtro de 7x ────────
+    {
+        const MAIN = fs.readFileSync(require('path').join(__dirname, '..', '..', 'main.js'), 'utf8');
+        const libres = [...MAIN.matchAll(/client\.on\(Events\.(\w+)/g)].map(m => m[1]);
+        const permitidos = new Set(['InteractionCreate', 'GuildCreate', 'UserUpdate', 'ClientReady', 'Error']);
+        const sinFiltro = libres.filter(e => !permitidos.has(e));
+        assert(sinFiltro.length === 0, `todos los eventos de servidor pasan por on7x (sin filtro: ${sinFiltro.join(', ') || 'ninguno'})`);
+        assert(/interaction\.guildId && !es7x\(interaction\.guildId\)/.test(MAIN), 'las interacciones de otros servidores no se ejecutan');
+        assert(/const es7x = guildId => guildId === config\.GUILD_ID/.test(MAIN), 'el filtro compara con config.GUILD_ID');
+    }
+
     // ── 8. Archivo en disco ──────────────────────────────────────────────────
     const arch = require('../../utils/archivo');
     const { AttachmentBuilder } = require('discord.js');

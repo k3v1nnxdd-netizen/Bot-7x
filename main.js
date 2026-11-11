@@ -614,11 +614,55 @@ if (RUN_BOT) {
         joinVoice(guild);
     });
 
+    // ── Sólo 7x ───────────────────────────────────────────────────────────────
+    // El bot está (o puede estar) en otros servidores. NADA de lo que pase en
+    // ellos llega a ninguna función: cada evento de servidor pasa por este
+    // filtro, que lo descarta si no es de config.GUILD_ID. Así se cortó de raíz
+    // lo de ACxQW (registros creados allí, anti-nuke actuando allí) y lo que
+    // las funciones antiguas hacían con eventos de otros servidores (auto-rol,
+    // invitaciones, boosts...). Los MD no son de ningún servidor y no pasan por
+    // aquí: las interacciones de MD (reseñas, compras) siguen funcionando.
+    const es7x = guildId => guildId === config.GUILD_ID;
+    function on7x(evento, servidorDe, handler) {
+        client.on(evento, (...args) => {
+            let id = null;
+            try { id = servidorDe(...args); } catch { /* sin servidor */ }
+            if (!es7x(id)) return;
+            return handler(...args);
+        });
+    }
+
+    // Si alguien mete el bot en otro servidor, se avisa a los owners en el
+    // registro de seguridad de 7x. No hace nada allí (ver arriba).
+    client.on(Events.GuildCreate, g => {
+        if (es7x(g.id)) return;
+        console.warn(`[bot] Añadido a otro servidor: ${g.name} (${g.id}). No funcionará allí.`);
+        const principal = client.guilds.cache.get(config.GUILD_ID);
+        if (!principal) return;
+        const { EmbedBuilder } = require('discord.js');
+        logCanales.enviar(principal, 'seguridad', {
+            content: config.ADMIN_IDS.map(id => `<@${id}>`).join(' '),
+            embeds: [new EmbedBuilder()
+                .setColor(0xF59E0B)
+                .setTitle('El bot fue añadido a otro servidor')
+                .setDescription(`**${g.name}** (\`${g.id}\`) · ${g.memberCount ?? '?'} miembros\nEl bot no hará nada allí: sólo funciona en 7x.`)
+                .setTimestamp()],
+            allowedMentions: { users: config.ADMIN_IDS },
+        }).catch(() => {});
+    });
+
     // ── Interactions ──────────────────────────────────────────────────────────
 
     client.on(Events.InteractionCreate, async interaction => {
         if (!markInteraction(interaction.id)) return;
         if (interaction.replied || interaction.deferred) return;
+        // De otro servidor: no se ejecuta nada. Sin servidor (MD): sí.
+        if (interaction.guildId && !es7x(interaction.guildId)) {
+            if (interaction.isRepliable?.()) {
+                await interaction.reply({ content: 'Este bot sólo funciona en 7x Community.', flags: 64 }).catch(() => {});
+            }
+            return;
+        }
 
         try {
             if      (interaction.isAutocomplete() && interaction.commandName === 'accdispo') await handleAccDispoAutocomplete(interaction);
@@ -660,7 +704,7 @@ if (RUN_BOT) {
 
     // ── Messages ──────────────────────────────────────────────────────────────
 
-    client.on(Events.MessageCreate, async message => {
+    on7x(Events.MessageCreate, m => m.guildId, async message => {
         try {
             // El mensaje de sistema con el que Discord anuncia un boost. Va
             // ANTES del resto porque no es un mensaje de nadie hablando: no
@@ -683,7 +727,7 @@ if (RUN_BOT) {
         } catch (err) { console.error('[message] error:', err); }
     });
 
-    client.on(Events.MessageDelete, async message => {
+    on7x(Events.MessageDelete, m => m.guildId, async message => {
         // El registro privado va aparte y sin esperar: su consulta al registro
         // de auditoría no puede retrasar el aviso público.
         registroMensajes.alBorrar(message);
@@ -693,15 +737,15 @@ if (RUN_BOT) {
         catch (err) { console.error('[messageDelete] error:', err); }
     });
 
-    client.on(Events.MessageUpdate, (viejo, nuevo) => { registroMensajes.alEditar(viejo, nuevo); });
-    client.on(Events.MessageBulkDelete, (mensajes, canal) => {
+    on7x(Events.MessageUpdate, (a, b) => b?.guildId ?? a?.guildId, (viejo, nuevo) => { registroMensajes.alEditar(viejo, nuevo); });
+    on7x(Events.MessageBulkDelete, (msgs, canal) => canal?.guildId, (mensajes, canal) => {
         registroMensajes.alBorradoMasivo(mensajes, canal);
         proteccion.alBorradoMasivo(mensajes, canal);
     });
 
     // ── Reaction roles ────────────────────────────────────────────────────────
 
-    client.on(Events.MessageReactionAdd, async (reaction, user) => {
+    on7x(Events.MessageReactionAdd, r => r.message?.guildId, async (reaction, user) => {
         try {
             if (user.bot) return;
             if (reaction.message.id !== getRolesMsgId()) return;
@@ -720,7 +764,7 @@ if (RUN_BOT) {
         }
     });
 
-    client.on(Events.MessageReactionRemove, async (reaction, user) => {
+    on7x(Events.MessageReactionRemove, r => r.message?.guildId, async (reaction, user) => {
         try {
             if (user.bot) return;
             if (reaction.message.id !== getRolesMsgId()) return;
@@ -741,7 +785,7 @@ if (RUN_BOT) {
 
     // ── Voice channel persistence ─────────────────────────────────────────────
 
-    client.on(Events.VoiceStateUpdate, (oldState, newState) => {
+    on7x(Events.VoiceStateUpdate, (a, b) => (b?.guild ?? a?.guild)?.id, (oldState, newState) => {
         handleVoiceStateUpdate(oldState, newState, client);
     });
 
@@ -750,7 +794,7 @@ if (RUN_BOT) {
     // timeout); handleBoost es quien decide si ese cambio concreto es un boost
     // que empieza.
 
-    client.on(Events.GuildMemberUpdate, async (oldMember, newMember) => {
+    on7x(Events.GuildMemberUpdate, (a, b) => b?.guild?.id, async (oldMember, newMember) => {
         try { await handleBoost(oldMember, newMember); }
         catch (err) { console.error('[boost] error:', err); }
         suplantacion.alActualizarMiembro(oldMember, newMember).catch(err => console.error('[suplantacion] update:', err.message));
@@ -762,7 +806,7 @@ if (RUN_BOT) {
 
     // ── Member auto-role ──────────────────────────────────────────────────────
 
-    client.on(Events.GuildMemberAdd, async member => {
+    on7x(Events.GuildMemberAdd, m => m.guild?.id, async member => {
         try {
             const role = member.guild.roles.cache.get(config.ROLES.AUTO_ASSIGN);
             if (role) await member.roles.add(role);
@@ -776,15 +820,15 @@ if (RUN_BOT) {
 
     // ── Sistema de invitaciones ───────────────────────────────────────────────
 
-    client.on(Events.GuildMemberRemove, member => {
+    on7x(Events.GuildMemberRemove, m => m.guild?.id, member => {
         invitesTracker.alSalir(member).catch(err => console.error('[invitaciones] alSalir:', err));
     });
-    client.on(Events.InviteCreate, invite => invitesTracker.alCrearInvitacion(invite));
-    client.on(Events.InviteDelete, invite => invitesTracker.alBorrarInvitacion(invite));
+    on7x(Events.InviteCreate, i => i.guild?.id, invite => invitesTracker.alCrearInvitacion(invite));
+    on7x(Events.InviteDelete, i => i.guild?.id, invite => invitesTracker.alBorrarInvitacion(invite));
 
     // ── Channel delete → cleanup ──────────────────────────────────────────────
 
-    client.on(Events.ChannelDelete, channel => {
+    on7x(Events.ChannelDelete, c => c.guildId, channel => {
         // Ticket borrado a mano: transcripción parcial con lo que hay en memoria.
         transcripcion.alBorrarCanal(channel);
         // Canal o categoría de registros borrados: se recrean y se restauran.

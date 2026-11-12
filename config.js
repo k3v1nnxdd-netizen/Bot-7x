@@ -401,6 +401,7 @@ module.exports = {
         group7x:     { label: '#7x $tudio',              groupId: 1101699267, link: 'https://www.roblox.com/es/communities/1101699267/7x-tudio' },
         noctranuevo: { label: 'Noctra nuevo',            groupId: 679239229,  link: 'https://www.roblox.com/es/communities/679239229/Noctraa#!/about' },
         ugc:         { label: '7x UGC',                  groupId: 729107867,  link: 'https://www.roblox.com/es/communities/729107867/7x-UGC#!/about' },
+        cocos:       { label: "Coco's Scoops Studios",   groupId: 707687326,  link: 'https://www.roblox.com/es/communities/707687326/Cocos-Scoops-Studios#!/about' },
     },
 
     // Anti-spam de Check Group's, por usuario de Discord. Cada comprobación que

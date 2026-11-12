@@ -480,6 +480,7 @@ module.exports = async function run() {
             group7x:     1101699267,
             noctranuevo: 679239229,
             ugc:         729107867,
+            cocos:       707687326,
         };
         for (const [clave, id] of Object.entries(ESPERADOS)) {
             assert(config.CHECK_GROUPS[clave]?.groupId === id, `cg_${clave} apunta al grupo ${id}`);
@@ -487,6 +488,7 @@ module.exports = async function run() {
         assert(config.CHECK_GROUPS.group7x.label === '#7x $tudio', 'group7x se llama #7x $tudio');
         assert(config.CHECK_GROUPS.noctranuevo.label === 'Noctra nuevo', 'noctranuevo se llama Noctra nuevo');
         assert(config.CHECK_GROUPS.ugc.label === '7x UGC', 'ugc se llama 7x UGC');
+        assert(config.CHECK_GROUPS.cocos.label === "Coco's Scoops Studios", "cocos se llama Coco's Scoops Studios");
         assert(
             Object.keys(config.CHECK_GROUPS).length === Object.keys(ESPERADOS).length,
             `no hay más comunidades configuradas de las ${Object.keys(ESPERADOS).length} esperadas`

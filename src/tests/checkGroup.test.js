@@ -365,8 +365,8 @@ module.exports = async function run() {
             noctra:      'https://www.roblox.com/es/communities/282134403/7x#!/about',
             community:   'https://www.roblox.com/es/communities/59218460/7x-Community-s',
             group7x:     'https://www.roblox.com/es/communities/1101699267/7x-tudio',
-            noctranuevo: 'https://www.roblox.com/es/communities/679239229/Noctraa#!/about',
             ugc:         'https://www.roblox.com/es/communities/729107867/7x-UGC#!/about',
+            cocos:       'https://www.roblox.com/es/communities/707687326/Cocos-Scoops-Studios#!/about',
         };
         for (const [clave, url] of Object.entries(LINKS)) {
             assert(config.CHECK_GROUPS[clave]?.link === url, `el link de ${clave} apunta a su comunidad`);
@@ -478,7 +478,6 @@ module.exports = async function run() {
             noctra:      282134403,
             community:   59218460,
             group7x:     1101699267,
-            noctranuevo: 679239229,
             ugc:         729107867,
             cocos:       707687326,
         };
@@ -486,7 +485,9 @@ module.exports = async function run() {
             assert(config.CHECK_GROUPS[clave]?.groupId === id, `cg_${clave} apunta al grupo ${id}`);
         }
         assert(config.CHECK_GROUPS.group7x.label === '#7x $tudio', 'group7x se llama #7x $tudio');
-        assert(config.CHECK_GROUPS.noctranuevo.label === 'Noctra nuevo', 'noctranuevo se llama Noctra nuevo');
+        // Noctra nuevo está pausada: fuera de la lista, pero guardada para volver.
+        assert(!config.CHECK_GROUPS.noctranuevo && config.CHECK_GROUPS_PAUSADOS.noctranuevo?.groupId === 679239229,
+            'Noctra nuevo está pausada (fuera de CHECK_GROUPS) y guardada para reactivarla');
         assert(config.CHECK_GROUPS.ugc.label === '7x UGC', 'ugc se llama 7x UGC');
         assert(config.CHECK_GROUPS.cocos.label === "Coco's Scoops Studios", "cocos se llama Coco's Scoops Studios");
         assert(

@@ -360,8 +360,44 @@ module.exports = async function run() {
     await regMod.alBorrar(msg({ id: '4' }));
     assert(registrados.pop()?.p.embeds[0].toJSON().fields.find(f => f.name === 'Borrado por').value.includes('Su autor'), 'entrada vieja sin cambios: no se atribuye al moderador');
 
-    await regMod.alBorrar({ id: '5', guild: guildFalso, guildId: config.GUILD_ID, channelId: 'c', partial: true });
-    assert(registrados.pop()?.p.embeds[0].toJSON().title.includes('sin contenido'), 'mensaje anterior al reinicio: se registra igual, sin contenido');
+    // Mensajes que no estaban en caché: se registran, pero AGRUPADOS por canal
+    // (antes cada uno era un embed vacío idéntico y limpiar un canal lo llenaba).
+    auditoria = [];
+    const viejo = (id, ch = 'c') => ({ id, guild: guildFalso, guildId: config.GUILD_ID, channelId: ch, partial: true });
+    await regMod.alBorrar(viejo('1542268337252335626'));
+    await regMod.alBorrar(viejo('1542288039802314774'));
+    await regMod.alBorrar(viejo('1542288000057352323'));
+    await regMod.alBorrar(viejo('1542268252326072401', 'otro'));
+    assert(registrados.length === 0, 'los borrados sin contenido esperan a juntarse antes de registrarse');
+    await regMod.__test.vaciarSinContenido();
+    assert(registrados.length === 2, 'cuatro borrados en dos canales: dos avisos, no cuatro');
+    const grupo = registrados.map(r => r.p.embeds[0].toJSON()).find(e => e.fields.find(f => f.name === 'Canal').value === '<#c>');
+    assert(grupo?.title.includes('3 mensajes borrados (sin contenido)'), 'el aviso dice cuántos fueron');
+    assert(/<t:\d+:d> — <t:\d+:d>/.test(grupo.fields.find(f => f.name === 'Enviados')?.value ?? ''), 'y cuándo se enviaron (sale del id)');
+    assert(grupo.fields.find(f => f.name === 'IDs').value.includes('1542288039802314774'), 'con sus ids');
+    const solo = registrados.map(r => r.p.embeds[0].toJSON()).find(e => e.fields.find(f => f.name === 'Canal').value === '<#otro>');
+    assert(solo?.title.includes('Mensaje borrado (sin contenido)') && solo.footer.text === 'Mensaje 1542268252326072401', 'uno solo se registra como uno');
+    assert(regMod.__test.fechaDeId('1542268337252335626') === Number((1542268337252335626n >> 22n) + 1420070400000n), 'la fecha sale del snowflake');
+    registrados.length = 0;
+
+    // Al arrancar se cargan los últimos mensajes de cada canal legible, para
+    // que lo reciente que se borre llegue con contenido.
+    const pedidos = [];
+    const canal = (id, extra = {}) => ({
+        id, isTextBased: () => true, isThread: () => false, isVoiceBased: () => false,
+        permissionsFor: () => ({ has: () => true }),
+        messages: { fetch: async o => { pedidos.push([id, o.limit]); return new Map([['m', {}]]); } }, ...extra,
+    });
+    const cal = await regMod.__test.calentarCache({
+        members: { me: {} },
+        channels: { cache: new Map([
+            ['a', canal('a')],
+            ['sinPermiso', canal('sinPermiso', { permissionsFor: () => ({ has: () => false }) })],
+            ['voz', canal('voz', { isVoiceBased: () => true })],
+        ]) },
+    });
+    assert(cal.canales === 1 && pedidos.length === 1 && pedidos[0][0] === 'a' && pedidos[0][1] === 100,
+        'al arrancar se cargan los últimos 100 mensajes de cada canal que el bot puede leer');
 
     await regMod.alBorrar(msg({ author: { ...autor, bot: true } }));
     assert(registrados.length === 0, 'los mensajes de bots no se registran');

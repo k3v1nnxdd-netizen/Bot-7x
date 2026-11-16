@@ -14,9 +14,10 @@ const { ui, uiBoton } = require('./uiIconos');
 // admins), con el contenido completo, los archivos y quién lo borró.
 //
 // Límite que no se puede saltar: Discord sólo entrega el contenido de un
-// mensaje borrado o editado si el bot lo tenía en caché, es decir, si se
-// escribió después del último arranque. Si no, se registra igualmente que
-// pasó, diciendo que el contenido no está disponible.
+// mensaje borrado o editado si el bot lo tenía en caché. Al arrancar se cargan
+// los últimos mensajes de cada canal (calentarCache); de lo más antiguo se
+// registra igualmente que pasó, agrupado y diciendo que el contenido no está
+// disponible.
 
 const MAX_CAMPO = 1024;
 const MAX_ARCHIVO = 8 * 1024 * 1024;
@@ -66,9 +67,10 @@ function botonIr(url) {
 // contador subió desde la última vez que la vimos.
 const contadores = new Map();   // entryId -> último count visto
 
-async function quienBorro(message) {
-    const guild = message.guild;
-    if (!guild || !message.author) return null;
+// `autorId` en null (mensaje que no estaba en caché, sin autor conocido): basta
+// con que la entrada sea de ese canal.
+async function quienBorro(guild, channelId, autorId) {
+    if (!guild) return null;
     await new Promise(r => setTimeout(r, ESPERA_AUDITORIA_MS));
     const logs = await guild.fetchAuditLogs({ type: AuditLogEvent.MessageDelete, limit: 10 }).catch(() => null);
     if (!logs) return null;
@@ -80,7 +82,7 @@ async function quienBorro(message) {
         const antes = contadores.get(entry.id);
         contadores.set(entry.id, count);
         if (quien) continue;
-        if (entry.target?.id !== message.author.id || entry.extra?.channel?.id !== message.channelId) continue;
+        if ((autorId && entry.target?.id !== autorId) || entry.extra?.channel?.id !== channelId) continue;
         const reciente = ahora - entry.createdTimestamp <= VENTANA_AUDITORIA_MS;
         const subio = antes !== undefined && count > antes;
         if ((reciente && antes === undefined) || subio) quien = entry.executor ?? null;
@@ -120,6 +122,7 @@ async function iniciar(guild) {
     if (guild?.id !== config.GUILD_ID) return;
     const logs = await guild?.fetchAuditLogs({ type: AuditLogEvent.MessageDelete, limit: 10 }).catch(() => null);
     for (const entry of logs?.entries.values() ?? []) contadores.set(entry.id, entry.extra?.count ?? 1);
+    await calentarCache(guild).catch(err => console.warn('[registro] No se pudo cargar la caché de mensajes:', err.message));
 }
 
 // ── Editado ──────────────────────────────────────────────────────────────────
@@ -172,21 +175,14 @@ async function alBorrar(message) {
         if (!message.guild || !esDe7x(message) || logCanales.idsDeRegistro().has(message.channelId)) return;
 
         if (message.partial || !message.author) {
-            await logCanales.enviar(message.guild, 'mensajes', {
-                embeds: [new EmbedBuilder()
-                    .setColor(0x64748B)
-                    .setTitle(`${ui('borrado')} Mensaje borrado (sin contenido)`)
-                    .setDescription('El mensaje es anterior al último reinicio del bot, así que Discord no entregó su contenido ni su autor.')
-                    .addFields({ name: 'Canal', value: `<#${message.channelId}>`, inline: true })
-                    .setFooter({ text: `Mensaje ${message.id}` })
-                    .setTimestamp()],
-                allowedMentions: { parse: [] },
-            });
+            apuntarSinContenido(message);
             return;
         }
         if (debeIgnorarse(message)) return;
 
-        const [quien, archivos] = await Promise.all([quienBorro(message), rescatarArchivos(message)]);
+        const [quien, archivos] = await Promise.all([
+            quienBorro(message.guild, message.channelId, message.author.id), rescatarArchivos(message),
+        ]);
         const porOtro = quien && quien.id !== message.author.id;
 
         const embed = cabecera(new EmbedBuilder(), message.author)
@@ -224,6 +220,104 @@ async function alBorrar(message) {
     } catch (err) {
         console.error('[registro] alBorrar:', err.message);
     }
+}
+
+// ── Borrados sin contenido, agrupados ────────────────────────────────────────
+//
+// Un mensaje que el bot no tenía en caché llega sin contenido ni autor: lo
+// único que se sabe es el canal, el id y —por el id— cuándo se envió. Antes
+// cada uno era un embed propio, y quien limpiaba un canal de mensajes viejos
+// llenaba el registro de avisos vacíos idénticos. Ahora los de un mismo canal
+// se juntan: se espera a que pasen AGRUPAR_MS sin borrados nuevos (o a
+// MAX_AGRUPADOS) y sale UN aviso con cuántos fueron.
+
+const AGRUPAR_MS = 5000;
+const MAX_AGRUPADOS = 100;
+const sinContenido = new Map();   // channelId -> { guild, ids, timer }
+
+const fechaDeId = id => {
+    try { return Number((BigInt(id) >> 22n) + 1420070400000n); } catch { return null; }
+};
+
+function apuntarSinContenido(message) {
+    let g = sinContenido.get(message.channelId);
+    if (!g) {
+        g = { guild: message.guild, ids: [], timer: null };
+        sinContenido.set(message.channelId, g);
+    }
+    g.ids.push(message.id);
+    clearTimeout(g.timer);
+    if (g.ids.length >= MAX_AGRUPADOS) {
+        registrarSinContenido(message.channelId);
+        return;
+    }
+    g.timer = setTimeout(() => registrarSinContenido(message.channelId), AGRUPAR_MS);
+    g.timer.unref?.();
+}
+
+async function registrarSinContenido(channelId) {
+    const g = sinContenido.get(channelId);
+    if (!g) return;
+    sinContenido.delete(channelId);
+    clearTimeout(g.timer);
+
+    try {
+        const n = g.ids.length;
+        const fechas = g.ids.map(fechaDeId).filter(Number.isFinite).sort((a, b) => a - b);
+        const quien = await quienBorro(g.guild, channelId, null);
+
+        const enviado = !fechas.length ? 'Desconocido'
+            : fechas[0] === fechas.at(-1) || n === 1 ? `${ts(fechas[0])}\n${ts(fechas[0], 'R')}`
+            : `${ts(fechas[0], 'd')} — ${ts(fechas.at(-1), 'd')}`;
+
+        const embed = new EmbedBuilder()
+            .setColor(0x64748B)
+            .setTitle(`${ui('borrado')} ${n === 1 ? 'Mensaje borrado' : `${n} mensajes borrados`} (sin contenido)`)
+            .setDescription(
+                (n === 1 ? 'Era un mensaje antiguo' : 'Eran mensajes antiguos') +
+                ' que el bot no tenía guardados, así que Discord no entregó su contenido ni su autor.')
+            .addFields(
+                { name: 'Canal', value: `<#${channelId}>`, inline: true },
+                { name: 'Borrado por', value: quien ? `<@${quien.id}>\n\`${quien.id}\`` : 'Desconocido\n-# sin registro de moderador', inline: true },
+                { name: n === 1 ? 'Enviado' : 'Enviados', value: enviado, inline: true },
+            )
+            .setFooter({ text: n === 1 ? `Mensaje ${g.ids[0]}` : `${n} mensajes` })
+            .setTimestamp();
+        if (n > 1) embed.addFields({ name: 'IDs', value: cortar(g.ids.map(id => `\`${id}\``).join(' '), MAX_CAMPO) });
+
+        await logCanales.enviar(g.guild, 'mensajes', { embeds: [embed], allowedMentions: { parse: [] } });
+    } catch (err) {
+        console.error('[registro] borrados sin contenido:', err.message);
+    }
+}
+
+// Registra ya lo que esté esperando (tests).
+async function vaciarSinContenido() {
+    await Promise.all([...sinContenido.keys()].map(registrarSinContenido));
+}
+
+// ── Caché al arrancar ────────────────────────────────────────────────────────
+//
+// Tras un reinicio el bot no tiene NINGÚN mensaje en caché, así que todo lo
+// que se borraba o editaba salía "sin contenido" hasta que se escribiera de
+// nuevo. Se cargan los últimos 100 de cada canal que el bot puede leer: lo
+// reciente —lo que de verdad se borra o edita— vuelve a llegar con contenido
+// y autor. Uno detrás de otro, en segundo plano (discord.js respeta los
+// límites de Discord).
+const POR_CANAL = 100;
+
+async function calentarCache(guild) {
+    const registro = logCanales.idsDeRegistro();
+    const yo = guild.members?.me;
+    let canales = 0, mensajes = 0;
+    for (const ch of guild.channels?.cache?.values?.() ?? []) {
+        if (!ch.isTextBased?.() || ch.isThread?.() || ch.isVoiceBased?.() || registro.has(ch.id)) continue;
+        if (yo && !ch.permissionsFor?.(yo)?.has(['ViewChannel', 'ReadMessageHistory'])) continue;
+        const r = await ch.messages.fetch({ limit: POR_CANAL }).catch(() => null);
+        if (r) { canales++; mensajes += r.size; }
+    }
+    console.log(`[registro] ${mensajes} mensaje(s) de ${canales} canal(es) en caché para el registro.`);
+    return { canales, mensajes };
 }
 
 // ── Borrado masivo ───────────────────────────────────────────────────────────
@@ -265,4 +359,7 @@ async function alBorradoMasivo(mensajes, canal) {
     }
 }
 
-module.exports = { iniciar, alEditar, alBorrar, alBorradoMasivo, __test: { citado, debeIgnorarse } };
+module.exports = {
+    iniciar, alEditar, alBorrar, alBorradoMasivo,
+    __test: { citado, debeIgnorarse, vaciarSinContenido, calentarCache, fechaDeId },
+};

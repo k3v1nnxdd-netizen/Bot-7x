@@ -109,6 +109,31 @@ module.exports = async function run() {
         assert(reciente.days === 0, 'quien acaba de entrar lleva 0 días, no 1');
         assert(reciente.eligible === (min === 0), 'quien acaba de entrar no es elegible');
 
+        // ── 1b. Comunidades verificadas: sus propios días (minDias) ──────────
+        // Coco's Scoops Studios es verificada: Roblox paga a los 3 días, no a
+        // los 14. El caso real: 11 días salía "NO ELEGIBLE, faltan 3 días".
+        const { diasMinimos } = require('../../utils/groupMembership');
+        assert(config.CHECK_GROUPS.cocos.minDias === 3 && diasMinimos('cocos') === 3, 'Coco\'s Scoops Studios (verificada) pide 3 días');
+        assert(diasMinimos(GROUP_KEY) === min, `las demás siguen con ${min}`);
+        respuestaMembresia = { createTime: haceDias(11), role: null, user: null };
+        assert((await checkMembership('cocos', usuarioNuevo())).eligible === true, 'en Coco\'s, con 11 días ya es elegible');
+        respuestaMembresia = { createTime: haceDias(3), role: null, user: null };
+        assert((await checkMembership('cocos', usuarioNuevo())).eligible === true, 'y justo con 3 también');
+        respuestaMembresia = { createTime: haceDias(2), role: null, user: null };
+        assert((await checkMembership('cocos', usuarioNuevo())).eligible === false, 'con 2 todavía no');
+        respuestaMembresia = { createTime: haceDias(11), role: null, user: null };
+        assert((await checkMembership(GROUP_KEY, usuarioNuevo())).eligible === (11 >= min), 'en una no verificada, 11 días se miden contra los 14');
+        const faltaCocos = flow.buildResultEmbed({ groupKey: 'cocos', groupLabel: 'Coco', robloxUsername: 'x', status: 'not_eligible', days: 2 }).embed.toJSON();
+        assert(JSON.stringify(faltaCocos).includes('**1 día** para ser elegible'), 'la tarjeta de Coco\'s cuenta lo que falta contra sus 3 días');
+        const cs = require('../../utils/communityStatus').__test;
+        respuestaMembresia = { createTime: haceDias(11), role: null, user: null };
+        const todas = await cs.resolverComunidades(usuarioNuevo());
+        assert(todas.find(c => c.clave === 'cocos')?.estado === 'elegible' && todas.find(c => c.clave === GROUP_KEY)?.estado === 'no_elegible',
+            'en el resumen del ticket, cada comunidad con sus días');
+        const headless = await cs.resolverComunidades(usuarioNuevo(), 15);
+        assert(headless.every(c => c.minDias === 15), 'la promo del Headless sigue pidiendo sus días en todas');
+        assert(require('../../checkGroup').__test.buildAviso().includes("**3 días** en **Coco's Scoops Studios**"), 'el panel dice que en la verificada son 3');
+
         // ── 2. Una sola consulta, filtrada por userId ────────────────────────
         llamadas.length = 0;
         respuestaMembresia = { createTime: haceDias(30), role: null, user: null };

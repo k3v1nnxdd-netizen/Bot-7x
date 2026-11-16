@@ -78,9 +78,15 @@ function buildComunidades(emojis = {}) {
 
 function buildAviso() {
     const total = comunidades().length;
+    // Las que piden menos días (las verificadas) se nombran, para que nadie
+    // crea que en todas son 14.
+    const excepciones = comunidades().filter(c => c.minDias && c.minDias !== config.MIN_GROUP_DAYS);
+    const enExcepciones = excepciones.length
+        ? ` En las comunidades **verificadas** son menos: ${excepciones.map(c => `**${c.minDias} días** en **${c.label}**`).join(', ')}.`
+        : '';
     return [
         '### Información importante',
-        `${E.point} Roblox exige **${config.MIN_GROUP_DAYS} días** dentro de una comunidad antes de poder enviarte Robux desde ella. El bot consulta tu fecha de ingreso directamente en Roblox y calcula los días exactos.`,
+        `${E.point} Roblox exige **${config.MIN_GROUP_DAYS} días** dentro de una comunidad antes de poder enviarte Robux desde ella.${enExcepciones} El bot consulta tu fecha de ingreso directamente en Roblox y calcula los días exactos.`,
         `${E.point} Se recomienda estar en las **${total} comunidades**: si alguna presenta problemas o alcanza sus límites, podremos realizar el envío desde otra.`,
         `${E.point} Los envíos se realizan principalmente por **7x (Antes Noctra Study)**, aunque esto puede cambiar en cualquier momento.`,
         `${E.point} No se realizan envíos mediante **Roblox Plus/Premium**.`,

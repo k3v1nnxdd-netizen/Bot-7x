@@ -7,7 +7,7 @@ const {
     ModalBuilder, TextInputBuilder, TextInputStyle,
 } = require('discord.js');
 const { safeReply, safeEditReply, safeDeferReply, safeShowModal } = require('../utils/safe');
-const { checkMembership, getGroup, getPlayerAvatar, getCommunityIcon, isValidUsername, GroupCheckError } = require('../utils/groupMembership');
+const { checkMembership, getGroup, getPlayerAvatar, getCommunityIcon, isValidUsername, GroupCheckError, diasMinimos } = require('../utils/groupMembership');
 const { lock, lockedUntil, registerHit, slotFreesAt } = require('../utils/spam');
 const config = require('../config');
 const consultasGrupo = require('../utils/consultasGrupo');
@@ -120,8 +120,8 @@ function statusValue(status) {
     }
 }
 
-function missingDaysLine(days) {
-    const left = Math.max(0, config.MIN_GROUP_DAYS - days);
+function missingDaysLine(days, minDias = config.MIN_GROUP_DAYS) {
+    const left = Math.max(0, minDias - days);
     return `${EMOJI.point} Le falta${left === 1 ? '' : 'n'} **${left} día${left === 1 ? '' : 's'}** para ser elegible.`;
 }
 
@@ -151,7 +151,7 @@ function buildResultEmbed({
 
     // Sólo si de verdad falta algo. En un no-miembro sería un número inventado.
     if (status === 'not_eligible' && days !== null) {
-        embed.addFields({ name: BLANK_FIELD_NAME, value: missingDaysLine(days), inline: false });
+        embed.addFields({ name: BLANK_FIELD_NAME, value: missingDaysLine(days, diasMinimos(groupKey)), inline: false });
     }
 
     // A quien no pertenece se le da el siguiente paso, no sólo el "no": el link
@@ -370,7 +370,7 @@ async function handleCheckGroupModal(interaction) {
         ? `${EMOJI.notEligible} **${result.robloxUsername}** no pertenece a **${group.label}**.${comoEntrar}`
         : result.eligible
             ? `${EMOJI.eligible} **${result.robloxUsername}** lleva **${result.days} día${result.days === 1 ? '' : 's'}** en **${group.label}**: elegible.`
-            : `${EMOJI.notEligible} **${result.robloxUsername}** lleva **${result.days} día${result.days === 1 ? '' : 's'}** en **${group.label}**: aún no cumple los **${config.MIN_GROUP_DAYS} días** mínimos.`;
+            : `${EMOJI.notEligible} **${result.robloxUsername}** lleva **${result.days} día${result.days === 1 ? '' : 's'}** en **${group.label}**: aún no cumple los **${diasMinimos(groupKey)} días** mínimos.`;
 
     await safeEditReply(interaction, {
         content: `${resumen}\n${EMOJI.point} Resultado publicado en <#${config.CHANNELS.CHECKGROUP_RESULTS}>.`,

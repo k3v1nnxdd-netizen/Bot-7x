@@ -395,12 +395,15 @@ module.exports = {
     // configurado, en vez de preguntarle a Roblox por un id inventado.
     // `link` es a dónde se manda a quien resulta NO PERTENECER: la tarjeta lo
     // enseña sólo en ese caso, para que pueda unirse y volver a comprobarlo.
+    // `minDias` sustituye a MIN_GROUP_DAYS sólo para esa comunidad: las
+    // verificadas por Roblox pueden pagar a los 3 días; las demás, a los 14.
     CHECK_GROUPS: {
         noctra:      { label: '7x (Antes Noctra Study)', groupId: 282134403,  link: 'https://www.roblox.com/es/communities/282134403/7x#!/about' },
         community:   { label: "7x Community's",          groupId: 59218460,   link: 'https://www.roblox.com/es/communities/59218460/7x-Community-s' },
         group7x:     { label: '#7x $tudio',              groupId: 1101699267, link: 'https://www.roblox.com/es/communities/1101699267/7x-tudio' },
         ugc:         { label: '7x UGC',                  groupId: 729107867,  link: 'https://www.roblox.com/es/communities/729107867/7x-UGC#!/about' },
-        cocos:       { label: "Coco's Scoops Studios",   groupId: 707687326,  link: 'https://www.roblox.com/es/communities/707687326/Cocos-Scoops-Studios#!/about' },
+        // Comunidad VERIFICADA (insignia de Roblox): pide 3 días en vez de 14.
+        cocos:       { label: "Coco's Scoops Studios",   groupId: 707687326,  link: 'https://www.roblox.com/es/communities/707687326/Cocos-Scoops-Studios#!/about', minDias: 3 },
     },
 
     // Comunidades quitadas POR AHORA. Nada del bot lee esta lista: fuera de

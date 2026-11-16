@@ -45,14 +45,15 @@ const NOMBRE_VACIO = '​';
 //
 // `minDias` es el umbral con el que se juzga la elegibilidad, y es un parámetro
 // porque no siempre es el mismo: una compra normal se mide contra los días que
-// exige Roblox para pagar (config.MIN_GROUP_DAYS), pero la promo del Headless
-// pide los suyos (config.HEADLESS.DIAS_REQ). Sin esto, un ticket de Headless
+// exige Roblox para pagar en CADA comunidad (14, o 3 en las verificadas: ver
+// groupMembership.diasMinimos), pero la promo del Headless pide los suyos
+// (config.HEADLESS.DIAS_REQ) en todas. Sin esto, un ticket de Headless
 // enseñaría "elegible" a quien todavía no cumple SU requisito.
 //
 // Por eso la elegibilidad se recalcula aquí desde los días en vez de usar el
-// `eligible` que trae checkMembership: ese siempre viene medido contra
-// MIN_GROUP_DAYS.
-async function resolverComunidades(username, minDias = config.MIN_GROUP_DAYS) {
+// `eligible` que trae checkMembership: ese siempre viene medido contra los
+// días de Roblox. `minDias` en null = los de cada comunidad.
+async function resolverComunidades(username, minDiasFijo = null) {
     const claves = Object.keys(config.CHECK_GROUPS);
 
     const resultados = await Promise.allSettled(
@@ -62,6 +63,7 @@ async function resolverComunidades(username, minDias = config.MIN_GROUP_DAYS) {
     return claves.map((clave, i) => {
         const r = resultados[i];
         const label = config.CHECK_GROUPS[clave].label;
+        const minDias = minDiasFijo ?? groupMembership.diasMinimos(clave);
 
         if (r.status === 'rejected') {
             const code = r.reason instanceof GroupCheckError ? r.reason.code : 'unexpected';
@@ -189,7 +191,7 @@ function buildTextoComunidades(comunidades, emojis = {}) {
 async function buildCommunitySummary(client, username, { minDias } = {}) {
     try {
         const [comunidades, emojis] = await Promise.all([
-            resolverComunidades(username, minDias ?? config.MIN_GROUP_DAYS),
+            resolverComunidades(username, minDias ?? null),
             groupEmojis.ensureGroupEmojis(client).catch(() => ({})),
         ]);
 

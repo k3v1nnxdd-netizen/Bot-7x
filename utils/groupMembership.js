@@ -232,11 +232,18 @@ async function checkMembership(groupKey, username) {
         isMember: true,
         joinedAt,
         days,
-        eligible: days >= config.MIN_GROUP_DAYS,
+        eligible: days >= diasMinimos(groupKey),
     };
 }
 
+// Los días que pide Roblox para que ESTA comunidad pueda pagar: los suyos
+// (`minDias`, las verificadas piden 3) o, si no tiene, MIN_GROUP_DAYS.
+function diasMinimos(groupKey) {
+    return config.CHECK_GROUPS[groupKey]?.minDias ?? config.MIN_GROUP_DAYS;
+}
+
 module.exports = {
+    diasMinimos,
     checkMembership,
     getGroup,
     getPlayerAvatar,

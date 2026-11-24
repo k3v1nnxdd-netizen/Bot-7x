@@ -677,7 +677,7 @@ function buildInvitacionesTexto(userId, nombre) {
         `↩️ Repetidas (ya habían entrado): **${r.repetidas}**`,
         '',
         `-# ${entrada}.`,
-        `-# El Top 1 de cada semana gana ${I.PREMIO_ROBUX} Robux. Solo cuentan cuentas con más de ${I.MIN_DIAS_CUENTA} días que entran por primera vez y siguen en el servidor.`,
+        `-# Solo cuentan cuentas con más de ${I.MIN_DIAS_CUENTA} días que entran por primera vez y siguen en el servidor.`,
     ].join('\n');
 }
 

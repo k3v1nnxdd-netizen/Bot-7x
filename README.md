@@ -910,12 +910,10 @@ Datos y reglas en `utils/invitaciones.js`; la parte de Discord en
   deja de sumar (tambien si se fue con el bot apagado: se revisa al arrancar).
 - **Canal** `CHANNELS.INVITACIONES`: cada entrada se anuncia (sin pings) y el
   **leaderboard queda siempre al final**: si llega otro mensaje, se publica de
-  nuevo abajo y se borra el viejo. Muestra el top 10 de la semana, el ganador
-  de la semana pasada y el top 10 de siempre.
-- **Premio semanal:** el Top 1 gana `PREMIO_ROBUX` (250). La semana se cierra
-  el lunes a las 00:00 (hora del centro de Mexico): se anuncia al ganador (con
-  mencion) y el top semanal vuelve a cero. Se revisa al arrancar y cada 5 min.
-  El premio lo entrega el staff.
+  nuevo abajo y se borra el viejo. Muestra el top 10 de la semana y el top 10
+  de siempre. **Sin premios.**
+- **Semana:** se cierra el lunes a las 00:00 (hora del centro de Mexico) sin
+  anuncio: el top semanal vuelve a cero. Se revisa al arrancar y cada 5 min.
 - **`/invitaciones [usuario]`** (publico): las de la semana, las de siempre, el
   puesto, el detalle de las que no cuentan y quien lo invito.
 - **Persistencia:** todo en `DATA_DIR/invitaciones.json` (el volumen). Cada

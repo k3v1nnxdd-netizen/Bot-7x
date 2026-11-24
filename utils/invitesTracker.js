@@ -137,20 +137,13 @@ function lineasTop(lista, vacio) {
 function textoLeaderboard(ahora = Date.now()) {
     const I = inv.I;
     const fin = Math.floor((inv.inicioSemana(ahora) + 7 * 86_400_000) / 1000);
-    const ganador = inv.ultimoGanador();
 
+    // Sin premios: sólo las tablas (el owner quitó la recompensa semanal).
     return [
         `## ${ic('corona')} Top invitaciones de la semana`,
-        `${ic('regalo')} El **Top 1** de cada semana gana **${I.PREMIO_ROBUX} Robux**.`,
         `-# ${ic('reloj')} Se reinicia el lunes a las 00:00 · <t:${fin}:R>`,
         '',
         ...lineasTop(inv.top('semana', ahora), '-# Nadie ha invitado todavía esta semana. ¡El primero en invitar se pone en cabeza!'),
-        '',
-        `### ${ic('trofeo')} Ganador de la semana pasada`,
-        ganador
-            ? `<@${ganador.ganadorId}> con **${plural(ganador.invitaciones, 'invitación', 'invitaciones')}** · ganó **${ganador.premio ?? I.PREMIO_ROBUX} Robux**`
-            : 'Todavía no hay ganador: esta es la primera semana.',
-        `-# ${ic('arena')} Esperando al ganador de esta semana…`,
         '',
         `### ${ic('grafica')} Top de todos los tiempos`,
         ...lineasTop(inv.top('total', ahora), '-# Todavía no hay invitaciones válidas.'),
@@ -282,33 +275,13 @@ function alMensaje(message) {
 }
 
 // ── El cierre semanal ────────────────────────────────────────────────────────
+// Sin premios, el cierre no se anuncia: el top semanal vuelve a cero y el
+// leaderboard se actualiza, nada más.
 
 async function revisarSemana(client, ahora = Date.now()) {
     const cerrada = inv.cerrarSemanaSiToca(ahora);
     if (!cerrada) return null;
-
-    const ch = await canal(client);
-    if (ch) {
-        const texto = cerrada.ganadorId
-            ? [
-                `## ${ic('trofeo')} ¡Ganador de la semana!`,
-                `<@${cerrada.ganadorId}> fue el **Top 1** con **${plural(cerrada.invitaciones, 'invitación', 'invitaciones')}** y gana **${cerrada.premio} Robux**.`,
-                '',
-                `${E.point} El staff te contactará para entregarte tu premio.`,
-                '-# El top de la semana vuelve a empezar desde cero. ¡A invitar!',
-            ].join('\n')
-            : [
-                `## ${ic('reloj')} Semana cerrada`,
-                'Esta semana no hubo invitaciones válidas, así que no hay ganador.',
-                '-# El top vuelve a empezar desde cero. ¡A invitar!',
-            ].join('\n');
-        await ch.send({
-            ...v2.tarjetaPayload({ color: 0x2B2D31, texto, pie: '7x Community • Sistema de invitaciones' }),
-            // Al ganador sí se le menciona: es a quien hay que avisar.
-            allowedMentions: { users: cerrada.ganadorId ? [cerrada.ganadorId] : [] },
-        }).catch(err => console.warn('[invitaciones] No se pudo anunciar al ganador:', err.message));
-    }
-    await moverLeaderboardAlFinal(client, { forzar: !!ch });
+    await moverLeaderboardAlFinal(client);
     return cerrada;
 }
 

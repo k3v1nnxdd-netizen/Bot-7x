@@ -148,8 +148,8 @@ module.exports = async function run() {
 
     const cerrada = inv.cerrarSemanaSiToca(lun + 5000);
     assert(cerrada?.ganadorId === 'ana' && cerrada.invitaciones === 2 && cerrada.semana === '2026-10-19',
-        'el lunes se cierra y gana el Top 1 de la semana pasada');
-    assert(cerrada.premio === I.PREMIO_ROBUX && I.PREMIO_ROBUX === 250, 'con su premio de 250 Robux');
+        'el lunes se cierra y queda apuntado el Top 1 de la semana pasada');
+    assert(!('premio' in cerrada) && !('PREMIO_ROBUX' in I), 'sin premio: las invitaciones ya no dan Robux');
     assert(inv.cerrarSemanaSiToca(lun + 10_000) === null, 'y no se cierra dos veces');
     assert(inv.top('semana', lun + 10_000).map(u => u.userId).join() === 'kev', 'la semana nueva empieza desde cero');
     assert(inv.top('total', lun + 10_000)[0]?.invitaciones === 2, 'el top de siempre no se reinicia');
@@ -249,13 +249,13 @@ module.exports = async function run() {
 
     // ── 6. Lo que dice el leaderboard ────────────────────────────────────────
     const texto = tracker.__test.textoLeaderboard(ahora);
-    assert(/Top invitaciones de la semana/.test(texto) && /250 Robux/.test(texto), 'enseña el top de la semana y el premio');
+    assert(/Top invitaciones de la semana/.test(texto), 'enseña el top de la semana');
+    assert(!/Robux|premio|gana|Ganador/i.test(texto), 'sin premio ni ganador: ya no hay recompensas');
     assert(/<t:\d+:R>/.test(texto) && /lunes/.test(texto), 'y cuándo se reinicia');
-    assert(/Ganador de la semana pasada/.test(texto) && /Esperando al ganador de esta semana/.test(texto), 'el ganador anterior, esperando al nuevo');
     assert(/Top de todos los tiempos/.test(texto), 'y el top de siempre');
     const IC = I.ICONOS;
     assert(texto.indexOf('<:inv_1:' + IC[1] + '> <@kev>') > 0, 'con su icono de puesto para los primeros');
-    for (const k of ['corona', 'regalo', 'reloj', 'trofeo', 'arena', 'grafica', 'escudo']) {
+    for (const k of ['corona', 'reloj', 'grafica', 'escudo']) {
         assert(texto.includes('<:inv_' + k + ':' + IC[k] + '>'), 'el leaderboard usa el icono blanco ' + k);
     }
     assert(!/[🏆📊⏳🥇🥈🥉]/u.test(texto), 'y ya no usa los emojis de colores de antes');
@@ -267,6 +267,16 @@ module.exports = async function run() {
     assert(/Invitaciones de kəv/.test(t) && /Esta semana: \*\*3\*\*/.test(t), '/invitaciones dice las de la semana');
     assert(/Válidas: \*\*3\*\*/.test(t) && /Falsas o sospechosas/.test(t) && /Repetidas/.test(t), 'y el detalle de las que no cuentan');
     assert(/Entró invitado por <@kev>/.test(cmd.buildInvitacionesTexto('nuevo1', 'abi')), 'y quién invitó a cada uno');
+    assert(!/Robux|gana/.test(t), '/invitaciones ya no habla de premios');
+
+    // El cierre de la semana ya no anuncia un ganador: sólo actualiza la tabla.
+    const datos = inv.load(); datos.semana = '2000-01-03';
+    fs.writeFileSync(require('../../utils/dataDir').dataPath('invitaciones.json'), JSON.stringify(datos));
+    const enviadosAntes = ch.n, tamAntes = ch.mensajes.size;
+    const cierre = await tracker.revisarSemana(cli);
+    assert(cierre?.semana === '2000-01-03', 'la semana se sigue cerrando el lunes');
+    assert(ch.n === enviadosAntes && ch.mensajes.size === tamAntes,
+        'pero sin publicar ningún anuncio de ganador: sólo se actualiza la tabla');
 
     const MAIN = fs.readFileSync(path.join(RAIZ, 'main.js'), 'utf8').replace(/\r\n/g, '\n');
     assert(/name: 'invitaciones',\n\s*description:/.test(MAIN) && /commandName === 'invitaciones'/.test(MAIN), '/invitaciones está registrado y enrutado');

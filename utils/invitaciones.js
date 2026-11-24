@@ -227,9 +227,8 @@ function puesto(userId, periodo, ahora = Date.now(), data = load()) {
 // ── El cierre de la semana ───────────────────────────────────────────────────
 //
 // Se llama al arrancar y cada pocos minutos. Si la semana guardada ya no es la
-// actual, se cierra: se apunta el ganador (con sus invitaciones de ESE momento:
-// que luego se le vaya alguien no le quita una semana ya ganada) y se empieza
-// la nueva. Devuelve lo cerrado, o null si no tocaba.
+// actual, se cierra: se apunta en el historial quién fue el Top 1 (con sus
+// invitaciones de ESE momento) y se empieza la nueva. Ya no hay premio. Devuelve lo cerrado, o null si no tocaba.
 //
 // No va con un temporizador hasta el lunes: el bot se reinicia en cada
 // despliegue y un temporizador así no sobreviviría.
@@ -250,7 +249,6 @@ function cerrarSemanaSiToca(ahora = Date.now()) {
         semana: cerrada,
         ganadorId: g?.userId ?? null,
         invitaciones: g?.invitaciones ?? 0,
-        premio: I.PREMIO_ROBUX,
         cerradaEn: ahora,
     };
     data.historial.push(entrada);

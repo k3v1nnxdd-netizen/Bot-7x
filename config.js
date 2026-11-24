@@ -67,11 +67,10 @@ module.exports = {
 
     // ── Sistema de invitaciones (utils/invitaciones.js) ──────────────────────
     // Cada entrada se anuncia en CHANNELS.INVITACIONES y, siempre al final de
-    // ese canal, el leaderboard: el top de la semana, el ganador de la semana
-    // pasada y el top de siempre. El Top 1 de cada semana gana PREMIO_ROBUX;
-    // la semana se reinicia los lunes a las 00:00 (hora del centro de México).
+    // ese canal, el leaderboard: el top de la semana y el top de siempre. Sin
+    // premios. La semana se reinicia los lunes a las 00:00 (hora del centro de
+    // México).
     INVITACIONES: {
-        PREMIO_ROBUX:     250,
         TOP:              10,
         UTC_OFFSET_HORAS: -6,     // centro de México, sin horario de verano
 

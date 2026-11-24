@@ -210,6 +210,7 @@ module.exports = {
             mensajes:       { nombre: '📝・mensajes-log',   id: null },
             transcripciones:{ nombre: '📁・transcripciones', id: null },
             seguridad:      { nombre: '🛡️・seguridad-log',  id: null },
+            promociones:    { nombre: '📨・promociones-log', id: null },
         },
     },
 
@@ -335,6 +336,29 @@ module.exports = {
         TASA_ROBLOX:   0.30,
         MIN_ROBUX:     500,
         MAX_ROBUX:     100000,
+    },
+
+    // ── Promociones por MD (utils/promociones.js) ────────────────────────────
+    // Dos mensajes automáticos a los clientes, con un botón al servidor y otro
+    // para darse de baja (cada envío y cada baja quedan en el registro de
+    // promociones):
+    //
+    //   - RESUMEN: DIAS_RESUMEN días después de cada compra, cuánto se ahorró
+    //     en esa compra y en total frente al precio de Roblox.
+    //   - INACTIVO: tras DIAS_INACTIVO días sin comprar, los precios de hoy y
+    //     su ahorro acumulado. Como mucho uno cada DIAS_ENTRE_AVISOS.
+    //
+    // PRECIO_ROBLOX_POR_1K es la referencia del ahorro: lo que cuestan 1.000
+    // Robux en tarjeta de Roblox en México (OXXO). MAX_POR_RONDA reparte los
+    // envíos en el tiempo: Discord trata como spam una ráfaga de MDs.
+    PROMOS: {
+        ACTIVO:               true,
+        PRECIO_ROBLOX_POR_1K: 249,
+        DIAS_RESUMEN:         1,
+        DIAS_INACTIVO:        14,
+        DIAS_ENTRE_AVISOS:    14,
+        REVISION_MIN:         20,
+        MAX_POR_RONDA:        4,
     },
 
     // ── Venta por Roblox Plus ────────────────────────────────────────────────

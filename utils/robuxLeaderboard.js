@@ -58,6 +58,9 @@ function recordPurchase(userId, robuxAmount, priceMxn, orderId = null, opciones 
     entry.purchases += 1;
     if (orderId) {
         entry.ordenes = [...(entry.ordenes ?? []), String(orderId)];
+        // Robux y precio de cada pedido: el resumen de ahorro tras una compra
+        // (utils/promociones.js) habla de ESA compra, no del total.
+        entry.detalle = { ...(entry.detalle ?? {}), [String(orderId)]: { robux: robuxAmount, precio: Number.isFinite(priceMxn) ? priceMxn : null } };
         if (opciones.descuentoFidelidad) entry.descuentos = [...(entry.descuentos ?? []), String(orderId)];
     }
 

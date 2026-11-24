@@ -52,7 +52,7 @@ if (RUN_BOT) {
     const { handleButton, clearTimers } = require('./handlers/buttons');
     const { handleModal }     = require('./handlers/modals');
     const { handleAcc, handleAccDispo, handleAccDispoAutocomplete } = require('./handlers/accounts');
-    const { handleOutfit, handlePagos, handlePagoVerified, handleOffer, handleClose, handleHeadless, handleGroupActive, handleTopCompradores, handleCrypto, handleAvatar, handleCompras, handleRobuxGastados, handleMisCompras, handleInvitaciones, handleGActive, handleMsg, handleTicketActive, handleNotifier } = require('./handlers/commands');
+    const { handleOutfit, handlePagos, handlePagoVerified, handleOffer, handleClose, handleHeadless, handleGroupActive, handleTopCompradores, handleCrypto, handleAvatar, handleCompras, handleRobuxGastados, handleMisCompras, handleInvitaciones, handleGActive, handleMsg, handleTicketActive, handlePromos, handleNotifier } = require('./handlers/commands');
     const invitesTracker      = require('./utils/invitesTracker');
     const ticketInactivo      = require('./utils/ticketInactivo');
     const robloxNotifier      = require('./utils/robloxNotifier');
@@ -319,6 +319,23 @@ if (RUN_BOT) {
             // Un apartado del panel de tickets, con la razón que verá quien lo
             // intente abrir. El gate real es el chequeo dentro de
             // handleTicketActive.
+            // Promociones por MD: estado, o una prueba al propio owner.
+            {
+                name: 'promos',
+                description: 'Promociones por MD: estado o prueba (solo owner)',
+                options: [
+                    {
+                        name: 'accion',
+                        type: 3,
+                        description: 'Qué hacer',
+                        required: true,
+                        choices: [
+                            { name: 'estado', value: 'estado' },
+                            { name: 'prueba (te la manda a ti)', value: 'prueba' },
+                        ],
+                    },
+                ],
+            },
             {
                 name: 'ticketactive',
                 description: 'Activa o desactiva un apartado del panel de tickets (solo owner)',
@@ -595,6 +612,9 @@ if (RUN_BOT) {
         // Tickets de compra sin pago ni mensajes: aviso con barra y cierre.
         ticketInactivo.iniciar(client);
 
+        // Promociones por MD: resumen tras comprar y recordatorio sin comprar.
+        require('./utils/promociones').iniciar(client);
+
         // Items nuevos, Limiteds y ofertas del catálogo oficial de Roblox.
         robloxNotifier.iniciar(client);
 
@@ -689,6 +709,7 @@ if (RUN_BOT) {
             else if (interaction.isChatInputCommand() && interaction.commandName === 'gactive')       await handleGActive(interaction);
             else if (interaction.isChatInputCommand() && interaction.commandName === 'msg')           await handleMsg(interaction);
             else if (interaction.isChatInputCommand() && interaction.commandName === 'ticketactive')  await handleTicketActive(interaction);
+            else if (interaction.isChatInputCommand() && interaction.commandName === 'promos')        await handlePromos(interaction);
             else if (interaction.isChatInputCommand() && interaction.commandName === 'notifier')      await handleNotifier(interaction);
             else if (interaction.isChatInputCommand() && interaction.commandName === 'userinfo')      await handleUserinfo(interaction);
             else if (interaction.isChatInputCommand() && interaction.commandName === 'addgroup')      await handleAddGroup(interaction);

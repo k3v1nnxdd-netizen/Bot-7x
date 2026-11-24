@@ -1127,6 +1127,38 @@ limite diario de envio de Roblox), de 25 en 25 (Roblox envia en paquetes de 25,
 - Ticket `robux-plus-NNNN`, tipo `comprar`, `pedido.modo = 'plus'`: mismas
   etiquetas del resumen, asi que registro, ranking y fidelidad funcionan igual.
 
+## Promociones por MD
+
+`utils/promociones.js`, configurado en `config.PROMOS`. Dos mensajes
+automaticos a quien ya compro, como tarjeta con un boton **Comprar en 7x** (al
+panel de compra; si ya no esta en el servidor, a la invitacion) y otro **No
+recibir promociones**:
+
+- **Resumen**: `DIAS_RESUMEN` (1) dia despues de cada compra, lo que ahorro en
+  ella y en total frente a Roblox. Solo de compras hechas desde que existe el
+  sistema (`inicio` en disco) y dentro de una ventana de 5 dias: el primer
+  arranque no manda resumenes de compras viejas.
+- **Recordatorio**: tras `DIAS_INACTIVO` (14) dias sin comprar, los precios de
+  hoy (solo de los apartados activos) y su ahorro acumulado. Como mucho uno
+  cada `DIAS_ENTRE_AVISOS` (14).
+
+El ahorro se calcula contra `PRECIO_ROBLOX_POR_1K` (**$249 MXN** por 1.000, el
+precio de Roblox en tarjeta en Mexico) y solo se enseña si es positivo. Los
+datos salen del ranking de compradores, que guarda Robux y precio de cada
+pedido (`detalle`) y se reconstruye desde el registro de pedidos en cada
+arranque.
+
+- **Sin rafagas**: una ronda cada `REVISION_MIN` (20) min, como mucho
+  `MAX_POR_RONDA` (4) MDs, el mas atrasado primero y uno por persona y ronda.
+- **Fallos** (MDs cerrados): se apuntan igual, para no reintentar en cada ronda.
+- **Registro**: cada envio, fallo, baja y alta va al canal `📨・promociones-log`
+  (categoria de registros privada), con la mencion y el id del cliente.
+- **Baja/alta**: `promo_baja` / `promo_alta` desde el propio MD. Las bajas viven
+  en `DATA_DIR/promociones.json`.
+- **`/promos estado`** (clientes, bajas, enviados en 7 dias, pendientes) y
+  **`/promos prueba`** (te manda el recordatorio a ti, sin apuntar nada). Solo
+  owner. Para apagarlo todo: `PROMOS.ACTIVO = false`.
+
 ## Calculadora de Robux
 
 El panel de `CHANNELS.CALC` (`calc.js`) es un Container de Components V2, como

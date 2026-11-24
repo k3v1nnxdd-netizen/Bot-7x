@@ -615,6 +615,9 @@ const HANDLERS = {
     gp_robux:         onGpRobux,
     plus_dinero:      onPlusDinero,
     plus_robux:       onPlusRobux,
+    // Promociones por MD: darse de baja o de alta (desde el propio MD).
+    promo_baja:          (i) => require('../utils/promociones').alBoton(i),
+    promo_alta:          (i) => require('../utils/promociones').alBoton(i),
     confirmar_pago:      onConfirmarPago,
     cerrar_ticket:       onCerrarTicket,
     confirmar_cerrar:    onConfirmarCerrar,

@@ -484,6 +484,8 @@ module.exports = async function run() {
             mk('901', nombres.mensajes.nombre, ChannelType.GuildText, '900'),
             mk('902', nombres.transcripciones.nombre, ChannelType.GuildText, '900'),
             mk('903', nombres.seguridad.nombre, ChannelType.GuildText, '900'),
+            mk('104', nombres.promociones.nombre, ChannelType.GuildText, '100'),
+            mk('904', nombres.promociones.nombre, ChannelType.GuildText, '900'),
         ];
         let creadosAqui = 0;
         const g7 = { id: config.GUILD_ID, roles: { everyone: { id: config.GUILD_ID } }, client: { user: { id: 'bot' } }, channels: {

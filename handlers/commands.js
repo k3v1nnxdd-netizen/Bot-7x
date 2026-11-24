@@ -878,11 +878,42 @@ async function handleNotifier(interaction) {
     });
 }
 
+// ── /promos ───────────────────────────────────────────────────────────────────
+// El estado de las promociones por MD, o una prueba que le llega al propio
+// owner, con sus datos de comprador si los tiene (sin apuntar nada).
+async function handlePromos(interaction) {
+    if (!esAdminDeInteraccion(interaction)) {
+        return safeReply(interaction, { content: '❌ No tienes permiso para usar este comando.', ephemeral: true });
+    }
+    const promos = require('../utils/promociones');
+    await safeDeferReply(interaction, { ephemeral: true });
+
+    if (interaction.options.getString('accion') === 'prueba') {
+        const ok = await promos.enviarPrueba(interaction.client, interaction.user.id);
+        return safeEditReply(interaction, {
+            content: ok
+                ? '📨 Te mandé por MD una prueba del recordatorio. No se apuntó como enviado ni sale en el registro.'
+                : '❌ No pude mandarte el MD. ¿Tienes los MDs del servidor cerrados?',
+        });
+    }
+
+    const e = promos.resumenEstado();
+    const P = config.PROMOS;
+    return safeEditReply(interaction, {
+        content: [
+            `## 📨 Promociones por MD · ${P.ACTIVO ? 'activas' : '**desactivadas**'}`,
+            `**${e.clientes}** clientes · **${e.bajas}** dados de baja`,
+            `**${e.semana}** mensajes en los últimos 7 días · **${e.pendientes}** por mandar ahora (van de ${P.MAX_POR_RONDA} en ${P.MAX_POR_RONDA} cada ${P.REVISION_MIN} min)`,
+            `-# Resumen ${P.DIAS_RESUMEN} día(s) después de cada compra · recordatorio a los ${P.DIAS_INACTIVO} días sin comprar, máx. 1 cada ${P.DIAS_ENTRE_AVISOS} · referencia ${P.PRECIO_ROBLOX_POR_1K} MXN por 1,000 en Roblox.`,
+        ].join('\n'),
+    });
+}
+
 module.exports = {
     handleNotifier,
     handleOutfit, handlePagos, handlePagoVerified, handleOffer, handleClose,
     handleHeadless, handleGroupActive, handleTopCompradores, handleCrypto, handleAvatar,
-    handleCompras, handleRobuxGastados, handleMisCompras, handleInvitaciones, handleGActive, handleMsg, handleTicketActive,
+    handleCompras, handleRobuxGastados, handleMisCompras, handleInvitaciones, handleGActive, handleMsg, handleTicketActive, handlePromos,
     refreshCouponEmbed,
     __test: { buildCryptoTexto, buildCryptoRow, segundos, minutos, buildAvatarEmbed, buildAvatarPie, buildComprasTexto, buildRobuxGastadosTexto, buildMisComprasTexto, buildInvitacionesTexto, textoDeMsg },
 };

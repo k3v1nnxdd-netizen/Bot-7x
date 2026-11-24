@@ -9,6 +9,7 @@ const v2 = require('./utils/panelV2');
 const plus = require('./utils/plusPrecios');
 const { extractNumber, extractDecimal } = require('./data/prices');
 const { safeDeferReply, safeEditReply, safeReply, safeShowModal } = require('./utils/safe');
+const divisas = require('./utils/divisas');
 
 // ── Panel de precios por Roblox Plus ──────────────────────────────────────────
 // El mismo molde que el de gamepass: un Container con el texto y los dos
@@ -203,6 +204,7 @@ async function handlePlusDineroModal(interaction) {
             { name: `${E.point} Tu presupuesto`, value: plus.fmtMXN(presupuesto), inline: true },
             { name: '<a:robuxxx:1510070809366892604> Recibes en tu cuenta', value: `${plus.fmtRobux(robux)} Robux`, inline: true },
             { name: `${E.point} Precio exacto`, value: plus.fmtMXN(precio), inline: true },
+            { name: '💵 En dólares', value: divisas.usdTexto(precio), inline: true },
         ], tope
             ? `-# El máximo por pedido son ${plus.fmtRobux(plus.P.MAX_ROBUX)} Robux: te sobran ${plus.fmtMXN(sobra)}.`
             : sobra > 0 ? `-# Te sobran ${plus.fmtMXN(sobra)}: se ajusta a la baja para no pasarse de tu presupuesto.` : null)],
@@ -224,6 +226,7 @@ async function handlePlusRobuxModal(interaction) {
         embeds: [buildPlusEmbed([
             { name: '<a:robuxxx:1510070809366892604> Recibes en tu cuenta', value: `${plus.fmtRobux(robux)} Robux`, inline: true },
             { name: `${E.point} Precio total`, value: plus.fmtMXN(plus.precioDe(robux)), inline: true },
+            { name: '💵 En dólares', value: divisas.usdTexto(plus.precioDe(robux)), inline: true },
         ])],
     });
 }

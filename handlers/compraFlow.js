@@ -19,6 +19,7 @@ const communityStatus = require('../utils/communityStatus');
 const { buildMetodosPayload } = require('../metodos');
 const gp = require('../utils/gamepassPrecios');
 const plus = require('../utils/plusPrecios');
+const divisas = require('../utils/divisas');
 const gpInfo = require('../utils/gamepassInfo');
 const pendientes = require('../utils/pedidosPendientes');
 const fidelidad = require('../utils/fidelidad');
@@ -392,6 +393,11 @@ function buildTextoConfirmacion(pedido, cupon, fid = null) {
         }
     }
 
+    // El USD es referencia: se paga en MXN. Del precio que de verdad se paga
+    // (con cupón, si lo hay).
+    const aPagar = cupon?.valido ? cupon.final : pedido.precio;
+    if (Number.isFinite(aPagar)) lineas.push(`-# 💵 En dólares: ${divisas.usdTexto(aPagar)} · se paga en MXN.`);
+
     if (pedido.tipo === 'comunidad' && pedido.comunidadesTexto) {
         lineas.push(pedido.comunidadesTexto);
     }
@@ -432,6 +438,7 @@ function buildTextoTax(pedido) {
         '',
         `### ${E.point} Sin cubrir el tax`,
         `Gamepass de **${fmt(sin.robux)}** → pagas **$${fmt(sin.precio)} MXN** → recibes **${fmt(sin.recibe)} Robux**`,
+        `-# 💵 ${divisas.usdTexto(sin.precio)}`,
         '',
         `### ${E.si} Con el tax cubierto`,
     ];
@@ -439,6 +446,7 @@ function buildTextoTax(pedido) {
     if (con) {
         const ahorro = gp.ahorroVsComunidad(con.recibe);
         lineas.push(`Gamepass de **${fmt(con.robux)}** → pagas **$${fmt(con.precio)} MXN** → recibes **${fmt(con.recibe)} Robux** completos`);
+        lineas.push(`-# 💵 ${divisas.usdTexto(con.precio)}`);
         if (ahorro) lineas.push(`-# Ahorras $${fmt(ahorro.ahorro)} MXN frente a comprarlos por comunidad ($${fmt(ahorro.comunidad)}).`);
     } else {
         lineas.push(`-# No disponible para esta cantidad: el gamepass pasaría de ${fmt(gp.G.MAX_ROBUX)} Robux.`);
@@ -755,20 +763,26 @@ function lineasPrecio(pedido, cupon) {
         const final = fidelidad.aplicar(pedido.precio);
         return `${E.money} **Precio original**\n\`\`\`$${fmt(pedido.precio)} MXN\`\`\`\n` +
             `🎁 **Descuento de fidelidad (${fidelidad.F.DESCUENTO}%)**\n\`\`\`Ahorras $${fmt(pedido.precio - final)} MXN\`\`\`\n` +
-            `${E.money} **Precio final a pagar**\n\`\`\`$${fmt(final)} MXN\`\`\`\n`;
+            `${E.money} **Precio final a pagar**\n\`\`\`$${fmt(final)} MXN\`\`\`\n` + lineaUSD(final);
     }
 
     if (cupon?.valido) {
         return `${E.money} **Precio original**\n\`\`\`$${fmt(pedido.precio)} MXN\`\`\`\n` +
             `${E.si} **Descuento aplicado — ${cupon.codigo.toUpperCase()} (${cupon.descuento}%)**\n\`\`\`Ahorras $${fmt(pedido.precio - cupon.final)} MXN\`\`\`\n` +
-            `${E.money} **Precio final a pagar**\n\`\`\`$${fmt(cupon.final)} MXN\`\`\`\n`;
+            `${E.money} **Precio final a pagar**\n\`\`\`$${fmt(cupon.final)} MXN\`\`\`\n` + lineaUSD(cupon.final);
     }
 
     let out = '';
     if (cupon && !cupon.valido) {
         out += `${E.alert} **Código usado: ${cupon.codigo.toUpperCase()}**\n\`\`\`Inválido o sin usos disponibles\`\`\`\n`;
     }
-    return out + `${E.money} **Precio a pagar**\n\`\`\`$${fmt(pedido.precio)} MXN\`\`\`\n`;
+    return out + `${E.money} **Precio a pagar**\n\`\`\`$${fmt(pedido.precio)} MXN\`\`\`\n` + lineaUSD(pedido.precio);
+}
+
+// El USD del ticket, como referencia y en su propia línea.
+function lineaUSD(mxn) {
+    const t = divisas.usdTexto(mxn);
+    return t ? `-# 💵 En dólares: ${t} · se paga en MXN\n` : '';
 }
 
 // La barra verde de fidelidad en el ticket: cuántas lleva y qué pasa cuando se

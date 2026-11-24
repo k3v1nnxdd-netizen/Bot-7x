@@ -338,6 +338,18 @@ module.exports = {
         MAX_ROBUX:     100000,
     },
 
+    // ── Precios en USD (utils/divisas.js) ───────────────────────────────────
+    // Se cobra en MXN; el USD va al lado como referencia en calculadoras,
+    // confirmación y ticket. El tipo de cambio se consulta solo y se refresca
+    // cada REFRESCO_HORAS. RESPALDO se usa sólo si nunca se pudo consultar; MIN y
+    // MAX descartan una respuesta absurda de la API.
+    DIVISAS: {
+        USD_MXN_RESPALDO: 19.2,
+        USD_MXN_MIN:      10,
+        USD_MXN_MAX:      40,
+        REFRESCO_HORAS:   6,
+    },
+
     // ── Promociones por MD (utils/promociones.js) ────────────────────────────
     // Dos mensajes automáticos a los clientes, con un botón al servidor y otro
     // para darse de baja (cada envío y cada baja quedan en el registro de

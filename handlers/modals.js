@@ -15,6 +15,7 @@ const roblox                                               = require('../src/rob
 const { getJoinDate, getLastChecked, trackIfNew, updateLastChecked, daysSince } = require('../utils/groupTracker');
 const config                                               = require('../config');
 const gamepass                                             = require('../utils/gamepassPrecios');
+const divisas                                              = require('../utils/divisas');
 const { handleSeguidoresModal }                             = require('./seguidoresFlow');
 const { handleCheckGroupModal }                             = require('./checkGroupFlow');
 const { handleAlianzaModal }                                = require('./alianzaFlow');
@@ -228,6 +229,7 @@ async function handleCalcDineroModal(interaction) {
             { name: '<:point:1501212595464700104> Presupuesto ingresado', value: `$${budget.toLocaleString('es-MX', { minimumFractionDigits: 0, maximumFractionDigits: 2 })} MXN`, inline: true },
             { name: '<a:robuxxx:1510070809366892604> Robux que puedes obtener', value: `${result.robux.toLocaleString()} Robux`, inline: true },
             { name: '<a:shop:1190502129748676650> Precio exacto del paquete', value: `${result.price} MXN`, inline: true },
+            { name: '💵 En dólares', value: divisas.usdTexto(parseFloat(result.price.replace(/[$,]/g, ''))), inline: true },
         )
         .setFooter({ text: '7x Community • Calculadora de precios' });
 
@@ -261,6 +263,7 @@ async function handleCalcRobuxModal(interaction) {
         .addFields(
             { name: '<a:robuxxx:1510070809366892604> Robux solicitados', value: `${result.amount.toLocaleString()} Robux`, inline: true },
             { name: '<a:shop:1190502129748676650> Precio total', value: `${result.price} MXN`, inline: true },
+            { name: '💵 En dólares', value: divisas.usdTexto(parseFloat(result.price.replace(/[$,]/g, ''))), inline: true },
         )
         .setFooter({ text: '7x Community • Calculadora de precios' });
 
@@ -325,7 +328,7 @@ function campoCubierto(robux) {
         name: '<:true:1501213776878501899> Con tax cubierto',
         value:
             `Gamepass de **${gamepass.fmtRobux(gamepass.gamepassParaRecibir(robux))}** → pagas ` +
-            `**${gamepass.fmtMXN(gamepass.precioCubierto(robux))}** → recibes **${gamepass.fmtRobux(robux)} Robux** completos` +
+            `**${gamepass.fmtMXN(gamepass.precioCubierto(robux))}** (${divisas.usdTexto(gamepass.precioCubierto(robux))}) → recibes **${gamepass.fmtRobux(robux)} Robux** completos` +
             (ahorro ? `\n-# Ahorras $${gamepass.fmtRobux(ahorro.ahorro)} MXN frente a comprarlos por comunidad ($${gamepass.fmtRobux(ahorro.comunidad)}).` : ''),
         inline: false,
     };
@@ -356,6 +359,7 @@ async function handleGpDineroModal(interaction) {
         { name: '<:point:1501212595464700104> Tu presupuesto', value: gamepass.fmtMXN(presupuesto), inline: true },
         { name: '<a:shop:1190502129748676650> Gamepass que creas', value: `${gamepass.fmtRobux(tope)} Robux`, inline: true },
         { name: '<:point:1501212595464700104> Precio exacto', value: gamepass.fmtMXN(precio), inline: true },
+        { name: '💵 En dólares', value: divisas.usdTexto(precio), inline: true },
         { name: '<a:robuxxx:1510070809366892604> Recibes en tu cuenta', value: `${gamepass.fmtRobux(gamepass.recibe(tope))} Robux`, inline: false },
         campoCubierto(gamepass.robuxCubiertoPor(presupuesto)),
     ].filter(Boolean), sobra > 0 ? `-# Te sobran ${gamepass.fmtMXN(sobra)}: el gamepass se ajusta a la baja para no pasarse de tu presupuesto.` : null);
@@ -382,6 +386,7 @@ async function handleGpRobuxModal(interaction) {
     const embed = buildGamepassEmbed([
         { name: '<a:shop:1190502129748676650> Gamepass que creas', value: `${gamepass.fmtRobux(robux)} Robux`, inline: true },
         { name: '<:point:1501212595464700104> Precio total', value: gamepass.fmtMXN(gamepass.precioDe(robux)), inline: true },
+        { name: '💵 En dólares', value: divisas.usdTexto(gamepass.precioDe(robux)), inline: true },
         { name: '<a:robuxxx:1510070809366892604> Recibes en tu cuenta', value: `${gamepass.fmtRobux(gamepass.recibe(robux))} Robux`, inline: true },
         campoCubierto(robux),
     ].filter(Boolean));

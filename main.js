@@ -612,6 +612,9 @@ if (RUN_BOT) {
         // Tickets de compra sin pago ni mensajes: aviso con barra y cierre.
         ticketInactivo.iniciar(client);
 
+        // Tipo de cambio MXN→USD para los precios en dólares.
+        require('./utils/divisas').iniciar();
+
         // Promociones por MD: resumen tras comprar y recordatorio sin comprar.
         require('./utils/promociones').iniciar(client);
 

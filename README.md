@@ -1127,6 +1127,25 @@ limite diario de envio de Roblox), de 25 en 25 (Roblox envia en paquetes de 25,
 - Ticket `robux-plus-NNNN`, tipo `comprar`, `pedido.modo = 'plus'`: mismas
   etiquetas del resumen, asi que registro, ranking y fidelidad funcionan igual.
 
+## Precios en USD
+
+Se cobra en MXN; el USD va al lado como **referencia** (`utils/divisas.js`,
+`config.DIVISAS`):
+
+- En las calculadoras de comunidad, gamepass y Plus: campo **En dolares**.
+- En la confirmacion, en la eleccion del tax y en el ticket: una linea
+  `-# 💵 En dolares: ≈ $X USD · se paga en MXN` debajo del precio. En el ticket
+  va **fuera** del bloque de codigo del precio, que es lo que lee
+  `utils/orderNotify.js`.
+- Los paneles fijos no lo llevan: el tipo de cambio cambia y obligaria a
+  reeditarlos sin parar.
+
+El tipo de cambio sale de `open.er-api.com` (sin clave) al arrancar y cada
+`REFRESCO_HORAS` (6), y el ultimo bueno se guarda en `DATA_DIR/divisas.json`.
+Dar un precio nunca espera a la red. Respuestas fuera de
+`USD_MXN_MIN`..`USD_MXN_MAX` se descartan; sin ningun dato se usa
+`USD_MXN_RESPALDO`.
+
 ## Promociones por MD
 
 `utils/promociones.js`, configurado en `config.PROMOS`. Dos mensajes

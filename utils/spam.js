@@ -22,10 +22,13 @@ function isLocked(key) {
 
 function lock(key, durationMs) {
     locks.set(key, Date.now() + durationMs);
+    // unref: la limpieza es sólo para no acumular claves (lockedUntil ya mira
+    // la caducidad). No debe mantener vivo el proceso: con un bloqueo de diez
+    // minutos, los tests no terminaban hasta que vencía.
     setTimeout(() => {
         const exp = locks.get(key);
         if (exp !== undefined && Date.now() >= exp) locks.delete(key);
-    }, durationMs + 50);
+    }, durationMs + 50).unref?.();
 }
 
 function unlock(key) {

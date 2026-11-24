@@ -1086,6 +1086,47 @@ calculadoras.
 Una entrada imposible (0, negativo, texto, fuera de rango) **no devuelve
 precio**: un "$0 MXN" en pantalla pareceria una oferta.
 
+### Tax cubierto
+
+La segunda opcion: `GAMEPASS.PRECIO_CUBIERTO_POR_1K` (**$130**) por cada 1.000
+Robux que **llegan** a la cuenta. El cliente crea un gamepass algo mas caro
+(`gamepassParaRecibir`: 1.429 para que lleguen 1.000, siempre el minimo que
+entrega lo pedido completo) y la comision la pone 7x.
+
+- El panel y las dos calculadoras dan las dos opciones.
+- **Antes de abrir el ticket** el cliente elige: tras el formulario sale
+  "¿Cubrimos el tax?" con las dos opciones y su precio (`compra_tax:<token>:si|no`).
+  En la confirmacion, "Cambiar opcion" (`compra_cambiar:<token>`) vuelve a la
+  pregunta. Si el gamepass cubierto pasaria de `MAX_ROBUX`, el boton sale apagado.
+- El topic guarda el **gamepass a crear** (`robux`) y `cubierto: true`: contra
+  ese numero se comprueba el enlace.
+- **Ahorro frente a comunidad** (`ahorroVsComunidad`, `limiteAhorro`): solo se
+  menciona donde la tabla de comunidad es de verdad mas cara. Hoy, de 500 a
+  2.400 Robux. Desde ahi la comunidad sale mas barata y no se presume de nada.
+
+## Robux por Roblox Plus
+
+Se envian con **"Enviar Robux"**, la funcion de Roblox Plus, desde la cuenta de
+7x: llegan **completos**, sin comision. Precios y limites en `config.PLUS`
+(`utils/plusPrecios.js`): **$140** por cada 1.000, de 500 a **5.000** (el
+limite diario de envio de Roblox), de 25 en 25 (Roblox envia en paquetes de 25,
+50, 100 y 200).
+
+- **Panel de precios** en `CHANNELS.PLUS` (`plus.js`, canal
+  `💎・：precio-robux-plus`): precio, requisitos, stock y dos calculadoras
+  (`plus_dinero`, `plus_robux`).
+- **Apartado `robux-plus`** en el panel de tickets (`comprar_plus`), apagable con
+  `/ticketactive`. La confirmacion avisa **antes del ticket**: cuenta
+  **verificada** (verificacion de edad de Roblox), los envios son finales y
+  **si su cuenta no puede recibir, no hay reembolso**, y depende del stock. El
+  boton es "Entiendo, continuar".
+- **Stock**: el bot no lo cuenta. En el ticket, `plus_stock` ("Preguntar stock",
+  solo quien abrio el ticket, una vez cada 10 min) menciona al owner con la
+  cantidad; el owner responde con `plus_hay_stock` / `plus_sin_stock` (solo
+  admins). Sin stock, el pedido se envia en cuanto haya.
+- Ticket `robux-plus-NNNN`, tipo `comprar`, `pedido.modo = 'plus'`: mismas
+  etiquetas del resumen, asi que registro, ranking y fidelidad funcionan igual.
+
 ## Calculadora de Robux
 
 El panel de `CHANNELS.CALC` (`calc.js`) es un Container de Components V2, como

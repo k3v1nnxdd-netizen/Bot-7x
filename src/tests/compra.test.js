@@ -150,7 +150,7 @@ function interaccionBoton(customId, { userId = USER } = {}) {
 }
 
 const tokenDe = respuesta => botonesDe(respuesta)
-    .map(b => b.custom_id).find(id => id?.startsWith('compra_ok:'))?.split(':')[1] ?? null;
+    .map(b => b.custom_id).find(id => /^compra_(ok|tax|no):/.test(id ?? ''))?.split(':')[1] ?? null;
 
 // ── Las expresiones de utils/orderNotify.js, tal cual ────────────────────────
 // Si el resumen deja de casar con ellas, el pedido sale "No disponible" en el
@@ -328,6 +328,22 @@ module.exports = async function run() {
         await handleModal(it);
         conf = it.respuestas[0];
         t = textoDe(conf);
+
+        // Antes de confirmar: ¿se cubre el tax? Las dos opciones con su precio.
+        assert(/Cubrimos el tax/.test(t), 'antes de confirmar un gamepass, pregunta si se cubre el tax');
+        assert(/Gamepass de \*\*1,000\*\* → pagas \*\*\$115 MXN\*\* → recibes \*\*700 Robux\*\*/.test(t), 'con la opción sin cubrir y su precio');
+        assert(/Gamepass de \*\*1,429\*\* → pagas \*\*\$130 MXN\*\* → recibes \*\*1,000 Robux\*\*/.test(t), 'y la del tax cubierto, con su gamepass y su precio');
+        assert(/Ahorras \$3 MXN/.test(t), 'con lo que se ahorra frente a comunidad');
+        assert(!botonesDe(conf).some(b => b.custom_id.startsWith('compra_ok:')), 'y sin dejar abrir el ticket todavía');
+        const tokGp = tokenDe(conf);
+        assert(botonesDe(conf).some(b => b.custom_id === `compra_tax:${tokGp}:si`) &&
+            botonesDe(conf).some(b => b.custom_id === `compra_tax:${tokGp}:no`), 'un botón por opción');
+
+        let btTax = interaccionBoton(`compra_tax:${tokGp}:no`);
+        await flujo.handleCompraButton(btTax);
+        conf = btTax.respuestas.at(-1);
+        t = textoDe(conf);
+        assert(botonesDe(conf).some(b => b.custom_id === `compra_cambiar:${tokGp}`), 'la confirmación deja volver a elegir');
         assert(/Gamepass de \*\*1,000 Robux\*\*/.test(t), 'la confirmación de gamepass dice el valor del gamepass');
         assert(t.includes(`**${gp.fmtRobux(gp.recibe(1000))} Robux**`), 'y lo que recibe de verdad');
         assert(/no lo cubrimos/.test(t), 'y que la comisión no la cubre 7x');
@@ -352,6 +368,77 @@ module.exports = async function run() {
         assert(/exactamente 1,000 Robux/.test(paso), 'y dice de cuánto exactamente tiene que ser');
         assert(gch.enviados.some(p => botonesDe(p).some(b => b.custom_id === 'confirmar_pago')),
             'y el botón de PAGO REALIZADO');
+
+        // ── 8b. Gamepass con el tax cubierto ─────────────────────────────────
+        mundo = nuevoMundo();
+        it = interaccionModal('gamepass_compra_modal', { usuario_roblox: 'kreekcraft', cantidad_robux: '1000' });
+        await handleModal(it);
+        const tokCub = tokenDe(it.respuestas[0]);
+        btTax = interaccionBoton(`compra_tax:${tokCub}:si`);
+        await flujo.handleCompraButton(btTax);
+        t = textoDe(btTax.respuestas.at(-1));
+        assert(/\*\*1,000 Robux\*\* completos por \*\*\$130 MXN\*\* · tax cubierto/.test(t), 'tax cubierto: recibe los 1.000 por $130');
+        assert(/gamepass de \*\*1,429 Robux\*\*/.test(t), 'y crea un gamepass de 1.429');
+
+        // Cambiar de opción vuelve a la pregunta, sin gastar el pedido.
+        const btCambiar = interaccionBoton(`compra_cambiar:${tokCub}`);
+        await flujo.handleCompraButton(btCambiar);
+        assert(/Cubrimos el tax/.test(textoDe(btCambiar.respuestas.at(-1))), '"Cambiar opción" vuelve a las dos opciones');
+        btTax = interaccionBoton(`compra_tax:${tokCub}:si`);
+        await flujo.handleCompraButton(btTax);
+
+        await flujo.handleCompraButton(interaccionBoton(`compra_ok:${tokCub}`));
+        const cch = mundo.creados[0];
+        assert(cch?.pedido?.robux === 1429 && cch.pedido.cubierto === true,
+            'el topic guarda el gamepass de 1.429 (contra ese se comprueba el enlace) y que es cubierto');
+        const cres = textoDe(cch.enviados[0]);
+        assert(LEE.robux.exec(cres)?.[1] === '1,000 Robux', '"Robux a recibir" son los 1.000 completos');
+        assert(LEE.precio(cres) === '130', 'y el precio es el cubierto');
+        assert(/tax cubierto/i.test(cres) && !/no lo cubrimos/.test(cres), 'el resumen dice tax cubierto, no lo contrario');
+        assert(/exactamente 1,429 Robux/.test(cch.enviados.map(textoDe).find(x => /Tu gamepass/.test(x)) ?? ''),
+            'y el paso del gamepass pide crearlo de 1.429');
+
+        // Una cantidad cuyo gamepass cubierto pasaría del máximo: el botón sale
+        // apagado, y forzarlo no cuela.
+        mundo = nuevoMundo();
+        it = interaccionModal('gamepass_compra_modal', { usuario_roblox: 'kreekcraft', cantidad_robux: '90000' });
+        await handleModal(it);
+        const tokGrande = tokenDe(it.respuestas[0]);
+        assert(botonesDe(it.respuestas[0]).find(b => b.custom_id === `compra_tax:${tokGrande}:si`)?.disabled === true,
+            'si el gamepass cubierto pasa del máximo, el botón sale apagado');
+        btTax = interaccionBoton(`compra_tax:${tokGrande}:si`);
+        await flujo.handleCompraButton(btTax);
+        assert(/pasarían del máximo/.test(textoDe(btTax.respuestas.at(-1))), 'y forzarlo se rechaza');
+
+        // ── 8c. Roblox Plus ──────────────────────────────────────────────────
+        mundo = nuevoMundo();
+        it = interaccionModal('plus_compra_modal', { usuario_roblox: 'kreekcraft', cantidad_robux: '2000' });
+        await handleModal(it);
+        conf = it.respuestas[0];
+        t = textoDe(conf);
+        assert(/\*\*2,000 Robux\*\* por \*\*\$280 MXN\*\* · enviados con \*\*Roblox Plus\*\*/.test(t), 'Plus: 2.000 Robux a $140 el millar');
+        assert(/verificada/.test(t), 'avisa de que la cuenta tiene que estar verificada');
+        assert(/no hay reembolso/.test(t), 'y de que sin poder recibir no hay reembolso');
+        assert(/stock/.test(t), 'y de que depende del stock');
+        assert(botonesDe(conf).find(b => b.custom_id.startsWith('compra_ok:'))?.label === 'Entiendo, continuar',
+            'el botón de continuar es aceptar los avisos');
+
+        await flujo.handleCompraButton(interaccionBoton(`compra_ok:${tokenDe(conf)}`));
+        const pch = mundo.creados[0];
+        assert(pch?.type === 'comprar' && /^robux-plus-\d{4}$/.test(pch?.name ?? ''), `el ticket se llama robux-plus-NNNN (${pch?.name})`);
+        assert(pch.pedido?.modo === 'plus' && pch.pedido?.robux === 2000, 'con el pedido de Plus en el topic');
+        const pres = textoDe(pch.enviados[0]);
+        assert(LEE.robux.exec(pres)?.[1] === '2,000 Robux' && LEE.precio(pres) === '280', 'el registro lee los Robux y el precio de Plus');
+        assert(pch.enviados.some(p => botonesDe(p).some(b => b.custom_id === 'plus_stock')), 'el ticket trae el botón para preguntar el stock');
+        assert(pch.enviados.some(p => botonesDe(p).some(b => b.custom_id === 'confirmar_pago')), 'y el de PAGO REALIZADO');
+
+        for (const [cantidad, espera] of [['1010', /25 en 25/], ['6000', /entre \*\*500\*\* y \*\*5,000\*\*/], ['100', /entre/]]) {
+            mundo = nuevoMundo();
+            it = interaccionModal('plus_compra_modal', { usuario_roblox: 'kreekcraft', cantidad_robux: cantidad });
+            await handleModal(it);
+            assert(espera.test(it.respuestas[0]?.content ?? ''), `Plus rechaza ${cantidad} y explica por qué`);
+            assert(mundo.creados.length === 0, `sin ticket para ${cantidad}`);
+        }
 
         // Fuera de rango
         mundo = nuevoMundo();

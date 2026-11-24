@@ -20,6 +20,7 @@ const { handleCheckGroupModal }                             = require('./checkGr
 const { handleAlianzaModal }                                = require('./alianzaFlow');
 const { handleCompraModal, handleGpLinkModal }              = require('./compraFlow');
 const { handleHeadlessModal }                               = require('./headlessFlow');
+const { handlePlusDineroModal, handlePlusRobuxModal }      = require('../plus');
 const v2                                                    = require('../utils/panelV2');
 
 // ── Modal builders ────────────────────────────────────────────────────────────
@@ -292,7 +293,7 @@ function buildGpRobuxModal() {
         new ActionRowBuilder().addComponents(
             new TextInputBuilder()
                 .setCustomId('cantidad_robux')
-                .setLabel('Valor del gamepass en Robux')
+                .setLabel('Cantidad de Robux')
                 .setPlaceholder('Ejemplo: 1000')
                 .setStyle(TextInputStyle.Short)
                 .setMaxLength(9)
@@ -312,6 +313,22 @@ function buildGamepassEmbed(campos, aviso = null) {
         .setDescription(aviso)
         .addFields(campos)
         .setFooter({ text: `7x Community • Roblox se queda el ${Math.round(gamepass.G.TASA_ROBLOX * 100)}% de la venta` });
+}
+
+// La otra opción, con el tax cubierto, para recibir `robux` completos. null si
+// esa cantidad no cabe (el gamepass pasaría del máximo) o no llega al mínimo.
+// El ahorro frente a comunidad sólo sale cuando lo hay.
+function campoCubierto(robux) {
+    if (!robux || !gamepass.cubiertoEnRango(robux)) return null;
+    const ahorro = gamepass.ahorroVsComunidad(robux);
+    return {
+        name: '<:true:1501213776878501899> Con tax cubierto',
+        value:
+            `Gamepass de **${gamepass.fmtRobux(gamepass.gamepassParaRecibir(robux))}** → pagas ` +
+            `**${gamepass.fmtMXN(gamepass.precioCubierto(robux))}** → recibes **${gamepass.fmtRobux(robux)} Robux** completos` +
+            (ahorro ? `\n-# Ahorras $${gamepass.fmtRobux(ahorro.ahorro)} MXN frente a comprarlos por comunidad ($${gamepass.fmtRobux(ahorro.comunidad)}).` : ''),
+        inline: false,
+    };
 }
 
 async function handleGpDineroModal(interaction) {
@@ -340,7 +357,8 @@ async function handleGpDineroModal(interaction) {
         { name: '<a:shop:1190502129748676650> Gamepass que creas', value: `${gamepass.fmtRobux(tope)} Robux`, inline: true },
         { name: '<:point:1501212595464700104> Precio exacto', value: gamepass.fmtMXN(precio), inline: true },
         { name: '<a:robuxxx:1510070809366892604> Recibes en tu cuenta', value: `${gamepass.fmtRobux(gamepass.recibe(tope))} Robux`, inline: false },
-    ], sobra > 0 ? `-# Te sobran ${gamepass.fmtMXN(sobra)}: el gamepass se ajusta a la baja para no pasarse de tu presupuesto.` : null);
+        campoCubierto(gamepass.robuxCubiertoPor(presupuesto)),
+    ].filter(Boolean), sobra > 0 ? `-# Te sobran ${gamepass.fmtMXN(sobra)}: el gamepass se ajusta a la baja para no pasarse de tu presupuesto.` : null);
 
     await safeEditReply(interaction, { embeds: [embed] });
 }
@@ -365,7 +383,8 @@ async function handleGpRobuxModal(interaction) {
         { name: '<a:shop:1190502129748676650> Gamepass que creas', value: `${gamepass.fmtRobux(robux)} Robux`, inline: true },
         { name: '<:point:1501212595464700104> Precio total', value: gamepass.fmtMXN(gamepass.precioDe(robux)), inline: true },
         { name: '<a:robuxxx:1510070809366892604> Recibes en tu cuenta', value: `${gamepass.fmtRobux(gamepass.recibe(robux))} Robux`, inline: true },
-    ]);
+        campoCubierto(robux),
+    ].filter(Boolean));
 
     await safeEditReply(interaction, { embeds: [embed] });
 }
@@ -603,6 +622,7 @@ const HANDLERS = {
     // handlers/compraFlow.js.
     comprar_modal:         handleCompraModal,
     gamepass_compra_modal: handleCompraModal,
+    plus_compra_modal:     handleCompraModal,
     gp_link_modal:         handleGpLinkModal,
     otra_cosa_modal:  handleOtraCosaModal,
     duels_modal:       handleDuelsModal,
@@ -610,6 +630,8 @@ const HANDLERS = {
     calc_robux_modal:  handleCalcRobuxModal,
     gp_dinero_modal:   handleGpDineroModal,
     gp_robux_modal:    handleGpRobuxModal,
+    plus_dinero_modal: handlePlusDineroModal,
+    plus_robux_modal:  handlePlusRobuxModal,
     verif_modal:       handleVerifModal,
     headless_modal:    handleHeadlessModal,
 };

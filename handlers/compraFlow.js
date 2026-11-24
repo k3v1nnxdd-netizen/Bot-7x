@@ -5,8 +5,8 @@ const {
     ModalBuilder, TextInputBuilder, TextInputStyle,
 } = require('discord.js');
 const { safeReply, safeEditReply, safeDeferReply, safeDeferUpdate, safeShowModal, safeFollowUp } = require('../utils/safe');
-const { isLocked, lock } = require('../utils/spam');
-const { puedeGestionarTicket } = require('../utils/permisos');
+const { isLocked, lock, unlock } = require('../utils/spam');
+const { puedeGestionarTicket, esAdminDeInteraccion } = require('../utils/permisos');
 const tickets = require('../utils/tickets');
 const config = require('../config');
 const v2 = require('../utils/panelV2');
@@ -18,6 +18,7 @@ const { refreshCouponEmbed } = require('./commands');
 const communityStatus = require('../utils/communityStatus');
 const { buildMetodosPayload } = require('../metodos');
 const gp = require('../utils/gamepassPrecios');
+const plus = require('../utils/plusPrecios');
 const gpInfo = require('../utils/gamepassInfo');
 const pendientes = require('../utils/pedidosPendientes');
 const fidelidad = require('../utils/fidelidad');
@@ -60,6 +61,7 @@ const E = {
     si:        '<:true:1501213776878501899>',
     no:        '<a:remove:1540604743234228364>',
     hecho:     '<:working:1547108520669741157>',
+    plus:      config.ROBLOX_PLUS_EMOJI || '💎',
 };
 
 // Las dos formas de compra. Lo que cambia de una a otra está aquí y en ningún
@@ -77,11 +79,21 @@ const TIPOS = {
         modalId: 'gamepass_compra_modal',
         titulo: 'Robux por gamepass',
         canal: 'robux-gamepass',
-        etiquetaCantidad: 'Valor del gamepass (Robux)',
+        // Sin "valor del gamepass": con el tax cubierto el gamepass es otro
+        // número, y cuál se crea se dice al elegir la opción.
+        etiquetaCantidad: 'Cantidad de Robux',
         placeholderCantidad: `Entre ${gp.G.MIN_ROBUX.toLocaleString('es-MX')} y ${gp.G.MAX_ROBUX.toLocaleString('es-MX')}`,
         // Los cupones se pensaron para la tabla de precios por comunidad. Sobre
         // el precio de gamepass, que ya es otro, un 20% podría dejar la venta
         // por debajo de lo que cuesta: fuera hasta que se decida lo contrario.
+        cupon: false,
+    },
+    plus: {
+        modalId: 'plus_compra_modal',
+        titulo: 'Robux por Roblox Plus',
+        canal: 'robux-plus',
+        etiquetaCantidad: 'Cantidad de Robux',
+        placeholderCantidad: `Entre ${plus.P.MIN_ROBUX.toLocaleString('es-MX')} y ${plus.P.MAX_ROBUX.toLocaleString('es-MX')}`,
         cupon: false,
     },
 };
@@ -95,7 +107,7 @@ const fmt = n => Number(n).toLocaleString('es-MX');
 // Los contadores del nombre de canal empiezan de cero en cada arranque, como el
 // resto de tickets: Discord permite nombres repetidos y lo que identifica un
 // ticket es su topic, no su nombre.
-const contador = { comunidad: 1, gamepass: 1 };
+const contador = { comunidad: 1, gamepass: 1, plus: 1 };
 const pad = n => String(n).padStart(4, '0');
 
 // ── 1. El formulario ──────────────────────────────────────────────────────────
@@ -202,13 +214,6 @@ async function handleCompraModal(interaction) {
 
         const cupon = tipo === 'comunidad' ? revisarCupon(campo(interaction, 'codigo_descuento'), precio) : null;
 
-        // El descuento de fidelidad se OFRECE aquí y el cliente decide si lo
-        // usa en esta compra o lo guarda. No se combina con un cupón: los dos
-        // juntos podrían dejar la venta por debajo de coste.
-        const fid = fidelidad.estado(userId);
-        // Y sólo en compras de hasta FIDELIDAD.MAX_ROBUX.
-        const ofrecerFidelidad = fid.disponibles > 0 && !cupon?.valido && fidelidad.valeParaRobux(precio.datos.robux);
-
         const pedido = {
             tipo,
             robloxUserId: String(usuario.id),
@@ -223,19 +228,68 @@ async function handleCompraModal(interaction) {
 
         const token = pendientes.guardar(userId, pedido);
 
-        await editarTarjeta(interaction, {
-            color: ACCENT,
-            texto: buildTextoConfirmacion(pedido, cupon, fid),
-            thumbnail: foto,
-            filas: [buildConfirmarRow(token, ofrecerFidelidad)],
-        });
+        // Por gamepass, ANTES de confirmar se elige si se cubre el tax: cada
+        // opción con su precio, su gamepass y lo que llega a la cuenta.
+        if (tipo === 'gamepass') {
+            await editarTarjeta(interaction, {
+                color: ACCENT,
+                texto: buildTextoTax(pedido),
+                thumbnail: foto,
+                filas: [buildTaxRow(token, pedido.cantidad)],
+            });
+            return;
+        }
+
+        await mostrarConfirmacion(interaction, token, pedido, cupon);
     } catch (err) {
         console.error('[compra] Error preparando la confirmación:', err);
         await safeEditReply(interaction, { content: '❌ Ocurrió un error. Intenta de nuevo.' });
     }
 }
 
+// La confirmación final, con la oferta de fidelidad si toca.
+//
+// El descuento de fidelidad se OFRECE aquí y el cliente decide si lo usa en
+// esta compra o lo guarda. No se combina con un cupón: los dos juntos podrían
+// dejar la venta por debajo de coste. Y sólo en compras de hasta
+// FIDELIDAD.MAX_ROBUX.
+async function mostrarConfirmacion(interaction, token, pedido, cupon = null) {
+    const fid = fidelidad.estado(interaction.user.id);
+    const ofrecerFidelidad = fid.disponibles > 0 && !cupon?.valido && fidelidad.valeParaRobux(pedido.robux);
+
+    return editarTarjeta(interaction, {
+        color: ACCENT,
+        texto: buildTextoConfirmacion(pedido, cupon, fid),
+        thumbnail: pedido.foto,
+        filas: [buildConfirmarRow(token, ofrecerFidelidad, {
+            continuar: pedido.tipo === 'plus' ? 'Entiendo, continuar' : null,
+            cambiar: pedido.tipo === 'gamepass',
+        })],
+    });
+}
+
+// Las dos opciones del gamepass para la misma cantidad. `cantidad` es lo que
+// escribió: sin cubrir es el valor del gamepass; con el tax cubierto, lo que
+// le llega completo. null si esa opción no cabe en el rango.
+function opcionGamepass(cantidad, cubierto) {
+    if (cubierto) {
+        if (!gp.cubiertoEnRango(cantidad)) return null;
+        return {
+            cubierto: true,
+            robux: gp.gamepassParaRecibir(cantidad),
+            recibe: cantidad,
+            precio: gp.precioCubierto(cantidad),
+            redondeado: false,
+        };
+    }
+    if (!gp.enRango(cantidad)) return null;
+    return { cubierto: false, robux: cantidad, recibe: gp.recibe(cantidad), precio: gp.precioDe(cantidad), redondeado: false };
+}
+
 // El precio de cada forma, con su validación. { ok, datos } | { ok:false, error }.
+//
+// Por gamepass los datos son los de "sin cubrir" mientras no elija: la opción
+// que valga al final la pone onElegirTax().
 function calcularPrecio(tipo, amount) {
     if (tipo === 'gamepass') {
         if (!gp.enRango(amount)) {
@@ -244,14 +298,15 @@ function calcularPrecio(tipo, amount) {
                 error: `❌ Por gamepass vendemos entre **${fmt(gp.G.MIN_ROBUX)}** y **${fmt(gp.G.MAX_ROBUX)}** Robux.`,
             };
         }
+        return { ok: true, datos: { cantidad: amount, ...opcionGamepass(amount, false) } };
+    }
+
+    if (tipo === 'plus') {
+        const error = plus.errorCantidad(amount);
+        if (error) return { ok: false, error: `❌ ${error}` };
         return {
             ok: true,
-            datos: {
-                robux: amount,
-                recibe: gp.recibe(amount),
-                precio: gp.precioDe(amount),
-                redondeado: false,
-            },
+            datos: { robux: amount, recibe: amount, precio: plus.precioDe(amount), redondeado: false },
         };
     }
 
@@ -299,11 +354,26 @@ function buildTextoConfirmacion(pedido, cupon, fid = null) {
         `### ${E.robux} Tu pedido`,
     ];
 
-    if (pedido.tipo === 'gamepass') {
+    if (pedido.tipo === 'gamepass' && pedido.cubierto) {
+        const ahorro = gp.ahorroVsComunidad(pedido.recibe);
+        lineas.push(
+            `**${fmt(pedido.recibe)} Robux** completos por **$${fmt(pedido.precio)} MXN** · tax cubierto`,
+            `${E.point} Creas un gamepass de **${fmt(pedido.robux)} Robux**`,
+            `-# El ${Math.round(gp.G.TASA_ROBLOX * 100)}% que se queda Roblox lo cubrimos nosotros: te llegan los ${fmt(pedido.recibe)}.`,
+        );
+        if (ahorro) lineas.push(`${E.si} Ahorras **$${fmt(ahorro.ahorro)} MXN** frente a comprarlos por comunidad.`);
+    } else if (pedido.tipo === 'gamepass') {
         lineas.push(
             `Gamepass de **${fmt(pedido.robux)} Robux** por **$${fmt(pedido.precio)} MXN**`,
             `${E.point} Recibes **${fmt(pedido.recibe)} Robux** en tu cuenta`,
             `-# Roblox se queda el ${Math.round(gp.G.TASA_ROBLOX * 100)}% de la venta del gamepass y no lo cubrimos.`,
+        );
+    } else if (pedido.tipo === 'plus') {
+        lineas.push(
+            `**${fmt(pedido.robux)} Robux** por **$${fmt(pedido.precio)} MXN** · enviados con **Roblox Plus**`,
+            `${E.point} Te llegan **completos**, sin comisión.`,
+            '',
+            ...lineasRequisitosPlus(),
         );
     } else {
         if (cupon?.valido) {
@@ -332,21 +402,95 @@ function buildTextoConfirmacion(pedido, cupon, fid = null) {
     return lineas.join('\n');
 }
 
+// Lo que Roblox exige para recibir por Plus, dicho ANTES del ticket. Los envíos
+// de Roblox son finales: quien paga sin poder recibir no recupera nada, y eso
+// tiene que haberlo leído antes de pulsar, no después.
+function lineasRequisitosPlus() {
+    return [
+        `### ${E.alert} Antes de continuar`,
+        `${E.point} Tu cuenta de Roblox tiene que estar **verificada** (verificación de edad de Roblox). Sin ella no puedes recibir y Roblox cancela el envío.`,
+        `${E.point} Asegúrate de que tu cuenta **puede recibir Robux**. Los envíos de Roblox son finales: **si tu cuenta no puede recibir, no hay reembolso**.`,
+        `${E.point} Depende del **stock**: en tu ticket pregunta primero si hay. Si no hay, tu pedido se envía en cuanto haya.`,
+    ];
+}
+
+// Antes de confirmar un gamepass: las dos opciones lado a lado, con lo que
+// paga, el gamepass que crea y lo que le llega.
+function buildTextoTax(pedido) {
+    const tasa = Math.round(gp.G.TASA_ROBLOX * 100);
+    const perfil = `https://www.roblox.com/users/${pedido.robloxUserId}/profile`;
+    const sin = opcionGamepass(pedido.cantidad, false);
+    const con = opcionGamepass(pedido.cantidad, true);
+
+    const lineas = [
+        `## ${E.roblox} ¿Cubrimos el tax de Roblox?`,
+        `Roblox se queda el **${tasa}%** de toda venta de gamepass. Elige cómo quieres tus **${fmt(pedido.cantidad)} Robux**.`,
+        '',
+        `### ${E.member} Tu cuenta`,
+        `**${pedido.displayName}** · @${pedido.robloxName}`,
+        `-# ID \`${pedido.robloxUserId}\` · [Ver perfil](${perfil})`,
+        '',
+        `### ${E.point} Sin cubrir el tax`,
+        `Gamepass de **${fmt(sin.robux)}** → pagas **$${fmt(sin.precio)} MXN** → recibes **${fmt(sin.recibe)} Robux**`,
+        '',
+        `### ${E.si} Con el tax cubierto`,
+    ];
+
+    if (con) {
+        const ahorro = gp.ahorroVsComunidad(con.recibe);
+        lineas.push(`Gamepass de **${fmt(con.robux)}** → pagas **$${fmt(con.precio)} MXN** → recibes **${fmt(con.recibe)} Robux** completos`);
+        if (ahorro) lineas.push(`-# Ahorras $${fmt(ahorro.ahorro)} MXN frente a comprarlos por comunidad ($${fmt(ahorro.comunidad)}).`);
+    } else {
+        lineas.push(`-# No disponible para esta cantidad: el gamepass pasaría de ${fmt(gp.G.MAX_ROBUX)} Robux.`);
+    }
+
+    lineas.push('', '-# ¿No es tu cuenta? Pulsa **Cancelar** y vuelve a escribir tu usuario.');
+    return lineas.join('\n');
+}
+
+function buildTaxRow(token, cantidad) {
+    const sin = opcionGamepass(cantidad, false);
+    const con = opcionGamepass(cantidad, true);
+    return new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+            .setCustomId(`compra_tax:${token}:si`)
+            .setLabel(con ? `Cubrir el tax · $${fmt(con.precio)}` : 'Cubrir el tax')
+            .setStyle(ButtonStyle.Success)
+            .setDisabled(!con),
+        new ButtonBuilder()
+            .setCustomId(`compra_tax:${token}:no`)
+            .setLabel(`Sin cubrir · $${fmt(sin.precio)}`)
+            .setStyle(ButtonStyle.Primary),
+        new ButtonBuilder()
+            .setCustomId(`compra_no:${token}`)
+            .setLabel('Cancelar')
+            .setStyle(ButtonStyle.Secondary),
+    );
+}
+
 // Con un descuento de fidelidad guardado hay dos formas de continuar, y es el
 // cliente quien elige: usarlo en esta compra o guardarlo para otra.
-function buildConfirmarRow(token, conFidelidad = false) {
+//
+// `continuar` cambia la etiqueta del botón (Plus: "Entiendo, continuar", que
+// es aceptar los avisos). `cambiar` añade el botón para volver a elegir la
+// opción del tax.
+function buildConfirmarRow(token, conFidelidad = false, { continuar = null, cambiar = false } = {}) {
     const cancelar = new ButtonBuilder()
         .setCustomId(`compra_no:${token}`)
         .setLabel('Cancelar')
         .setStyle(ButtonStyle.Secondary);
+    const volver = cambiar
+        ? [new ButtonBuilder().setCustomId(`compra_cambiar:${token}`).setLabel('Cambiar opción').setStyle(ButtonStyle.Secondary)]
+        : [];
 
     if (!conFidelidad) {
         return new ActionRowBuilder().addComponents(
             new ButtonBuilder()
                 .setCustomId(`compra_ok:${token}`)
-                .setLabel('Continuar')
+                .setLabel(continuar ?? 'Continuar')
                 .setStyle(ButtonStyle.Success)
                 .setEmoji('✅'),
+            ...volver,
             cancelar,
         );
     }
@@ -361,6 +505,7 @@ function buildConfirmarRow(token, conFidelidad = false) {
             .setCustomId(`compra_ok:${token}`)
             .setLabel('Continuar sin descuento')
             .setStyle(ButtonStyle.Primary),
+        ...volver,
         cancelar,
     );
 }
@@ -418,10 +563,60 @@ async function editarTarjeta(interaction, { color, texto, thumbnail = null, fila
 // ── 3. Continuar / Cancelar ───────────────────────────────────────────────────
 
 async function handleCompraButton(interaction) {
-    const [accion, token] = interaction.customId.split(':');
+    const [accion, token, extra] = interaction.customId.split(':');
     if (accion === 'compra_no') return onCancelar(interaction, token);
     if (accion === 'compra_ok') return onContinuar(interaction, token, false);
     if (accion === 'compra_desc') return onContinuar(interaction, token, true);
+    if (accion === 'compra_tax') return onElegirTax(interaction, token, extra === 'si');
+    if (accion === 'compra_cambiar') return onCambiarTax(interaction, token);
+}
+
+// El pedido pendiente para un botón que NO lo consume (elegir o cambiar la
+// opción del tax). null si ya respondió con el motivo.
+async function pedidoPendiente(interaction, token) {
+    const r = pendientes.obtener(token, interaction.user.id);
+    if (r.ok) return r.pedido;
+    await editarTarjeta(interaction, {
+        color: ACCENT,
+        texto: r.motivo === 'ajeno'
+            ? `${E.alert} Esta confirmación no es tuya.`
+            : `${E.alert} **Esta confirmación caducó.** Vuelve a empezar desde el panel.`,
+    });
+    return null;
+}
+
+async function onElegirTax(interaction, token, cubierto) {
+    if (!await safeDeferUpdate(interaction)) return;
+    const pedido = await pedidoPendiente(interaction, token);
+    if (!pedido || pedido.tipo !== 'gamepass') return;
+
+    // El botón ya sale apagado cuando no cabe, pero el customId viaja por
+    // Discord: se vuelve a comprobar.
+    const opcion = opcionGamepass(pedido.cantidad, cubierto);
+    if (!opcion) {
+        return editarTarjeta(interaction, {
+            color: ACCENT,
+            texto: `${E.alert} Con el tax cubierto, **${fmt(pedido.cantidad)} Robux** pasarían del máximo de un gamepass. Elige la otra opción o una cantidad menor.`,
+            thumbnail: pedido.foto,
+            filas: [buildTaxRow(token, pedido.cantidad)],
+        });
+    }
+
+    Object.assign(pedido, opcion);
+    await mostrarConfirmacion(interaction, token, pedido);
+}
+
+async function onCambiarTax(interaction, token) {
+    if (!await safeDeferUpdate(interaction)) return;
+    const pedido = await pedidoPendiente(interaction, token);
+    if (!pedido || pedido.tipo !== 'gamepass') return;
+
+    await editarTarjeta(interaction, {
+        color: ACCENT,
+        texto: buildTextoTax(pedido),
+        thumbnail: pedido.foto,
+        filas: [buildTaxRow(token, pedido.cantidad)],
+    });
 }
 
 async function onCancelar(interaction, token) {
@@ -474,9 +669,8 @@ async function onContinuar(interaction, token, conDescuento = false) {
     });
 
     try {
-        const channel = pedido.tipo === 'gamepass'
-            ? await crearTicketGamepass(interaction, pedido)
-            : await crearTicketComunidad(interaction, pedido);
+        const crear = { gamepass: crearTicketGamepass, plus: crearTicketPlus }[pedido.tipo] ?? crearTicketComunidad;
+        const channel = await crear(interaction, pedido);
 
         const editado = await editarTarjeta(interaction, {
             color: ACCENT,
@@ -545,6 +739,7 @@ function pedidoTopic(pedido) {
         robux: pedido.robux,
         robloxUserId: pedido.robloxUserId,
         robloxName: pedido.robloxName,
+        ...(pedido.cubierto ? { cubierto: true } : {}),
         // Lo lee el botón de PAGO REALIZADO para gastar el descuento en ese
         // momento, y no antes.
         ...(pedido.descuentoFidelidad ? { descuentoFidelidad: true } : {}),
@@ -666,17 +861,20 @@ async function crearTicketGamepass(interaction, pedido) {
     // "Robux a recibir" es lo que de verdad llega a su cuenta, no el valor del
     // gamepass: es lo que dice la etiqueta, y es lo que cuenta el ranking. El
     // valor del gamepass va en su propia línea, justo encima.
+    const tasa = Math.round(gp.G.TASA_ROBLOX * 100);
     const desc =
         `${E.member} **Usuario de Roblox**\n\`\`\`${pedido.robloxName}\`\`\`\n` +
         `${E.roblox} **Valor del gamepass**\n\`\`\`${fmt(pedido.robux)} Robux\`\`\`\n` +
         `${E.robux} **Robux a recibir**\n\`\`\`${fmt(pedido.recibe)} Robux\`\`\`\n` +
         lineasPrecio(pedido, null) +
-        `-# Roblox se queda el ${Math.round(gp.G.TASA_ROBLOX * 100)}% de la venta del gamepass y no lo cubrimos.`;
+        (pedido.cubierto
+            ? `-# Tax cubierto: el ${tasa}% de Roblox lo ponemos nosotros, por eso el gamepass es de ${fmt(pedido.robux)}.`
+            : `-# Roblox se queda el ${tasa}% de la venta del gamepass y no lo cubrimos.`);
 
     await channel.send(v2.tarjetaPayload({
         color: ACCENT,
         mencion: `<@${userId}>`,
-        texto: `## Resumen de tu compra\n-# Entrega por **gamepass**\n\n${desc}\n${bloqueFidelidad(userId, pedido)}`,
+        texto: `## Resumen de tu compra\n-# Entrega por **gamepass**${pedido.cubierto ? ' · **tax cubierto**' : ''}\n\n${desc}\n${bloqueFidelidad(userId, pedido)}`,
         pie: '7x Community • Proceso automático',
         thumbnail: pedido.foto,
         filas: [closeBtnRow()],
@@ -690,6 +888,151 @@ async function crearTicketGamepass(interaction, pedido) {
     ]));
 
     return channel;
+}
+
+async function crearTicketPlus(interaction, pedido) {
+    const userId = interaction.user.id;
+
+    const channel = await tickets.createTicket(
+        interaction.guild, userId, 'comprar',
+        `${TIPOS.plus.canal}-${pad(contador.plus++)}`,
+        pedidoTopic(pedido),
+    );
+
+    // Mismas etiquetas que las otras formas: las lee el registro de pedidos.
+    const desc =
+        `${E.member} **Usuario de Roblox**\n\`\`\`${pedido.robloxName}\`\`\`\n` +
+        `${E.robux} **Robux a recibir**\n\`\`\`${fmt(pedido.robux)} Robux\`\`\`\n` +
+        lineasPrecio(pedido, null) +
+        '-# Enviados con Roblox Plus: te llegan completos, sin comisión.';
+
+    await channel.send(v2.tarjetaPayload({
+        color: ACCENT,
+        mencion: `<@${userId}>`,
+        texto: `## Resumen de tu compra\n-# Entrega por **Roblox Plus**\n\n${desc}\n${bloqueFidelidad(userId, pedido)}`,
+        pie: '7x Community • Proceso automático',
+        thumbnail: pedido.foto,
+        filas: [closeBtnRow()],
+    }));
+
+    await channel.send(buildPlusPaso(pedido));
+    await channel.send(buildMetodosPayload());
+    await channel.send(buildPagoPendiente([
+        '**Primero confirma que hay stock** con el botón de arriba y espera la respuesta.',
+        '',
+    ]));
+
+    return channel;
+}
+
+// Lo propio de Plus dentro del ticket: preguntar por el stock antes de pagar y
+// lo que Roblox le pide para poder recibir.
+function buildPlusPaso(pedido) {
+    return v2.tarjetaPayload({
+        color: ACCENT,
+        texto: [
+            `## ${E.plus} Antes de pagar`,
+            '',
+            `**1.** Pulsa **Preguntar stock** y espera a que te confirmemos que hay **${fmt(pedido.robux)} Robux** disponibles.`,
+            '**2.** Con el stock confirmado, paga y envía tu comprobante.',
+            `**3.** Te los enviamos con Roblox Plus a **@${pedido.robloxName}**. Si Roblox te pide **aceptar** el envío, acéptalo.`,
+            '',
+            `${E.alert} Si no hay stock, tu pedido se envía **en cuanto haya**.`,
+            `${E.alert} Tu cuenta tiene que estar **verificada** y poder recibir Robux. Los envíos son finales: **si tu cuenta no puede recibir, no hay reembolso**.`,
+        ].join('\n'),
+        filas: [new ActionRowBuilder().addComponents(
+            new ButtonBuilder()
+                .setCustomId('plus_stock')
+                .setLabel('Preguntar stock')
+                .setStyle(ButtonStyle.Primary)
+                .setEmoji('📦'),
+        )],
+    });
+}
+
+// ── Stock de Plus ─────────────────────────────────────────────────────────────
+// El bot no lleva la cuenta del stock: el cliente pregunta con un botón, el
+// owner recibe el aviso y responde con otro. Así nadie paga a ciegas, y el
+// owner no tiene que escribir lo mismo en cada ticket.
+
+const STOCK_ESPERA_MS = 10 * 60_000;
+
+async function onPlusStock(interaction) {
+    const ownerId = tickets.getOwner(interaction.channel);
+    if (!puedeGestionarTicket(interaction.user.id, ownerId)) {
+        return safeReply(interaction, { content: '❌ Solo quien abrió el ticket puede preguntar por el stock.', ephemeral: true });
+    }
+    const pedido = tickets.getTicketData(interaction.channel)?.pedido;
+    if (pedido?.modo !== 'plus') {
+        return safeReply(interaction, { content: '❌ Este ticket no es de compra por Plus.', ephemeral: true });
+    }
+
+    // Una pregunta cada diez minutos por ticket: pulsar diez veces no son diez
+    // menciones al owner.
+    const clave = `plusstock:${interaction.channelId}`;
+    if (isLocked(clave)) {
+        return safeReply(interaction, { content: '⏳ Ya preguntamos por el stock. Espera la respuesta aquí en el ticket.', ephemeral: true });
+    }
+    lock(clave, STOCK_ESPERA_MS);
+
+    const enviado = await interaction.channel.send(v2.tarjetaPayload({
+        color: 0xFFA500,
+        mencion: `<@${config.OWNER_ID}>`,
+        texto: [
+            '## 📦 ¿Hay stock?',
+            `<@${ownerId}> quiere **${fmt(Number(pedido.robux))} Robux** por **Roblox Plus** para **@${pedido.robloxName}**.`,
+            '-# Responde con los botones (solo owner).',
+        ].join('\n'),
+        filas: [buildStockRespuestaRow()],
+    })).catch(err => { console.warn('[compra] No se pudo preguntar el stock:', err.message); return null; });
+
+    if (!enviado) {
+        unlock(clave);
+        return safeReply(interaction, { content: '❌ No se pudo enviar la pregunta. Intenta de nuevo.', ephemeral: true });
+    }
+    await safeReply(interaction, { content: `${E.si} Listo, ya preguntamos. Espera la respuesta antes de pagar.`, ephemeral: true });
+}
+
+function buildStockRespuestaRow(desactivado = false) {
+    return new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+            .setCustomId('plus_hay_stock')
+            .setLabel('Hay stock')
+            .setStyle(ButtonStyle.Success)
+            .setDisabled(desactivado),
+        new ButtonBuilder()
+            .setCustomId('plus_sin_stock')
+            .setLabel('Sin stock')
+            .setStyle(ButtonStyle.Danger)
+            .setDisabled(desactivado),
+    );
+}
+
+async function onPlusStockRespuesta(interaction) {
+    if (!esAdminDeInteraccion(interaction)) {
+        return safeReply(interaction, { content: '❌ Solo el owner puede responder por el stock.', ephemeral: true });
+    }
+    const hay = interaction.customId === 'plus_hay_stock';
+    const clienteId = tickets.getOwner(interaction.channel);
+
+    // La pregunta se queda con la respuesta y sin botones: que no se pueda
+    // contestar dos veces, ni distinto.
+    if (!await safeDeferUpdate(interaction)) return;
+    await interaction.message.edit(v2.tarjetaPayload({
+        color: hay ? 0x57F287 : 0xED4245,
+        texto: `## 📦 Stock\n${hay ? `${E.si} Respondido: **hay stock**.` : `${E.no} Respondido: **sin stock por ahora**.`}`,
+    })).catch(() => {});
+
+    await interaction.channel.send(v2.tarjetaPayload({
+        color: hay ? 0x57F287 : 0xED4245,
+        mencion: clienteId ? `<@${clienteId}>` : null,
+        texto: hay
+            ? `## ${E.si} Hay stock\nYa puedes pagar: elige tu método de pago arriba, envía tu comprobante y escribe **PAGO EXITOSO**.`
+            : `## ${E.alert} Sin stock por ahora\nEn este momento no hay stock. Si pagas, tu pedido queda **en espera** y se envía **en cuanto haya stock**.\n-# Si prefieres esperar para pagar, te avisamos aquí cuando haya.`,
+    })).catch(err => console.warn('[compra] No se pudo publicar la respuesta del stock:', err.message));
+
+    // Con la respuesta dada, se puede volver a preguntar más adelante.
+    unlock(`plusstock:${interaction.channelId}`);
 }
 
 // El paso propio del gamepass: crearlo por la cantidad exacta y mandar el
@@ -816,10 +1159,13 @@ module.exports = {
     handleCompraButton,
     handleGpLinkModal,
     onGpLink,
+    onPlusStock,
+    onPlusStockRespuesta,
     TIPOS,
     __test: {
         tipoDeModal, calcularPrecio, revisarCupon, buildTextoConfirmacion, buildConfirmarRow,
         buildGamepassPaso, buildTextoRevision, pedidoTopic, editarTarjeta, E,
         lineasPrecio, bloqueFidelidad, lineasFidelidadConfirmacion,
+        opcionGamepass, buildTextoTax, buildTaxRow, buildPlusPaso, buildStockRespuestaRow, lineasRequisitosPlus,
     },
 };

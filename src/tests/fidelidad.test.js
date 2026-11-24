@@ -365,7 +365,10 @@ async function simularCompra() {
         out.push({ ok: /Estás usando tu/.test(conDesc), msg: 'y la barra del ticket dice que lo está usando' });
 
         // Gamepass también.
+        // Por gamepass primero se elige el tax; la oferta sale en la confirmación.
         conf = await enviar({ usuario_roblox: 'c', cantidad_robux: '1000' }, 'gamepass_compra_modal');
+        const tGp = botonesDe(conf).find(b => b.custom_id.startsWith('compra_tax:'))?.custom_id?.split(':')[1] ?? 'sin-token';
+        conf = (await pulsar(`compra_tax:${tGp}:si`)).at(-1);
         out.push({ ok: botonesDe(conf).some(b => b.custom_id.startsWith('compra_desc:')), msg: 'también se ofrece en compras por gamepass' });
 
         // Con un cupón válido no se ofrece: no se combinan.

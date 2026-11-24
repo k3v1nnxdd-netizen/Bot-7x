@@ -31,12 +31,34 @@ const E = {
     // El carrito animado del panel de tickets, que es el que ya se usa para
     // "comprar" en el resto del bot.
     shop:  '<a:shop:1190502129748676650>',
+    si:    '<:true:1501213776878501899>',
+    money2: '<:money:1544123920897019906>',
 };
+
+// El bloque del ahorro frente a comunidad. Sólo con las cantidades en las que
+// el tax cubierto sale de verdad más barato: si un día los precios cambian y
+// ya no hay ninguna, el bloque desaparece en vez de prometer un ahorro falso.
+function lineasAhorro() {
+    const limite = gp.limiteAhorro();
+    if (!limite) return [];
+
+    const ejemplos = [1000, 2000].filter(r => r <= limite && gp.ahorroVsComunidad(r));
+    return [
+        '',
+        `### ${E.money2} Más barato que por comunidad`,
+        `Con el tax cubierto, hasta **${gp.fmtRobux(limite)} Robux** te sale más barato que comprarlos por comunidad.`,
+        ...ejemplos.map(r => {
+            const a = gp.ahorroVsComunidad(r);
+            return `${E.point} **${gp.fmtRobux(r)} Robux** → **$${gp.fmtRobux(a.cubierto)}** en vez de ~~$${gp.fmtRobux(a.comunidad)}~~ · ahorras **$${gp.fmtRobux(a.ahorro)} MXN**`;
+        }),
+    ];
+}
 
 function buildTexto() {
     // El ejemplo se calcula, no se escribe: con el precio a mano, cambiarlo en
     // config dejaría el panel enseñando una cuenta que ya no sale.
     const ejemplo = 1000;
+    const tasa = Math.round(gp.G.TASA_ROBLOX * 100);
 
     return [
         `# ${TITULO}`,
@@ -44,19 +66,23 @@ function buildTexto() {
         'Compra Robux por **gamepass**. Tú creas el gamepass en tu juego y nosotros te lo compramos.',
         '',
         `${E.shop} **${gp.fmtRobux(1000)} Robux = ${gp.fmtMXN(gp.G.PRECIO_POR_1K)}**`,
-        `-# Por cada 1.000 Robux de **valor del gamepass**.`,
+        `-# Por cada 1.000 Robux de **valor del gamepass**. Roblox se queda su ${tasa}%.`,
+        `${E.si} **${gp.fmtRobux(1000)} Robux con tax cubierto = ${gp.fmtMXN(gp.G.PRECIO_CUBIERTO_POR_1K)}**`,
+        `-# Te llegan los 1.000 **completos**: el ${tasa}% de Roblox lo cubrimos nosotros.`,
         '',
         `### ${E.point} Cómo funciona`,
         '**1.** Mira aquí abajo cuánto cuesta lo que quieres.',
-        '**2.** Crea un gamepass en tu juego **por el valor que vas a comprar**.',
-        '**3.** Abre tu ticket, pásanos el enlace y lo compramos.',
+        '**2.** Abre tu ticket y elige si quieres que **cubramos el tax**.',
+        '**3.** Crea tu gamepass **por el valor que te indicamos**, pásanos el enlace y lo compramos.',
         '',
-        `### ${E.alert} Roblox cobra su comisión y no la cubrimos`,
-        `Roblox se queda el **${Math.round(gp.G.TASA_ROBLOX * 100)}%** de toda venta de gamepass. Pagas por el **valor del ` +
-        'gamepass**, y a tu cuenta llega el resto.',
+        `### ${E.alert} El tax de Roblox: tú eliges`,
+        `Roblox se queda el **${tasa}%** de toda venta de gamepass. Antes de abrir tu ticket eliges cómo lo quieres:`,
         '',
-        `${E.point} Gamepass de **${gp.fmtRobux(ejemplo)}** → pagas **${gp.fmtMXN(gp.precioDe(ejemplo))}** ` +
+        `${E.point} **Sin cubrir** · gamepass de **${gp.fmtRobux(ejemplo)}** → pagas **${gp.fmtMXN(gp.precioDe(ejemplo))}** ` +
         `→ recibes **${gp.fmtRobux(gp.recibe(ejemplo))} Robux**`,
+        `${E.point} **Tax cubierto** · gamepass de **${gp.fmtRobux(gp.gamepassParaRecibir(ejemplo))}** → pagas ` +
+        `**${gp.fmtMXN(gp.precioCubierto(ejemplo))}** → recibes **${gp.fmtRobux(ejemplo)} Robux**`,
+        ...lineasAhorro(),
         '',
         `### ${E.point} Consulta tu precio`,
         `<:${E.money.name}:${E.money.id}> = Tienes un presupuesto y quieres saber qué gamepass te alcanza.`,

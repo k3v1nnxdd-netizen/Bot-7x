@@ -155,8 +155,9 @@ module.exports = async function run() {
     const pide = [
         [/gamepass/i,                  'habla de gamepass'],
         [/crea[sr]?\b/i,               'dice que ellos crean el gamepass'],
-        [/valor que vas a comprar/i,   'y que es por el valor que van a comprar'],
-        [/no la cubrimos/i,            'deja claro que la comisión no la cubre 7x'],
+        [/valor que te indicamos/i,    'y que es por el valor que se le indica'],
+        [/Sin cubrir/i,                'da la opción sin cubrir la comisión'],
+        [/tax cubierto/i,              'y la del tax cubierto'],
         [/recibes/i,                   'y dice lo que recibe de verdad'],
     ];
     for (const [re, msg] of pide) assert(re.test(texto), msg);

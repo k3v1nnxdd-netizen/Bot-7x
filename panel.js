@@ -40,6 +40,7 @@ const E = {
     duels:      '<:duels7x2:1525325282624540732>',
     seguidores: '<:followers7x:1525326777071960124>',
     gamepass:   '<:roblox:1525317838938701967>',
+    plus:       config.ROBLOX_PLUS_EMOJI || '💎',
     otra:       '<:up:1501217620437897227>',
     alert:      '<:alert:1501220021035204658>',
     down:       '<:down:1547141212530679899>',
@@ -62,6 +63,7 @@ const HEADER = [
 const OPCIONES = [
     { id: 'comprar',          label: 'robux-comunidad', emoji: E.buy,      texto: 'Robux enviados por **comunidad** de Roblox' },
     { id: 'comprar_gamepass', label: 'robux-gamepass',  emoji: E.gamepass, texto: 'Robux comprando tu **gamepass**' },
+    { id: 'comprar_plus',     label: 'robux-plus',      emoji: E.plus,     texto: 'Robux enviados con **Roblox Plus** · sujeto a stock' },
     { id: 'alianza',    label: 'Alianza',    emoji: E.alianza,    texto: 'Ticket para **aliar tu servidor** con 7x' },
     { id: 'duels',      label: 'Duels',      emoji: E.duels,      texto: 'Ticket para comprar **sets de Duels**' },
     { id: 'seguidores', label: 'Seguidores', emoji: E.seguidores, texto: 'Ticket para comprar **seguidores**',

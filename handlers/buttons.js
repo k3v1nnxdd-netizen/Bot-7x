@@ -21,7 +21,8 @@ const { startSeguidoresTicket, handleSeguidoresButton } = require('./seguidoresF
 const { handleCheckGroupButton } = require('./checkGroupFlow');
 const { handleHeadlessButton } = require('./headlessFlow');
 const { startAlianzaTicket, handleAlianzaButton } = require('./alianzaFlow');
-const { buildCompraModal, handleCompraButton, onGpLink } = require('./compraFlow');
+const { buildCompraModal, handleCompraButton, onGpLink, onPlusStock, onPlusStockRespuesta } = require('./compraFlow');
+const { onPlusDinero, onPlusRobux } = require('../plus');
 const { handleGroupsPageButton } = require('./groupLicenses');
 const { handleMetodosButton, handleCopiarButton, BOTONES: METODOS_BUTTONS, COPY_BOTONES } = require('../metodos');
 const v2                 = require('../utils/panelV2');
@@ -53,13 +54,14 @@ function buildAutoCloseEmbed(minutes) {
 
 // ── Channel classification ────────────────────────────────────────────────────
 
-const PANEL_BUTTONS  = new Set(['comprar', 'comprar_gamepass', 'alianza', 'otra_cosa', 'duels', 'seguidores']);
+const PANEL_BUTTONS  = new Set(['comprar', 'comprar_gamepass', 'comprar_plus', 'alianza', 'otra_cosa', 'duels', 'seguidores']);
 const CALC_BUTTONS   = new Set(['calc_dinero', 'calc_robux']);
 const GAMEPASS_BUTTONS = new Set(['gp_dinero', 'gp_robux']);
+const PLUS_BUTTONS = new Set(['plus_dinero', 'plus_robux']);
 const HEADLESS_BUTTONS = new Set(['headless_comprar']);
 const VERIF_BUTTONS  = new Set(['verif_check']);
 const ANUNCIO_BUTTONS = new Set(['anuncio_copiar']);
-const TICKET_BUTTONS = new Set(['confirmar_pago', 'cerrar_ticket', 'confirmar_cerrar', 'cancelar_cerrar', 'gp_link']);
+const TICKET_BUTTONS = new Set(['confirmar_pago', 'cerrar_ticket', 'confirmar_cerrar', 'cancelar_cerrar', 'gp_link', 'plus_stock', 'plus_hay_stock', 'plus_sin_stock']);
 // Derivado de config.CHECK_GROUPS en vez de escrito a mano: el customId de
 // cada boton del panel es literalmente `cg_<clave>`, asi que anadir una cuarta
 // comunidad en config no puede dejarse a medias aqui.
@@ -114,6 +116,12 @@ async function guardButton(interaction) {
     // Gamepass buttons must come from the gamepass channel
     if (GAMEPASS_BUTTONS.has(interaction.customId) && interaction.channelId !== config.CHANNELS.GAMEPASS) {
         await safeReply(interaction, { content: 'Usa los botones del canal de precios por gamepass.', ephemeral: true });
+        return false;
+    }
+
+    // Plus buttons must come from the Plus price channel
+    if (PLUS_BUTTONS.has(interaction.customId) && interaction.channelId !== config.CHANNELS.PLUS) {
+        await safeReply(interaction, { content: 'Usa los botones del canal de precios por Plus.', ephemeral: true });
         return false;
     }
 
@@ -211,6 +219,23 @@ async function onComprarGamepass(interaction) {
     }
 
     await safeShowModal(interaction, buildCompraModal('gamepass'));
+}
+
+async function onComprarPlus(interaction) {
+    if (interaction.replied || interaction.deferred) return;
+
+    const userId = interaction.user.id;
+
+    if (isLocked(`btn:comprar:${userId}`)) {
+        return safeReply(interaction, { content: '⏳ Espera un momento antes de intentar de nuevo.', ephemeral: true });
+    }
+    lock(`btn:comprar:${userId}`, config.TIMEOUTS.LOCK_MS);
+
+    if (await tickets.hasActiveTicket(interaction.guild, userId)) {
+        return safeReply(interaction, { content: '❌ Ya tienes un ticket abierto. Cierra el anterior antes de crear otro.', ephemeral: true });
+    }
+
+    await safeShowModal(interaction, buildCompraModal('plus'));
 }
 
 async function onOtraCosa(interaction) {
@@ -572,7 +597,11 @@ async function startAutoClose(channel, cierre = {}) {
 const HANDLERS = {
     comprar:          onComprar,
     comprar_gamepass: onComprarGamepass,
+    comprar_plus:     onComprarPlus,
     gp_link:          onGpLink,
+    plus_stock:       onPlusStock,
+    plus_hay_stock:   onPlusStockRespuesta,
+    plus_sin_stock:   onPlusStockRespuesta,
     otra_cosa:        onOtraCosa,
     duels:            onDuels,
     seguidores:       startSeguidoresTicket,
@@ -584,6 +613,8 @@ const HANDLERS = {
     calc_robux:       onCalcRobux,
     gp_dinero:        onGpDinero,
     gp_robux:         onGpRobux,
+    plus_dinero:      onPlusDinero,
+    plus_robux:       onPlusRobux,
     confirmar_pago:      onConfirmarPago,
     cerrar_ticket:       onCerrarTicket,
     confirmar_cerrar:    onConfirmarCerrar,
@@ -604,7 +635,7 @@ async function handleButton(interaction) {
 
     const isSeg    = interaction.customId.startsWith('seg_');
     const isAli    = interaction.customId.startsWith('ali_');
-    const isCompra = /^compra_(ok|no|desc):/.test(interaction.customId);
+    const isCompra = /^compra_(ok|no|desc|tax|cambiar):/.test(interaction.customId);
     const isCg     = interaction.customId.startsWith('cg_');
     const isReview = interaction.customId.startsWith('review_rate:');
     const isStar   = interaction.customId.startsWith('review_star:');

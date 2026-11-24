@@ -63,6 +63,7 @@ module.exports = {
         GAMEPASS:           '1561898653030027335',
         INVITACIONES:       '1180665539580936213',
         GAMEPASS_JUEGOS:    '1562045353669427260',
+        PLUS:               '1574643512836755506',
     },
 
     // ── Sistema de invitaciones (utils/invitaciones.js) ──────────────────────
@@ -323,11 +324,35 @@ module.exports = {
     // MIN_ROBUX y MAX_ROBUX son el rango que se vende por gamepass. Los dos
     // los lee el panel y las dos calculadoras, así que cambiarlos es tocar
     // estas líneas y ninguna más.
+    //
+    // PRECIO_CUBIERTO_POR_1K es la otra opción, la de "tax cubierto": el precio
+    // por cada 1.000 Robux que LLEGAN a su cuenta. El cliente crea el gamepass
+    // un poco más caro (1.429 para que lleguen 1.000) y la diferencia la pone
+    // 7x. Se elige antes de abrir el ticket, con los dos precios a la vista.
     GAMEPASS: {
-        PRECIO_POR_1K: 115,
+        PRECIO_POR_1K:          115,
+        PRECIO_CUBIERTO_POR_1K: 130,
         TASA_ROBLOX:   0.30,
         MIN_ROBUX:     500,
         MAX_ROBUX:     100000,
+    },
+
+    // ── Venta por Roblox Plus ────────────────────────────────────────────────
+    // Se envían con "Enviar Robux", la función de Roblox Plus, desde la cuenta
+    // de 7x: llegan COMPLETOS, sin comisión. Lo que pide Roblox es del lado de
+    // quien recibe: su cuenta tiene que pasar la verificación de edad, o el
+    // envío se cancela a los 7 días. Los envíos son finales, por eso se avisa
+    // antes del ticket de que, si su cuenta no puede recibir, no hay reembolso.
+    //
+    // MAX_ROBUX es el límite diario de envío de Roblox (5.000 con verificación
+    // en dos pasos). MULTIPLO, porque Roblox sólo deja enviar 25, 50, 100 o 200
+    // por envío: una cantidad que no sea múltiplo de 25 no se puede mandar.
+    // El stock no lo lleva el bot: el ticket le pide al cliente que pregunte.
+    PLUS: {
+        PRECIO_POR_1K: 140,
+        MIN_ROBUX:     500,
+        MAX_ROBUX:     5000,
+        MULTIPLO:      25,
     },
 
     // ── Alianzas con otros servidores ────────────────────────────────────────

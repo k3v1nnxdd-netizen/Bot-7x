@@ -73,7 +73,7 @@ module.exports = async function run() {
     assert(orden.includes('alianza'), 'el panel de tickets tiene la opción de Alianza');
     // Va justo detrás de las formas de compra: primero se compra, luego todo
     // lo demás.
-    const ultimaCompra = Math.max(orden.indexOf('comprar'), orden.indexOf('comprar_gamepass'));
+    const ultimaCompra = Math.max(...orden.filter(id => id.startsWith('comprar')).map(id => orden.indexOf(id)));
     assert(
         orden.indexOf('alianza') === ultimaCompra + 1,
         `va justo después de los botones de compra (orden: ${orden.join(', ')})`
